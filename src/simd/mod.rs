@@ -3,6 +3,8 @@ mod avx2;
 #[cfg(feature = "avx512")]
 mod avx512;
 
+// TODO: Add docs for SIMD
+
 pub use ssse3::*;
 pub use avx2::*;
 #[cfg(feature = "avx512")]

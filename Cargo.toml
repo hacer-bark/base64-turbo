@@ -1,6 +1,6 @@
 [package]
 name = "base64-turbo"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "Fastest pure Rust Base64 encoder/decoder with AVX2/AVX512 and fallback for no_std."
 license = "MIT"

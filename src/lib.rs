@@ -482,6 +482,7 @@ impl Engine {
     /// assert_eq!(b64, "aGVsbG8=");
     /// ```
     #[inline]
+    #[cfg(feature = "std")]
     pub fn encode<T: AsRef<[u8]> + Sync>(&self, input: T) -> String {
         let input = input.as_ref();
 
@@ -522,6 +523,7 @@ impl Engine {
     /// assert_eq!(bytes, b"hello");
     /// ```
     #[inline]
+    #[cfg(feature = "std")]
     pub fn decode<T: AsRef<[u8]> + Sync>(&self, input: T) -> Result<Vec<u8>, Error> {
         let input = input.as_ref();
 
