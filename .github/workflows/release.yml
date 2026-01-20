@@ -53,6 +53,7 @@ jobs:
   publish:
     name: Publish to Crates.io
     runs-on: ubuntu-latest
+    environment: Main
     needs: [check-logic, check-security] 
     steps:
       - uses: actions/checkout@v4
