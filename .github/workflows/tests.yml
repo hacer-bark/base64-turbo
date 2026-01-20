@@ -1,0 +1,46 @@
+name: Logic Tests
+
+on:
+  push:
+    branches: [ "main" ]
+    tags-ignore:
+      - '**'
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  test-suite:
+    name: Test (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          # 1. Baseline: Pure Scalar (SIMD off, Parallel off)
+          - name: Scalar Only
+            features: "std"
+
+          # 2. SIMD: Enables runtime detection (AVX2/SSSE3)
+          - name: SIMD Enabled
+            features: "std,simd"
+
+          # 3. Parallel: Enables Rayon
+          - name: Parallel
+            features: "std,parallel"
+
+          # 4. Full: Everything enabled
+          - name: Full Features
+            features: "std,simd,parallel"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust Stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache dependencies
+        uses: swatinem/rust-cache@v2
+
+      - name: Run Cargo Test
+        run: cargo test --verbose --no-default-features --features "${{ matrix.features }}"

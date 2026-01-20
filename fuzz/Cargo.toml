@@ -1,0 +1,27 @@
+[package]
+name = "base64-turbo-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+base64 = "0.22" 
+base64-turbo = { path = ".." } 
+
+[[bin]]
+name = "fuzz_all_modes"
+path = "fuzz_targets/fuzz_all_modes.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_large_inputs"
+path = "fuzz_targets/fuzz_large_inputs.rs"
+test = false
+doc = false
+bench = false
