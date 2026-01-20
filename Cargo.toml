@@ -2,6 +2,20 @@
 name = "base64-turbo"
 version = "0.1.0"
 edition = "2024"
+description = "Fastest pure Rust Base64 encoder/decoder with AVX2/AVX512 and fallback for no_std."
+license = "MIT"
+repository = "https://github.com/hacer-bark/base64-turbo"
+homepage = "https://github.com/hacer-bark/base64-turbo"
+documentation = "https://docs.rs/base64-turbo"
+readme = "README.md"
+authors = ["Hacer"]
+keywords = ["base64", "simd", "avx512", "performance", "encoding"]
+categories = ["encoding", "no-std", "web-programming"]
+exclude = [
+    ".github",
+    ".gitignore",
+    "benches/results/*"
+]
 
 [features]
 default = ["std", "simd"]
