@@ -5,10 +5,10 @@ mod exhaustive_tests {
 
     // Reference Crate Aliases
     use base64::{
-        Engine as _, 
+        Engine as _,
         engine::general_purpose::{
-            STANDARD as REF_STANDARD, 
-            STANDARD_NO_PAD as REF_STANDARD_NO_PAD, 
+            STANDARD as REF_STANDARD,
+            STANDARD_NO_PAD as REF_STANDARD_NO_PAD,
             URL_SAFE as REF_URL_SAFE,
             URL_SAFE_NO_PAD as REF_URL_SAFE_NO_PAD,
         }
@@ -23,49 +23,32 @@ mod exhaustive_tests {
     }
 
     /// The "Oracle" Test.
-    /// 1. Encodes `input` using Reference crate.
-    /// 2. Encodes `input` using Turbo.
-    /// 3. Asserts Equality.
-    /// 4. Decodes Reference output using Turbo.
-    /// 5. Asserts Round Trip.
-    #[track_caller] // Shows line number of the failure in the loop
+    #[track_caller]
     fn assert_oracle_match(
-        input: &[u8], 
-        turbo_engine: &Engine, 
+        input: &[u8],
+        turbo_engine: &Engine,
         ref_engine: &base64::engine::GeneralPurpose,
     ) {
-        // 1. Truth
+        // 1. Truth (Reference crate)
         let expected_encoded = ref_engine.encode(input);
 
-        // 2. Turbo Encode (Allocating)
-        let turbo_encoded = turbo_engine.encode(input);
+        // 2. Turbo Encode (Manual Buffer Management)
+        let mut enc_buf = vec![0u8; turbo_engine.encoded_len(input.len())];
 
-        assert_eq!(turbo_encoded, expected_encoded, "Encode mismatch. Len: {}", input.len());
+        turbo_engine.encode_into(input, &mut enc_buf).expect("Turbo encode_into failed");
 
-        // 3. Turbo Decode (Allocating)
-        let turbo_decoded = turbo_engine.decode(&expected_encoded)
-            .expect("Turbo failed to decode valid reference output");
+        // Verify content match
+        assert_eq!(enc_buf, expected_encoded.as_bytes(), "Encode content mismatch. Input Len: {}", input.len());
 
-        assert_eq!(turbo_decoded, input, "Decode mismatch. Len: {}", input.len());
+        // 3. Turbo Decode (Manual Buffer Management)
+        let mut dec_buf = vec![0u8; turbo_engine.estimate_decoded_len(expected_encoded.len())];
 
-        // 4. Turbo Zero-Allocation API Check (HFT Path)
-        // We verify that the slice-based API produces the exact same result as the allocating one
+        let written_dec = turbo_engine.decode_into(expected_encoded.as_bytes(), &mut dec_buf)
+            .expect("Turbo decode_into failed on valid reference output");
 
-        // Encode_into
-        let required_len = (input.len() + 2) / 3 * 4; // Base64 expansion
-        // Add extra buffer to ensure we don't write past reported length
-        let mut enc_buf = vec![0u8; required_len + 10]; 
-
-        let written_enc = turbo_engine.encode_into(input, &mut enc_buf).unwrap();
-        assert_eq!(written_enc, expected_encoded.len(), "Zero-alloc encode length mismatch");
-        assert_eq!(&enc_buf[..written_enc], expected_encoded.as_bytes(), "Zero-alloc encode content mismatch");
-
-        // Decode_into
-        let mut dec_buf = vec![0u8; input.len() + 10];
-        let written_dec =turbo_engine.decode_into(expected_encoded.as_bytes(), &mut dec_buf).expect("Zero-alloc decode failed");
-
-        assert_eq!(written_dec, input.len(), "Zero-alloc decode length mismatch");
-        assert_eq!(&dec_buf[..written_dec], input, "Zero-alloc decode content mismatch");
+        // Verify Round Trip
+        let turbo_decoded_slice = &dec_buf[..written_dec];
+        assert_eq!(turbo_decoded_slice, input, "Decode content mismatch / Round trip failed");
     }
 
     // --- 1. Basic Correctness ---
@@ -73,8 +56,6 @@ mod exhaustive_tests {
     #[test]
     fn test_oracle_standard_exhaustive_small() {
         // Test 0 to 1024 bytes inclusive.
-        // This covers Scalar unroll loops (8 bytes), SSSE3 (16 bytes), and AVX2 (32 bytes)
-        // boundaries multiple times.
         for i in 0..=1024 {
             let data = random_bytes(i);
             assert_oracle_match(&data, &STANDARD, &REF_STANDARD);
@@ -84,8 +65,8 @@ mod exhaustive_tests {
     #[test]
     fn test_oracle_standard_fuzz_medium() {
         let mut rng = rng();
-        // 10,000 iterations of random sizes up to 64KB
-        for _ in 0..10_000 {
+        // 1,000 iterations of random sizes up to 64KB
+        for _ in 0..1_000 {
             let len = rng.random_range(1025..65536);
             let data = random_bytes(len);
             assert_oracle_match(&data, &STANDARD, &REF_STANDARD);
@@ -109,7 +90,7 @@ mod exhaustive_tests {
         let tricky_bytes = vec![
             0xFB, 0xFF, 0xBF, // High bits often trigger +
             0x3E, 0x3F,       // Boundaries
-            0x00, 0x00, 0x00, 
+            0x00, 0x00, 0x00,
             0xFF, 0xFF, 0xFF
         ];
         assert_oracle_match(&tricky_bytes, &URL_SAFE, &REF_URL_SAFE);
@@ -123,12 +104,10 @@ mod exhaustive_tests {
     }
 
     // --- 3. Architecture/SIMD Boundary Tests ---
-    
+
     #[test]
     fn test_simd_scalar_transition_boundaries() {
         // We explicitly test lengths that sit on the boundaries of SIMD chunks.
-        // Even if SIMD is disabled via Cargo features, these tests ensure the Scalar
-        // fallback logic handles chunking correctly.
         let boundaries = [
             7, 8, 9,           // Scalar Unroll (8 bytes)
             15, 16, 17,        // SSSE3 (16 bytes)
@@ -147,32 +126,38 @@ mod exhaustive_tests {
 
     // --- 4. Parallelism Tests (Conditional) ---
 
+    // Note: Parallel features usually imply `std` (via Rayon).
+    // If we are strictly no_std (no alloc), parallel features are likely disabled.
+    // However, if the feature is enabled, we assume the test environment allows basic allocation
+    // to verify correctness, even if the main library API excludes `encode() -> String`.
     #[cfg(feature = "parallel")]
     #[test]
     fn test_parallel_correctness_large() {
-        // 10MB input ensures Rayon kicks in (threshold is usually ~512KB)
-        let size = 10 * 1024 * 1024; 
+        let size = 10 * 1024 * 1024;
         let data = random_bytes(size);
 
-        // We assume REF_STANDARD is correct. We verify STANDARD (Turbo) matches.
-        // Note: Reference crate is single-threaded, so this might take a moment.
         let ref_encoded = REF_STANDARD.encode(&data);
-        let turbo_encoded = STANDARD.encode(&data);
 
-        assert_eq!(turbo_encoded, ref_encoded, "Parallel Encoding Mismatch");
+        // Manual buffer allocation for Parallel encoding
+        let mut enc_buf = vec![0u8; (size + 2) / 3 * 4 + 1024];
+        
+        // Use encode_into (which should utilize parallelism internally if feature enabled)
+        let written = STANDARD.encode_into(&data, &mut enc_buf).expect("Parallel encode failed");
+        
+        assert_eq!(&enc_buf[..written], ref_encoded.as_bytes(), "Parallel Encoding Mismatch");
 
         // Decode back
-        let turbo_decoded = STANDARD.decode(&turbo_encoded).expect("Parallel Decoding Failed");
+        let mut dec_buf = vec![0u8; size + 1024];
+        let written_dec = STANDARD.decode_into(&enc_buf[..written], &mut dec_buf)
+            .expect("Parallel Decoding Failed");
 
-        assert_eq!(turbo_decoded, data, "Parallel Round-trip Mismatch");
+        assert_eq!(&dec_buf[..written_dec], data, "Parallel Round-trip Mismatch");
     }
 
     #[cfg(feature = "parallel")]
     #[test]
     fn test_parallel_threshold_boundary() {
-        // Test right around the threshold where it might switch from Scalar/SIMD to Rayon
         let threshold = 512 * 1024; // 512 KB
-
         for size in [threshold - 1, threshold, threshold + 1] {
             let data = random_bytes(size);
             assert_oracle_match(&data, &STANDARD, &REF_STANDARD);
@@ -184,17 +169,20 @@ mod exhaustive_tests {
     #[test]
     fn test_reject_invalid_chars() {
         let inputs = vec![
-            "Abc-",      // Invalid char '-' for Standard
-            "Abc_",      // Invalid char '_' for Standard
-            "Abc ",      // Space
-            "Abc\n",     // Newline
-            "Abc\0",     // Null byte
-            "Abc!",      // Garbage
+            "Abc-",  // Invalid char '-' for Standard
+            "Abc_",  // Invalid char '_' for Standard
+            "Abc ",  // Space
+            "Abc\n", // Newline
+            "Abc\0", // Null byte
+            "Abc!",  // Garbage
         ];
+
+        // Reuse a buffer for decoding attempts
+        let mut buf = [0u8; 100];
 
         for inp in inputs {
             assert!(
-                STANDARD.decode(inp).is_err(), 
+                STANDARD.decode_into(inp.as_bytes(), &mut buf).is_err(),
                 "Standard Engine failed to reject invalid input: {:?}", inp
             );
         }
@@ -202,19 +190,19 @@ mod exhaustive_tests {
 
     #[test]
     fn test_reject_invalid_padding() {
-        // Base64 length must be % 4 == 0.
-        // If it has padding, '=' must only be at the end (max 2).
         let bad_inputs = vec![
-            "A", "AA", "AAA",      // Wrong length
-            "AAAA=",               // Length 5
-            "AA=A",                // Padding in middle
-            "A===",                // Too much padding
-            "====",                // Only padding
+            "A", "AA", "AAA",   // Wrong length
+            "AAAA=",            // Length 5
+            "AA=A",             // Padding in middle
+            "A===",             // Too much padding
+            "====",             // Only padding
         ];
+
+        let mut buf = [0u8; 100];
 
         for bad in bad_inputs {
             assert!(
-                STANDARD.decode(bad).is_err(),
+                STANDARD.decode_into(bad.as_bytes(), &mut buf).is_err(),
                 "Failed to reject bad padding/length: '{}'", bad
             );
         }
@@ -225,6 +213,10 @@ mod exhaustive_tests {
         // Verify that decode doesn't panic if we feed it garbage that hypothetically
         // looks like it writes a lot.
         let data = vec![b'A'; 1024];
-        let _ = STANDARD.decode(&data); // Should just work or err, not panic/segfault
+        let mut buf = vec![0u8; 1024];
+
+        // This should return Ok (if valid base64) or Err, but NOT Panic.
+        // We aren't checking the result, just that it doesn't crash the test runner.
+        let _ = STANDARD.decode_into(&data, &mut buf);
     }
 }

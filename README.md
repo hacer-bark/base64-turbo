@@ -107,7 +107,7 @@ High performance does not mean undefined behavior. This crate uses `unsafe` for 
 *   **MIRI Verified:** The core logic, scalar fallbacks, and AVX2 paths are audited against the MIRI Interpreter to ensure no misalignment, data races, or out-of-bounds access occurs.
 *   **Runtime Detection:** CPU features are detected at runtime. If SSSE3/AVX2/AVX512 is unavailable, it falls back to a highly optimized scalar implementation.
 
-## 📦 Usage
+## 💻 Usage
 
 ### Standard (Simple)
 The easiest way to use the library. Handles allocation automatically.
@@ -162,6 +162,18 @@ We prioritize **deterministic latency** and **formal verification** out of the b
 2.  **`avx512`:**
     *   **Audit Status:** While the AVX512 path is stable and has passed explicit **100 Million+ Fuzzing Iterations**, it is **not yet covered by the MIRI audit**. The Rust MIRI interpreter does not currently support AVX512 intrinsics, meaning we cannot formally guarantee undefined-behavior-free execution for this specific path to the same rigorous standard as our AVX2 path.
     *   *Recommendation:* Enable this if you are running on Zen 4 / Ice Lake hardware and need the extra ~60% throughput per core, and accept Fuzzing as sufficient validation.
+
+## 📦 Binary Footprint
+
+As part of our transparency policy, we track the size of the compiled library artifact (`.rlib`) under maximum optimization settings (`lto = "fat"`, `codegen-units = 1`).
+
+| Configuration | Size | Details |
+| :--- | :--- | :--- |
+| **Default** (`std` + `simd`) | **~512 KB** | "Fat Binary" containing **AVX2, SSSE3**, and Scalar paths to support runtime CPU detection. |
+| **Scalar** (`std` only) | **~82 KB** | SIMD disabled. Optimized for legacy x86 or generic architectures. |
+| **Embedded** (`no_std`) | **~64 KB** | Pure Scalar logic. Ideal for microcontrollers, WASM, or kernel drivers. |
+
+*> **Note:** These sizes represent the intermediate `.rlib`, which includes metadata and symbol tables. The actual machine code added to your final executable is significantly smaller due to linker dead-code elimination. Additionally, compiling with `-C target-cpu=native` allows the compiler to strip unused SIMD paths, further reducing the binary size.*
 
 ## License
 

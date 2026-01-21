@@ -16,6 +16,10 @@ jobs:
       fail-fast: true
       matrix:
         include:
+          # 0. no_std: Pure Scalar (SIMD off, Parallel off)
+          - name: Scalar Only
+            features: ""
+
           # 1. Baseline: Pure Scalar (SIMD off, Parallel off)
           - name: Scalar Only
             features: "std"

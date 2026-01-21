@@ -25,19 +25,20 @@
 //! Standard usage for general applications. Requires the `std` feature (enabled by default).
 //!
 //! ```rust
+//! # #[cfg(feature = "std")]
+//! # {
 //! use base64_turbo::STANDARD;
 //!
-//! fn main() {
-//!     let data = b"Hello world";
-//!     
-//!     // Encode to String
-//!     let encoded = STANDARD.encode(data);
-//!     assert_eq!(encoded, "SGVsbG8gd29ybGQ=");
-//!     
-//!     // Decode to Vec<u8>
-//!     let decoded = STANDARD.decode(&encoded).unwrap();
-//!     assert_eq!(decoded, data);
-//! }
+//! let data = b"Hello world";
+//!
+//! // Encode to String
+//! let encoded = STANDARD.encode(data);
+//! assert_eq!(encoded, "SGVsbG8gd29ybGQ=");
+//!
+//! // Decode to Vec<u8>
+//! let decoded = STANDARD.decode(&encoded).unwrap();
+//! assert_eq!(decoded, data);
+//! # }
 //! ```
 //!
 //! ### Zero-Allocation API (Slice-based)
@@ -223,15 +224,20 @@ pub(crate) struct Config {
 /// # Examples
 ///
 /// ```rust
+/// # #[cfg(feature = "std")]
+/// # {
 /// use base64_turbo::STANDARD;
-/// 
-/// let original_message = b"hello";
 ///
-/// let encoded = STANDARD.encode(&original_message);
-/// assert_eq!(encoded, "aGVsbG8=");
-/// 
+/// let data = b"Hello world";
+///
+/// // Encode to String
+/// let encoded = STANDARD.encode(data);
+/// assert_eq!(encoded, "SGVsbG8gd29ybGQ=");
+///
+/// // Decode to Vec<u8>
 /// let decoded = STANDARD.decode(&encoded).unwrap();
-/// assert_eq!(decoded, original_message);
+/// assert_eq!(decoded, data);
+/// # }
 /// ```
 #[derive(Debug, Clone, Copy)]
 pub struct Engine {
@@ -469,10 +475,6 @@ impl Engine {
     /// Allocates a new `String` and encodes the input data into it.
     ///
     /// This is the most convenient method for general usage.
-    ///
-    /// # Panics
-    /// This method panics if the implementation contains a logic error that causes
-    /// the buffer size calculation to be incorrect (this should never happen).
     ///
     /// # Examples
     ///
