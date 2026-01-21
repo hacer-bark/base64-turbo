@@ -77,6 +77,10 @@
 //! *   **Fuzzing:** The codebase is fuzz-tested via `cargo-fuzz`.
 //! *   **Fallback:** Invalid or unsupported hardware instruction sets are detected at runtime, ensuring safe fallback to scalar code.
 
+// TODO: Add docs for SIMD
+// TODO: Update SSSE3 and AVX512 logic for new algo
+// TODO: Investigate low speed at small payloads
+
 #![cfg_attr(not(any(feature = "std", test)), no_std)]
 
 #![doc(issue_tracker_base_url = "https://github.com/hacer-bark/base64-turbo/issues/")]

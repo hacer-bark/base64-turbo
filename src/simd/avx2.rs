@@ -7,14 +7,18 @@ use core::arch::x86_64::*;
 pub unsafe fn encode_slice_avx2(config: &Config, input: &[u8], mut dst: *mut u8) {
     let len = input.len();
     let mut src = input.as_ptr();
-    let mut i = 0;
 
+    // Shuffle for later multiplier
     let shuffle = _mm256_setr_epi8(
         1, 0, 2, 1, 4, 3, 5, 4, 7, 6, 8, 7, 10, 9, 11, 10,
         1, 0, 2, 1, 4, 3, 5, 4, 7, 6, 8, 7, 10, 9, 11, 10,
     );
-    let mask_6bit = _mm256_set1_epi16(0x003F);
-    let mask_hi_bits = _mm256_set1_epi16(0x3F00);
+
+    // Masks for bit extraction
+    let mask_lo_6bits = _mm256_set1_epi16(0x003F);
+    let mask_hi_6bits = _mm256_set1_epi16(0x3F00);
+
+    // Multiplier for shift of bytes.
     let mul_right_shift = _mm256_setr_epi16(
         0x0040, 0x0400, 0x0040, 0x0400, 0x0040, 0x0400, 0x0040, 0x0400,
         0x0040, 0x0400, 0x0040, 0x0400, 0x0040, 0x0400, 0x0040, 0x0400
@@ -24,112 +28,98 @@ pub unsafe fn encode_slice_avx2(config: &Config, input: &[u8], mut dst: *mut u8)
         0x0010, 0x0100, 0x0010, 0x0100, 0x0010, 0x0100, 0x0010, 0x0100
     );
 
-    let set_25 = _mm256_set1_epi8(25);
-    let set_51 = _mm256_set1_epi8(51);
-    let set_61 = _mm256_set1_epi8(61);
-    let set_63 = _mm256_set1_epi8(63);
-
+    // Mapping logic for letters
     let offset_base = _mm256_set1_epi8(65);
-    let delta_25 = _mm256_set1_epi8(6);
-    let delta_51 = _mm256_set1_epi8(-75);
+    let set_25 = _mm256_set1_epi8(25);
+    let delta_lower = _mm256_set1_epi8(6);
+    let set_51 = _mm256_set1_epi8(51);
 
-    let (val_61, val_63) = if config.url_safe { (-13, 49) } else { (-15, 3) };
-    let delta_61 = _mm256_set1_epi8(val_61);
-    let delta_63 = _mm256_set1_epi8(val_63);
+    // Mapping for numbers and special chars
+    let (sym_plus, sym_slash) = if config.url_safe { (-88, -39) } else { (-90, -87) };
+    let lut_offsets = _mm256_setr_epi8(
+        0, -75, -75, -75, -75, -75, -75, -75, -75, -75, -75, sym_plus, sym_slash, 0, 0, 0,
+        0, -75, -75, -75, -75, -75, -75, -75, -75, -75, -75, sym_plus, sym_slash, 0, 0, 0
+    );
 
-    macro_rules! process_indices {
-        ($indices:expr) => {{
-            let gt_25 = _mm256_cmpgt_epi8($indices, set_25);
-            let gt_51 = _mm256_cmpgt_epi8($indices, set_51);
-            let gt_61 = _mm256_cmpgt_epi8($indices, set_61);
-            let eq_63 = _mm256_cmpeq_epi8($indices, set_63);
+    macro_rules! encode_vec {
+        ($in_vec:expr) => {{
+            // Compute 3 bytes => 4 letters
+            let v = _mm256_shuffle_epi8($in_vec, shuffle);
 
-            let d25 = _mm256_and_si256(gt_25, delta_25);
-            let d51 = _mm256_and_si256(gt_51, delta_51);
-            let d61 = _mm256_and_si256(gt_61, delta_61);
-            let d63 = _mm256_and_si256(eq_63, delta_63);
+            let hi = _mm256_mulhi_epu16(v, mul_right_shift);
+            let lo = _mm256_mullo_epi16(v, mul_left_shift);
+            let indices = _mm256_or_si256(
+                _mm256_and_si256(hi, mask_lo_6bits),
+                _mm256_and_si256(lo, mask_hi_6bits),
+            );
 
-            let sum_a = _mm256_add_epi8(d25, d51);
-            let sum_b = _mm256_add_epi8(d61, d63);
-            let sum_c = _mm256_add_epi8(sum_a, sum_b);
-            
-            let offset = _mm256_add_epi8(sum_c, offset_base);
-            _mm256_add_epi8($indices, offset)
+            // Found char values offsets
+            let mut char_val = _mm256_add_epi8(indices, offset_base);
+            let offset_lower = _mm256_and_si256(_mm256_cmpgt_epi8(indices, set_25), delta_lower);
+            char_val = _mm256_add_epi8(char_val, offset_lower);
+
+            // Found numbers and special symbols offsets
+            let offset_special = _mm256_shuffle_epi8(lut_offsets, _mm256_subs_epu8(indices, set_51));
+
+            // Final sum
+            _mm256_add_epi8(char_val, offset_special)
         }};
     }
 
-    let safe_len = len.saturating_sub(48);
-    let aligned_len = safe_len - (safe_len % 48);
-    let src_end_aligned = unsafe { src.add(aligned_len) };
-
-    while src < src_end_aligned {
-        // Chunk 1
-        let c1_0 = unsafe { _mm_loadu_si128(src as *const __m128i) };
-        let c1_1 = unsafe { _mm_loadu_si128(src.add(12) as *const __m128i) };
-        let v1_in = _mm256_inserti128_si256(_mm256_castsi128_si256(c1_0), c1_1, 1);
-        // let v1_in = unsafe { _mm256_loadu_si256(src as *const __m256i) };
-        let v1 = _mm256_shuffle_epi8(v1_in, shuffle);
-
-        let hi1 = _mm256_mulhi_epu16(v1, mul_right_shift);
-        let lo1 = _mm256_mullo_epi16(v1, mul_left_shift);
-        let idx1 = _mm256_or_si256(
-            _mm256_and_si256(hi1, mask_6bit),
-            _mm256_and_si256(lo1, mask_hi_bits)
-        );
-
-        // Chunk 2
-        let c2_0 = unsafe { _mm_loadu_si128(src.add(24) as *const __m128i) };
-        let c2_1 = unsafe { _mm_loadu_si128(src.add(36) as *const __m128i) };
-        let v2_in = _mm256_inserti128_si256(_mm256_castsi128_si256(c2_0), c2_1, 1);
-        let v2 = _mm256_shuffle_epi8(v2_in, shuffle);
-
-        let hi2 = _mm256_mulhi_epu16(v2, mul_right_shift);
-        let lo2 = _mm256_mullo_epi16(v2, mul_left_shift);
-        let idx2 = _mm256_or_si256(
-            _mm256_and_si256(hi2, mask_6bit),
-            _mm256_and_si256(lo2, mask_hi_bits)
-        );
-
-        // Process
-        let res1 = process_indices!(idx1);
-        let res2 = process_indices!(idx2);
-
-        // Store
-        unsafe { _mm256_storeu_si256(dst as *mut __m256i, res1) };
-        unsafe { _mm256_storeu_si256(dst.add(32) as *mut __m256i, res2) };
-
-        src = unsafe { src.add(48) };
-        dst = unsafe { dst.add(64) };
-        i += 48;
+    macro_rules! load_24_bytes {
+        ($ptr:expr) => {{
+            let c_lo = unsafe { _mm_loadu_si128($ptr as *const __m128i) };
+            let c_hi = unsafe { _mm_loadu_si128($ptr.add(12) as *const __m128i) };
+            _mm256_inserti128_si256(_mm256_castsi128_si256(c_lo), c_hi, 1)
+        }};
     }
 
-    let safe_len_single = len.saturating_sub(8);
+    // Process 96 bytes (4 chunks) at a time
+    let safe_len_96 = len.saturating_sub(4);
+    let aligned_len_96 = safe_len_96 - (safe_len_96 % 96);
+    let src_end_96 = unsafe { src.add(aligned_len_96) };
+
+    while src < src_end_96 {
+        // Load 4 vectors
+        let v0 = load_24_bytes!(src);
+        let v1 = load_24_bytes!(src.add(24));
+        let v2 = load_24_bytes!(src.add(48));
+        let v3 = load_24_bytes!(src.add(72));
+
+        // Process
+        let i0 = encode_vec!(v0);
+        let i1 = encode_vec!(v1);
+        let i2 = encode_vec!(v2);
+        let i3 = encode_vec!(v3);
+
+        // Store 4 chunks
+        unsafe { _mm256_storeu_si256(dst as *mut __m256i, i0) };
+        unsafe { _mm256_storeu_si256(dst.add(32) as *mut __m256i, i1) };
+        unsafe { _mm256_storeu_si256(dst.add(64) as *mut __m256i, i2) };
+        unsafe { _mm256_storeu_si256(dst.add(96) as *mut __m256i, i3) };
+
+        src = unsafe { src.add(96) };
+        dst = unsafe { dst.add(128) };
+    }
+
+    // Process remaining 24-byte chunks
+    let safe_len_single = len.saturating_sub(4);
     let aligned_len_single = safe_len_single - (safe_len_single % 24);
     let src_end_single = unsafe { input.as_ptr().add(aligned_len_single) };
 
     while src < src_end_single {
-        let chunk0 = unsafe { _mm_loadu_si128(src as *const __m128i) };
-        let chunk1 = unsafe { _mm_loadu_si128(src.add(12) as *const __m128i) };
-        let v_in = _mm256_inserti128_si256(_mm256_castsi128_si256(chunk0), chunk1, 1);
-        let v = _mm256_shuffle_epi8(v_in, shuffle);
-        
-        let hi = _mm256_mulhi_epu16(v, mul_right_shift);
-        let lo = _mm256_mullo_epi16(v, mul_left_shift);
-        let indices = _mm256_or_si256(
-            _mm256_and_si256(hi, mask_6bit),
-            _mm256_and_si256(lo, mask_hi_bits),
-        );
-
-        let res = process_indices!(indices);
+        let v = load_24_bytes!(src);
+        let res = encode_vec!(v);
         unsafe { _mm256_storeu_si256(dst as *mut __m256i, res) };
 
         src = unsafe { src.add(24) };
         dst = unsafe { dst.add(32) };
-        i += 24;
     }
 
-    if i < len {
-        unsafe { scalar::encode_slice_unsafe(config, &input[i..], dst) };
+    // Scalar Fallback
+    let processed_len = unsafe { src.offset_from(input.as_ptr()) } as usize;
+    if processed_len < len {
+        unsafe { scalar::encode_slice_unsafe(config, &input[processed_len..], dst) };
     }
 }
 
@@ -137,166 +127,155 @@ pub unsafe fn encode_slice_avx2(config: &Config, input: &[u8], mut dst: *mut u8)
 pub unsafe fn decode_slice_avx2(config: &Config, input: &[u8], mut dst: *mut u8) -> Result<usize, Error> {
     let len = input.len();
     let mut src = input.as_ptr();
-    let mut i = 0;
     let dst_start = dst;
 
-    // --- CONSTANTS ---
-    let range_a = _mm256_set1_epi8(b'A' as i8 - 1);
-    let range_z = _mm256_set1_epi8(b'Z' as i8 + 1);
-    let range_lower_a = _mm256_set1_epi8(b'a' as i8 - 1);
-    let range_lower_z = _mm256_set1_epi8(b'z' as i8 + 1);
-    let range_0 = _mm256_set1_epi8(b'0' as i8 - 1);
-    let range_9 = _mm256_set1_epi8(b'9' as i8 + 1);
+    // LUT for offsets based on high nibble (bits 4-7). 
+    // This maps the high nibble to the value needed to add to the char to get the index.
+    // 0x2_: '+'(43) -> 62 (diff +19).
+    // 0x3_: '0'(48) -> 52 (diff +4).
+    // 0x4_: 'A'(65) -> 0  (diff -65).
+    // 0x5_: 'P'(80) -> 15 (diff -65).
+    // 0x6_: 'a'(97) -> 26 (diff -71).
+    // 0x7_: 'p'(112)-> 41 (diff -71).
+    let lut_hi_nibble = _mm256_setr_epi8(
+        0, 0, 19, 4, -65, -65, -71, -71, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 19, 4, -65, -65, -71, -71, 0, 0, 0, 0, 0, 0, 0, 0,
+    );
 
-    // Deltas to map ASCII to Base64 Index
-    // 'A' (65) -> 0.  Delta = -65.
-    // 'a' (97) -> 26. Delta = -71.
-    // '0' (48) -> 52. Delta = 4.
-    let delta_upper = _mm256_set1_epi8(-65);
-    let delta_lower = _mm256_set1_epi8(-71);
-    let delta_digit = _mm256_set1_epi8(4);
+    let (char_62, char_63) = if config.url_safe { (b'-', b'_') } else { (b'+', b'/') };
+    let sym_62 = _mm256_set1_epi8(char_62 as i8);
+    let sym_63 = _mm256_set1_epi8(char_63 as i8);
 
-    let (s62, s63) = if config.url_safe { (b'-', b'_') } else { (b'+', b'/') };
-    let sym_62 = _mm256_set1_epi8(s62 as i8);
-    let sym_63 = _mm256_set1_epi8(s63 as i8);
+    let (fix_62, fix_63) = if config.url_safe { (-2, 33) } else { (0, -3) };
+    let delta_62 = _mm256_set1_epi8(fix_62);
+    let delta_63 = _mm256_set1_epi8(fix_63);
 
-    // For the symbols, we blend in the final index directly
-    let val_62 = _mm256_set1_epi8(62);
-    let val_63 = _mm256_set1_epi8(63);
+    // Range Validation Constants
+    // We use saturating subtraction to check ranges.
+    // If (val - base) <= len, it is valid.
+    let range_0 = _mm256_set1_epi8(b'0' as i8);
+    let range_9_len = _mm256_set1_epi8(9);
 
-    // Packing constants
+    let range_a = _mm256_set1_epi8(b'A' as i8);
+    let range_z_len = _mm256_set1_epi8(25);
+
+    let range_a_low = _mm256_set1_epi8(b'a' as i8);
+    let range_z_low_len = _mm256_set1_epi8(25);
+
+    // Packing Constants
     let pack_l1 = unsafe { _mm256_loadu_si256(PACK_L1.as_ptr() as *const __m256i) };
     let pack_l2 = unsafe { _mm256_loadu_si256(PACK_L2.as_ptr() as *const __m256i) };
     let pack_shuffle = unsafe { _mm256_loadu_si256(PACK_SHUFFLE.as_ptr() as *const __m256i) };
 
-    // --- MACRO ---
-    macro_rules! process_chunk {
-        ($v:expr) => {{
-            // 1. Generate Masks
-            // Upper Case ('A'..'Z')
-            let mask_upper = _mm256_and_si256(
-                _mm256_cmpgt_epi8($v, range_a),
-                _mm256_cmpgt_epi8(range_z, $v)
+    // Masks for nibble extraction
+    let mask_hi_nibble = _mm256_set1_epi8(0x0F);
+
+    // Decode & Validate Single Vector
+    macro_rules! decode_vec {
+        ($input:expr) => {{
+            let hi = _mm256_and_si256(_mm256_srli_epi16($input, 4), mask_hi_nibble);
+            let offset = _mm256_shuffle_epi8(lut_hi_nibble, hi);
+            let mut indices = _mm256_add_epi8($input, offset);
+
+            let mask_62 = _mm256_cmpeq_epi8($input, sym_62);
+            let mask_63 = _mm256_cmpeq_epi8($input, sym_63);
+
+            let fix = _mm256_or_si256(
+                _mm256_and_si256(mask_62, delta_62),
+                _mm256_and_si256(mask_63, delta_63),
+            );
+            indices = _mm256_add_epi8(indices, fix);
+
+            let is_sym = _mm256_or_si256(mask_62, mask_63);
+
+            let sub_0 = _mm256_subs_epu8(_mm256_sub_epi8($input, range_0), range_9_len);
+            let sub_a = _mm256_subs_epu8(_mm256_sub_epi8($input, range_a), range_z_len);
+            let sub_a_low = _mm256_subs_epu8(_mm256_sub_epi8($input, range_a_low), range_z_low_len);
+
+            let err = _mm256_andnot_si256(
+                is_sym,
+                _mm256_and_si256(sub_0, _mm256_and_si256(sub_a, sub_a_low)),
             );
 
-            // Lower Case ('a'..'z')
-            let mask_lower = _mm256_and_si256(
-                _mm256_cmpgt_epi8($v, range_lower_a),
-                _mm256_cmpgt_epi8(range_lower_z, $v)
-            );
-
-            // Digits ('0'..'9')
-            let mask_digit = _mm256_and_si256(
-                _mm256_cmpgt_epi8($v, range_0),
-                _mm256_cmpgt_epi8(range_9, $v)
-            );
-
-            // Symbols
-            let mask_62 = _mm256_cmpeq_epi8($v, sym_62);
-            let mask_63 = _mm256_cmpeq_epi8($v, sym_63);
-
-            // 2. Error Check
-            let any_valid = _mm256_or_si256(
-                _mm256_or_si256(mask_upper, mask_lower),
-                _mm256_or_si256(mask_digit, _mm256_or_si256(mask_62, mask_63))
-            );
-
-            if _mm256_movemask_epi8(any_valid) as u32 != 0xFFFFFFFF {
-                return Err(Error::InvalidCharacter);
-            }
-
-            // 3. Calculate Delta/Index using Blends
-            // If mask_62 is set, result is 62. Else 0.
-            let mut acc = _mm256_and_si256(mask_62, val_62);
-            // If mask_63 is set, result is 63. Else keep prev.
-            acc = _mm256_or_si256(acc, _mm256_and_si256(mask_63, val_63));
-
-            // We use the "overwrite" strategy:
-            // indices = (v + delta_range) OR (val_symbol)
-
-            let mut delta = _mm256_setzero_si256();
-            delta = _mm256_blendv_epi8(delta, delta_upper, mask_upper);
-            delta = _mm256_blendv_epi8(delta, delta_lower, mask_lower);
-            delta = _mm256_blendv_epi8(delta, delta_digit, mask_digit);
-            
-            let range_indices = _mm256_add_epi8($v, delta);
-
-            // Combine: The symbol masks (62/63) have 0 in range_indices (because delta was 0, and v is symbol code, result is garbage but ignored).
-            // Actually, blending is safer.
-            let res = _mm256_or_si256(
-                _mm256_andnot_si256(_mm256_or_si256(mask_62, mask_63), range_indices),
-                acc
-            );
-            res
+            (indices, err)
         }};
     }
 
-    // --- MAIN LOOP (64 bytes in -> 48 bytes out) ---
-    // Safe buffer for 64-byte reads
-    let safe_len = len.saturating_sub(64);
-    let aligned_len = safe_len - (safe_len % 64);
-    let src_end_aligned = unsafe { src.add(aligned_len) };
-
-    while src < src_end_aligned {
-        let v_1 = unsafe { _mm256_loadu_si256(src as *const __m256i) };
-        let v_2 = unsafe { _mm256_loadu_si256(src.add(32) as *const __m256i) };
-
-        let idx_1 = process_chunk!(v_1);
-        let idx_2 = process_chunk!(v_2);
-
-        // Pack 32 bytes -> 24 bytes
-        let m1 = _mm256_maddubs_epi16(idx_1, pack_l1);
-        let p1 = _mm256_madd_epi16(m1, pack_l2);
-        let out_1 = _mm256_shuffle_epi8(p1, pack_shuffle);
-
-        let m2 = _mm256_maddubs_epi16(idx_2, pack_l1);
-        let p2 = _mm256_madd_epi16(m2, pack_l2);
-        let out_2 = _mm256_shuffle_epi8(p2, pack_shuffle);
-
-        // Store Logic
-        // Chunk 1 stores
-        let lane1_lo = _mm256_castsi256_si128(out_1);
-        let lane1_hi = _mm256_extracti128_si256(out_1, 1);
-        unsafe { _mm_storeu_si128(dst as *mut __m128i, lane1_lo) };
-        unsafe { _mm_storeu_si128(dst.add(12) as *mut __m128i, lane1_hi) };
-
-        // Chunk 2 stores
-        let lane2_lo = _mm256_castsi256_si128(out_2);
-        let lane2_hi = _mm256_extracti128_si256(out_2, 1);
-        unsafe { _mm_storeu_si128(dst.add(24) as *mut __m128i, lane2_lo) };
-        unsafe { _mm_storeu_si128(dst.add(36) as *mut __m128i, lane2_hi) };
-
-        src = unsafe { src.add(64) };
-        dst = unsafe { dst.add(48) };
-        i += 64;
+    macro_rules! pack_and_store {
+        ($indices:expr, $dst_ptr:expr) => {{
+            let m = _mm256_maddubs_epi16($indices, pack_l1);
+            let p = _mm256_madd_epi16(m, pack_l2);
+            let out = _mm256_shuffle_epi8(p, pack_shuffle);
+            
+            let lane_lo = _mm256_castsi256_si128(out);
+            let lane_hi = _mm256_extracti128_si256(out, 1);
+            
+            unsafe { _mm_storeu_si128($dst_ptr as *mut __m128i, lane_lo) };
+            unsafe { _mm_storeu_si128($dst_ptr.add(12) as *mut __m128i, lane_hi) };
+        }};
     }
 
-    // --- REMAINDER LOOP (32 bytes in -> 24 bytes out) ---
-    let safe_len_single = len.saturating_sub(32);
-    let aligned_len_single = safe_len_single - (safe_len_single % 32);
-    let src_end_single = unsafe { input.as_ptr().add(aligned_len_single) };
+    // Process 128 bytes (4 chunks) at a time
+    let safe_len_128 = len.saturating_sub(4);
+    let aligned_len_128 = safe_len_128 - (safe_len_128 % 128);
+    let src_end_128 = unsafe { src.add(aligned_len_128) };
 
-    while src < src_end_single {
+    while src < src_end_128 {
+        // Load 4 vectors
+        let v0 = unsafe { _mm256_loadu_si256(src as *const __m256i) };
+        let v1 = unsafe { _mm256_loadu_si256(src.add(32) as *const __m256i) };
+        let v2 = unsafe { _mm256_loadu_si256(src.add(64) as *const __m256i) };
+        let v3 = unsafe { _mm256_loadu_si256(src.add(96) as *const __m256i) };
+
+        // Process
+        let (i0, e0) = decode_vec!(v0);
+        let (i1, e1) = decode_vec!(v1);
+        let (i2, e2) = decode_vec!(v2);
+        let (i3, e3) = decode_vec!(v3);
+
+        // Check Errors
+        let err_any = _mm256_or_si256(
+            _mm256_or_si256(e0, e1), 
+            _mm256_or_si256(e2, e3)
+        );
+
+        if _mm256_testz_si256(err_any, err_any) != 1 {
+            return Err(Error::InvalidCharacter);
+        }
+
+        // Store 4 chunks
+        pack_and_store!(i0, dst);
+        pack_and_store!(i1, dst.add(24));
+        pack_and_store!(i2, dst.add(48));
+        pack_and_store!(i3, dst.add(72));
+
+        src = unsafe { src.add(128) };
+        dst = unsafe { dst.add(96) };
+    }
+
+    // Process remaining 32-byte chunks
+    let safe_len_32 = len.saturating_sub(4);
+    let aligned_len_32 = safe_len_32 - (safe_len_32 % 32);
+    let src_end_32 = unsafe { input.as_ptr().add(aligned_len_32) };
+
+    while src < src_end_32 {
         let v = unsafe { _mm256_loadu_si256(src as *const __m256i) };
-        let idx = process_chunk!(v);
+        let (idx, err) = decode_vec!(v);
 
-        let m = _mm256_maddubs_epi16(idx, pack_l1);
-        let p = _mm256_madd_epi16(m, pack_l2);
-        let out = _mm256_shuffle_epi8(p, pack_shuffle);
+        if _mm256_testz_si256(err, err) != 1 {
+            return Err(Error::InvalidCharacter);
+        }
 
-        let lane_lo = _mm256_castsi256_si128(out);
-        let lane_hi = _mm256_extracti128_si256(out, 1);
-        unsafe { _mm_storeu_si128(dst as *mut __m128i, lane_lo) };
-        unsafe { _mm_storeu_si128(dst.add(12) as *mut __m128i, lane_hi) };
+        pack_and_store!(idx, dst);
 
         src = unsafe { src.add(32) };
         dst = unsafe { dst.add(24) };
-        i += 32;
     }
 
-    // --- SCALAR FALLBACK ---
-    if i < len {
-        dst = unsafe { dst.add(scalar::decode_slice_unsafe(config, &input[i..], dst)?) };
+    // Scalar Fallback
+    let processed_len = unsafe { src.offset_from(input.as_ptr()) } as usize;
+    if processed_len < len {
+        dst = unsafe { dst.add(scalar::decode_slice_unsafe(config, &input[processed_len..], dst)?) };
     }
 
     Ok(unsafe { dst.offset_from(dst_start) } as usize)

@@ -37,7 +37,7 @@ fn bench_comparison(c: &mut Criterion) {
 
     // Logarithmic scaling is essential for viewing 32B vs 10MB
     group.plot_config(PlotConfiguration::default().summary_scale(AxisScale::Logarithmic));
-    group.measurement_time(Duration::from_secs(30));
+    group.measurement_time(Duration::from_secs(15));
     group.warm_up_time(Duration::from_secs(5));
     group.noise_threshold(0.05);
 
@@ -56,9 +56,9 @@ fn bench_comparison(c: &mut Criterion) {
 
         // Dynamic configuration: Reduce sample count for large files to keep bench time reasonable
         if *size > 1_000_000 {
-            group.sample_size(100);
+            group.sample_size(50);
         } else {
-            group.sample_size(500);
+            group.sample_size(250);
         }
 
         // ======================================================================

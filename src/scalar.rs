@@ -52,9 +52,9 @@ pub unsafe fn encode_slice_unsafe(config: &Config, input: &[u8], mut dst: *mut u
                 let reg_a = (src as *const u32).read_unaligned().to_be();
                 // Read bytes 2..6 (Overlap bytes 2 and 3)
                 let reg_b = (src.add(2) as *const u32).read_unaligned().to_be();
-                
+
                 // Extract the specific 24 bits we need for each 4-char block
-                let n1 = (reg_a >> 8) as usize;       // Bytes 0, 1, 2
+                let n1 = (reg_a >> 8) as usize; // Bytes 0, 1, 2
                 let n2 = (reg_b & 0x00_FF_FF_FF) as usize; // Bytes 3, 4, 5
                 (n1, n2)
             };
