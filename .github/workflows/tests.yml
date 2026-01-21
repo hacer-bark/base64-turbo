@@ -17,7 +17,7 @@ jobs:
       matrix:
         include:
           # 0. no_std: Pure Scalar (SIMD off, Parallel off)
-          - name: Scalar Only
+          - name: no_std
             features: ""
 
           # 1. Baseline: Pure Scalar (SIMD off, Parallel off)
