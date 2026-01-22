@@ -1,79 +1,119 @@
 use crate::{Error, Config, scalar};
 use super::{PACK_L1, PACK_L2, PACK_SHUFFLE};
 
+// TODO: Consider add special AVX-512VBMI support
 use core::arch::x86_64::*;
 
 #[target_feature(enable = "avx512f,avx512bw")]
 pub unsafe fn encode_slice_avx512(config: &Config, input: &[u8], mut dst: *mut u8) {
     let len = input.len();
     let mut src = input.as_ptr();
-    let mut i = 0;
 
-    let safe_len = len.saturating_sub(16);
-    let aligned_len = safe_len - (safe_len % 48);
-    let src_end_aligned = unsafe { src.add(aligned_len) };
+    // Shuffle bytes for mul
+    let shuffle = _mm512_broadcast_i32x4( _mm_setr_epi8(1, 0, 2, 1, 4, 3, 5, 4, 7, 6, 8, 7, 10, 9, 11, 10));
 
-    let shuffle_128 = _mm_setr_epi8(
-        1, 0, 2, 1, 4, 3, 5, 4, 7, 6, 8, 7, 10, 9, 11, 10,
-    );
-    let shuffle = _mm512_broadcast_i32x4(shuffle_128);
-    let permute_indices = _mm512_setr_epi32(
-        0, 1, 2, 0, 3, 4, 5, 0, 6, 7, 8, 0, 9, 10, 11, 0,
-    );
+    // Masks and multiplier
+    let mask_lo_6bits = _mm512_set1_epi16(0x003F);
+    let mask_hi_6bits = _mm512_set1_epi16(0x3F00);
+    let mul_right_shift = _mm512_set1_epi32(0x04000040);
+    let mul_left_shift  = _mm512_set1_epi32(0x01000010);
 
-    let mask_6bit = _mm512_set1_epi16(0x003F);
-    let mask_hi_bits = _mm512_set1_epi16(0x3F00);
-
-    let mul_right_shift = _mm512_set1_epi32(0x04000040); 
-    let mul_left_shift = _mm512_set1_epi32(0x01000010);
-
-    let set_25 = _mm512_set1_epi8(25);
-    let set_51 = _mm512_set1_epi8(51);
-    let set_61 = _mm512_set1_epi8(61);
-    let set_63 = _mm512_set1_epi8(63);
-
+    // Character mapping
     let offset_base = _mm512_set1_epi8(65);
-    let delta_25 = _mm512_set1_epi8(6);
-    let delta_51 = _mm512_set1_epi8(-75);
+    let set_25 = _mm512_set1_epi8(25);
+    let delta_lower = _mm512_set1_epi8(6); 
+    let set_51 = _mm512_set1_epi8(51);
 
-    let (val_61, val_63) = if config.url_safe { (-13, 49) } else { (-15, 3) };
-    let delta_61 = _mm512_set1_epi8(val_61);
-    let delta_63 = _mm512_set1_epi8(val_63);
+    // LUT Table for numbers and special chars
+    let (sym_plus, sym_slash) = if config.url_safe { (-88, -39) } else { (-90, -87) };
+    let lut_offsets = _mm512_broadcast_i32x4(_mm_setr_epi8(0, -75, -75, -75, -75, -75, -75, -75, -75, -75, -75, sym_plus, sym_slash, 0, 0, 0));
 
-    while src < src_end_aligned {
-        let raw_bytes = unsafe { _mm512_maskz_loadu_epi8(0x0000_FFFF_FFFF_FFFF, src as *const _) };
+    macro_rules! encode_vec {
+        ($in_vec:expr) => {{
+            // Compute 3 bytes => 4 letters
+            let v = _mm512_shuffle_epi8($in_vec, shuffle);
 
-        let v_aligned = _mm512_permutexvar_epi32(permute_indices, raw_bytes);
+            let lo = _mm512_mullo_epi16(v, mul_left_shift);
+            let hi = _mm512_mulhi_epu16(v, mul_right_shift);
+            let indices = _mm512_or_si512(
+                _mm512_and_si512(hi, mask_lo_6bits),
+                _mm512_and_si512(lo, mask_hi_6bits),
+            );
 
-        let v = _mm512_shuffle_epi8(v_aligned, shuffle);
+            // Compute letters offsets
+            let mut char_val = _mm512_add_epi8(indices, offset_base);
+            let m_gt25 = _mm512_cmpgt_epi8_mask(indices, set_25);
+            char_val = _mm512_mask_add_epi8(char_val, m_gt25, char_val, delta_lower);
 
-        let res_low = _mm512_and_si512(_mm512_mulhi_epu16(v, mul_right_shift), mask_6bit);
-        let res_high = _mm512_and_si512(_mm512_mullo_epi16(v, mul_left_shift), mask_hi_bits);
-        
-        let indices = _mm512_or_si512(res_low, res_high);
+            // Compute special chars offset
+            let offset_special = _mm512_shuffle_epi8(lut_offsets, _mm512_subs_epu8(indices, set_51));
+            
+            _mm512_add_epi8(char_val, offset_special)
+        }};
+    }
 
-        let gt_25 = _mm512_cmpgt_epi8_mask(indices, set_25);
-        let gt_51 = _mm512_cmpgt_epi8_mask(indices, set_51);
-        let gt_61 = _mm512_cmpgt_epi8_mask(indices, set_61);
-        let eq_63 = _mm512_cmpeq_epi8_mask(indices, set_63);
+    macro_rules! load_48_bytes {
+        ($ptr:expr) => {{
+            let p = $ptr;
+            let v0 = unsafe { _mm_loadu_si128(p as *const _) }; 
+            let v1 = unsafe {_mm_loadu_si128(p.add(12) as *const _) };
+            let v2 = unsafe { _mm_loadu_si128(p.add(24) as *const _) };
+            let v3 = unsafe { _mm_loadu_si128(p.add(36) as *const _) };
 
-        let mut total_offset = offset_base;
-        total_offset = _mm512_mask_add_epi8(total_offset, gt_25, total_offset, delta_25);
-        total_offset = _mm512_mask_add_epi8(total_offset, gt_51, total_offset, delta_51);
-        total_offset = _mm512_mask_add_epi8(total_offset, gt_61, total_offset, delta_61);
-        total_offset = _mm512_mask_add_epi8(total_offset, eq_63, total_offset, delta_63);
+            // Combine into ZMM
+            let z = _mm512_castsi128_si512(v0);
+            let z = _mm512_inserti32x4(z, v1, 1);
+            let z = _mm512_inserti32x4(z, v2, 2);
+            _mm512_inserti32x4(z, v3, 3)
+        }};
+    }
 
-        let result = _mm512_add_epi8(indices, total_offset);
+    // Process 192 bytes (4 chunks) at a time
+    let safe_len_192 = len.saturating_sub(4);
+    let aligned_len_192 = safe_len_192 - (safe_len_192 % 192);
+    let src_end_192 = unsafe { src.add(aligned_len_192) };
 
-        unsafe { _mm512_storeu_si512(dst as *mut _, result) };
+    while src < src_end_192 {
+        // Load 4 vectors
+        let v0 = load_48_bytes!(src);
+        let v1 = load_48_bytes!(unsafe { src.add(48) });
+        let v2 = load_48_bytes!(unsafe { src.add(96) });
+        let v3 = load_48_bytes!(unsafe { src.add(144) });
+
+        // Process
+        let i0 = encode_vec!(v0);
+        let i1 = encode_vec!(v1);
+        let i2 = encode_vec!(v2);
+        let i3 = encode_vec!(v3);
+
+        // Store results
+        unsafe { _mm512_storeu_si512(dst as *mut _, i0) };
+        unsafe { _mm512_storeu_si512(dst.add(64) as *mut _, i1) };
+        unsafe { _mm512_storeu_si512(dst.add(128) as *mut _, i2) };
+        unsafe { _mm512_storeu_si512(dst.add(192) as *mut _, i3) };
+
+        src = unsafe { src.add(192) };
+        dst = unsafe { dst.add(256) };
+    }
+
+    // Process remaining 48-byte chunks
+    let safe_len_single = len.saturating_sub(4);
+    let aligned_len_single = safe_len_single - (safe_len_single % 48);
+    let src_end_single = unsafe { input.as_ptr().add(aligned_len_single) };
+
+    while src < src_end_single {
+        let v = load_48_bytes!(src);
+        let res = encode_vec!(v);
+        unsafe { _mm512_storeu_si512(dst as *mut _, res) };
 
         src = unsafe { src.add(48) };
         dst = unsafe { dst.add(64) };
-        i += 48;
     }
 
-    if i < len {
-        unsafe { scalar::encode_slice_unsafe(config, &input[i..], dst) };
+    // Scalar Fallback
+    let processed_len = unsafe { src.offset_from(input.as_ptr()) } as usize;
+    if processed_len < len {
+        unsafe { scalar::encode_slice_unsafe(config, &input[processed_len..], dst) };
     }
 }
 
@@ -81,102 +121,153 @@ pub unsafe fn encode_slice_avx512(config: &Config, input: &[u8], mut dst: *mut u
 pub unsafe fn decode_slice_avx512(config: &Config, input: &[u8], mut dst: *mut u8) -> Result<usize, Error> {
     let len = input.len();
     let mut src = input.as_ptr();
-    let mut i = 0;
     let dst_start = dst;
 
-    let safe_len = len.saturating_sub(64);
-    let aligned_len = safe_len - (safe_len % 64);
-    let src_end_aligned = unsafe { src.add(aligned_len) };
+    // LUT for offsets based on high nibble (bits 4-7). 
+    let lut_hi_nibble = _mm512_broadcast_i32x4(_mm_setr_epi8(0, 0, 19, 4, -65, -65, -71, -71, 0, 0, 0, 0, 0, 0, 0, 0));
 
-    let range_a = _mm512_set1_epi8(b'a' as i8);
-    let range_z = _mm512_set1_epi8(b'z' as i8);
-    let range_capital_a = _mm512_set1_epi8(b'A' as i8);
-    let range_capital_z = _mm512_set1_epi8(b'Z' as i8);
+    // Range and offsets of special chars
+    let (char_62, char_63) = if config.url_safe { (b'-', b'_') } else { (b'+', b'/') };
+    let sym_62 = _mm512_set1_epi8(char_62 as i8);
+    let sym_63 = _mm512_set1_epi8(char_63 as i8);
+
+    let (fix_62, fix_63) = if config.url_safe { (-2, 33) } else { (0, -3) };
+    let delta_62 = _mm512_set1_epi8(fix_62);
+    let delta_63 = _mm512_set1_epi8(fix_63);
+
+    // Range Validation Constants
     let range_0 = _mm512_set1_epi8(b'0' as i8);
-    let range_9 = _mm512_set1_epi8(b'9' as i8);
+    let range_9_len = _mm512_set1_epi8(9);
 
-    let (sym_62, sym_63) = if config.url_safe { (b'-', b'_') } else { (b'+', b'/') };
-    let char_62 = _mm512_set1_epi8(sym_62 as i8);
-    let char_63 = _mm512_set1_epi8(sym_63 as i8);
+    let range_a = _mm512_set1_epi8(b'A' as i8);
+    let range_z_len = _mm512_set1_epi8(25);
 
-    let delta_lower = _mm512_set1_epi8(-71);
-    let delta_upper = _mm512_set1_epi8(-65);
-    let delta_digit = _mm512_set1_epi8(4);
-    let val_dash = _mm512_set1_epi8(62);
-    let val_under = _mm512_set1_epi8(63);
+    let range_a_low = _mm512_set1_epi8(b'a' as i8);
+    let range_z_low_len = _mm512_set1_epi8(25);
 
-    let pack_l1_128 = unsafe { _mm_loadu_si128(PACK_L1.as_ptr() as *const __m128i) };
-    let pack_l1 = _mm512_broadcast_i32x4(pack_l1_128);
+    // Packing Constants
+    let pack_l1 = unsafe { _mm512_broadcast_i32x4(_mm_loadu_si128(PACK_L1.as_ptr() as *const __m128i)) };
+    let pack_l2 = unsafe { _mm512_broadcast_i32x4(_mm_loadu_si128(PACK_L2.as_ptr() as *const __m128i)) };
+    let pack_shuffle = unsafe { _mm512_broadcast_i32x4(_mm_loadu_si128(PACK_SHUFFLE.as_ptr() as *const __m128i)) };
 
-    let pack_l2_128 = unsafe { _mm_loadu_si128(PACK_L2.as_ptr() as *const __m128i) };
-    let pack_l2 = _mm512_broadcast_i32x4(pack_l2_128);
+    // Masks for nibble extraction and zeros
+    let mask_hi_nibble = _mm512_set1_epi8(0x0F);
+    let zeros = _mm512_setzero_si512();
 
-    let pack_shuffle_128 = unsafe { _mm_loadu_si128(PACK_SHUFFLE.as_ptr() as *const __m128i) };
-    let pack_shuffle = _mm512_broadcast_i32x4(pack_shuffle_128);
+    // Decode & Validate Single Vector
+    // TODO: Think how we can compute `err` as mask
+    macro_rules! decode_vec {
+        ($input:expr) => {{
+            let hi = _mm512_and_si512(_mm512_srli_epi16($input, 4), mask_hi_nibble);
+            let offset = _mm512_shuffle_epi8(lut_hi_nibble, hi);
+            let mut indices = _mm512_add_epi8($input, offset);
 
-    while src < src_end_aligned {
-        let v = unsafe { _mm512_loadu_si512(src as *const _) };
+            let mask_62 = _mm512_cmpeq_epi8_mask($input, sym_62);
+            let mask_63 = _mm512_cmpeq_epi8_mask($input, sym_63);
 
-        let ge_a = _mm512_cmpgt_epi8_mask(v, _mm512_sub_epi8(range_a, _mm512_set1_epi8(1)));
-        let le_z = _mm512_cmpgt_epi8_mask(_mm512_add_epi8(range_z, _mm512_set1_epi8(1)), v);
-        let mk_lower = ge_a & le_z;
+            indices = _mm512_mask_add_epi8(indices, mask_62, indices, delta_62);
+            indices = _mm512_mask_add_epi8(indices, mask_63, indices, delta_63);
+ 
+            let is_sym = _kor_mask64(mask_62, mask_63);
 
-        let ge_capital_a = _mm512_cmpgt_epi8_mask(v, _mm512_sub_epi8(range_capital_a, _mm512_set1_epi8(1)));
-        let le_capital_z = _mm512_cmpgt_epi8_mask(_mm512_add_epi8(range_capital_z, _mm512_set1_epi8(1)), v);
-        let mk_upper = ge_capital_a & le_capital_z;
+            let sub_0 = _mm512_subs_epu8(_mm512_sub_epi8($input, range_0), range_9_len);
+            let sub_a = _mm512_subs_epu8(_mm512_sub_epi8($input, range_a), range_z_len);
+            let sub_a_low = _mm512_subs_epu8(_mm512_sub_epi8($input, range_a_low), range_z_low_len);
 
-        let ge_0 = _mm512_cmpgt_epi8_mask(v, _mm512_sub_epi8(range_0, _mm512_set1_epi8(1)));
-        let le_9 = _mm512_cmpgt_epi8_mask(_mm512_add_epi8(range_9, _mm512_set1_epi8(1)), v);
-        let mk_digit = ge_0 & le_9;
+            let is_char = _mm512_and_si512(sub_0, _mm512_and_si512(sub_a, sub_a_low));
 
-        let mk_dash = _mm512_cmpeq_epi8_mask(v, char_62);
-        let mk_under = _mm512_cmpeq_epi8_mask(v, char_63);
+            let err = _mm512_mask_blend_epi8(is_sym, is_char, zeros);
 
-        let valid_mask = mk_lower | mk_upper | mk_digit | mk_dash | mk_under;
+            (indices, err)
+        }};
+    }
 
-        if valid_mask != !0u64 {
+    macro_rules! pack_and_store {
+        ($indices:expr, $dst_ptr:expr) => {{
+            let m = _mm512_maddubs_epi16($indices, pack_l1);
+            let p = _mm512_madd_epi16(m, pack_l2);
+            let out = _mm512_shuffle_epi8(p, pack_shuffle);
+
+            let lane0 = _mm512_castsi512_si128(out);
+            unsafe { _mm_storeu_si128($dst_ptr as *mut __m128i, lane0) };
+            let lane1 = _mm512_extracti32x4_epi32(out, 1);
+            unsafe { _mm_storeu_si128($dst_ptr.add(12) as *mut __m128i, lane1) };
+            let lane2 = _mm512_extracti32x4_epi32(out, 2);
+            unsafe { _mm_storeu_si128($dst_ptr.add(24) as *mut __m128i, lane2) };
+            let lane3 = _mm512_extracti32x4_epi32(out, 3);
+            unsafe { _mm_storeu_si128($dst_ptr.add(36) as *mut __m128i, lane3) };
+        }};
+    }
+
+    // Process 128 bytes (4 chunks) at a time
+    let safe_len_256 = len.saturating_sub(4);
+    let aligned_len_256 = safe_len_256 - (safe_len_256 % 256);
+    let src_end_256 = unsafe { src.add(aligned_len_256) };
+
+    while src < src_end_256 {
+        // Load 4 vectors
+        let v0 = unsafe { _mm512_loadu_si512(src as *const __m512i) };
+        let v1 = unsafe { _mm512_loadu_si512(src.add(64) as *const __m512i) };
+        let v2 = unsafe { _mm512_loadu_si512(src.add(128) as *const __m512i) };
+        let v3 = unsafe { _mm512_loadu_si512(src.add(192) as *const __m512i) };
+
+        // Process
+        let (i0, e0) = decode_vec!(v0);
+        let (i1, e1) = decode_vec!(v1);
+        let (i2, e2) = decode_vec!(v2);
+        let (i3, e3) = decode_vec!(v3);
+
+        // Check errors
+        let m0 = _mm512_test_epi8_mask(e0, e0);
+        let m1 = _mm512_test_epi8_mask(e1, e1);
+        let m2 = _mm512_test_epi8_mask(e2, e2);
+        let m3 = _mm512_test_epi8_mask(e3, e3);
+
+        if (m0 | m1 | m2 | m3) != 0 {
             return Err(Error::InvalidCharacter);
         }
 
-        let mut indices = _mm512_setzero_si512();
-        
-        indices = _mm512_mask_add_epi8(indices, mk_lower, v, delta_lower);
-        indices = _mm512_mask_add_epi8(indices, mk_upper, v, delta_upper);
-        indices = _mm512_mask_add_epi8(indices, mk_digit, v, delta_digit);
- 
-        indices = _mm512_mask_mov_epi8(indices, mk_dash, val_dash);
-        indices = _mm512_mask_mov_epi8(indices, mk_under, val_under);
+        // Store 4 chunks
+        pack_and_store!(i0, dst);
+        pack_and_store!(i1, dst.add(48));
+        pack_and_store!(i2, dst.add(96));
+        pack_and_store!(i3, dst.add(144));
 
-        let merged = _mm512_maddubs_epi16(indices, pack_l1);
-        let packed_u32 = _mm512_madd_epi16(merged, pack_l2);
-        let final_bytes = _mm512_shuffle_epi8(packed_u32, pack_shuffle);
+        src = unsafe { src.add(256) };
+        dst = unsafe { dst.add(192) };
+    }
 
-        let lane0 = _mm512_castsi512_si128(final_bytes);
-        unsafe { _mm_storeu_si128(dst as *mut __m128i, lane0) };
+    // Process remaining 32-byte chunks
+    let safe_len_64 = len.saturating_sub(4);
+    let aligned_len_64 = safe_len_64 - (safe_len_64 % 64);
+    let src_end_64 = unsafe { input.as_ptr().add(aligned_len_64) };
 
-        let lane1 = _mm512_extracti32x4_epi32(final_bytes, 1);
-        unsafe { _mm_storeu_si128(dst.add(12) as *mut __m128i, lane1) };
+    while src < src_end_64 {
+        let v = unsafe { _mm512_loadu_si512(src as *const __m512i) };
+        let (idx, err) = decode_vec!(v);
 
-        let lane2 = _mm512_extracti32x4_epi32(final_bytes, 2);
-        unsafe { _mm_storeu_si128(dst.add(24) as *mut __m128i, lane2) };
+        if _mm512_test_epi8_mask(err, err) != 0 {
+            return Err(Error::InvalidCharacter);
+        }
 
-
-        let lane3 = _mm512_extracti32x4_epi32(final_bytes, 3);
-        unsafe { _mm_storeu_si128(dst.add(36) as *mut __m128i, lane3) };
+        pack_and_store!(idx, dst);
 
         src = unsafe { src.add(64) };
         dst = unsafe { dst.add(48) };
-        i += 64;
     }
 
-    if i < len {
-        dst = unsafe { dst.add(scalar::decode_slice_unsafe(config, &input[i..], dst)?) };
+    // Scalar Fallback
+    let processed_len = unsafe { src.offset_from(input.as_ptr()) } as usize;
+    if processed_len < len {
+        dst = unsafe { dst.add(scalar::decode_slice_unsafe(config, &input[processed_len..], dst)?) };
     }
+
     Ok(unsafe { dst.offset_from(dst_start) } as usize)
 }
 
-// Hoping for the support of AVX512...
+// Hoping for the support of AVX512 in Miri...
 
+// Tests itself outdated. If and when support for AVX512 would released, tests must be fixed for newer syntax.
 // #[cfg(all(test, miri))]
 // mod avx512_miri_tests {
 //     use super::{encode_slice_avx512, decode_slice_avx512};

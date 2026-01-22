@@ -577,7 +577,7 @@ impl Engine {
             let len = input.len();
 
             #[cfg(feature = "avx512")]
-            // Smart degrade: If len < 64, don't bother checking AVX512 features or setting up ZMM regs.
+            // Smart degrade: If len < 64, don't bother checking AVX512 features or setting up ZMM register
             if len >= 64 
                 && std::is_x86_feature_detected!("avx512f") 
                 && std::is_x86_feature_detected!("avx512bw") 

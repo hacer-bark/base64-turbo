@@ -8,7 +8,7 @@ pub unsafe fn encode_slice_avx2(config: &Config, input: &[u8], mut dst: *mut u8)
     let len = input.len();
     let mut src = input.as_ptr();
 
-    // Shuffle for later multiplier
+    // Shuffle bytes for mul
     let shuffle = _mm256_setr_epi8(
         1, 0, 2, 1, 4, 3, 5, 4, 7, 6, 8, 7, 10, 9, 11, 10,
         1, 0, 2, 1, 4, 3, 5, 4, 7, 6, 8, 7, 10, 9, 11, 10,
@@ -21,11 +21,11 @@ pub unsafe fn encode_slice_avx2(config: &Config, input: &[u8], mut dst: *mut u8)
     // Multiplier for shift of bytes.
     let mul_right_shift = _mm256_setr_epi16(
         0x0040, 0x0400, 0x0040, 0x0400, 0x0040, 0x0400, 0x0040, 0x0400,
-        0x0040, 0x0400, 0x0040, 0x0400, 0x0040, 0x0400, 0x0040, 0x0400
+        0x0040, 0x0400, 0x0040, 0x0400, 0x0040, 0x0400, 0x0040, 0x0400,
     );
     let mul_left_shift = _mm256_setr_epi16(
         0x0010, 0x0100, 0x0010, 0x0100, 0x0010, 0x0100, 0x0010, 0x0100,
-        0x0010, 0x0100, 0x0010, 0x0100, 0x0010, 0x0100, 0x0010, 0x0100
+        0x0010, 0x0100, 0x0010, 0x0100, 0x0010, 0x0100, 0x0010, 0x0100,
     );
 
     // Mapping logic for letters
@@ -34,7 +34,7 @@ pub unsafe fn encode_slice_avx2(config: &Config, input: &[u8], mut dst: *mut u8)
     let delta_lower = _mm256_set1_epi8(6);
     let set_51 = _mm256_set1_epi8(51);
 
-    // Mapping for numbers and special chars
+    // LUT Table for numbers and special chars
     let (sym_plus, sym_slash) = if config.url_safe { (-88, -39) } else { (-90, -87) };
     let lut_offsets = _mm256_setr_epi8(
         0, -75, -75, -75, -75, -75, -75, -75, -75, -75, -75, sym_plus, sym_slash, 0, 0, 0,
@@ -46,11 +46,11 @@ pub unsafe fn encode_slice_avx2(config: &Config, input: &[u8], mut dst: *mut u8)
             // Compute 3 bytes => 4 letters
             let v = _mm256_shuffle_epi8($in_vec, shuffle);
 
-            let hi = _mm256_mulhi_epu16(v, mul_right_shift);
             let lo = _mm256_mullo_epi16(v, mul_left_shift);
+            let hi = _mm256_mulhi_epu16(v, mul_right_shift);
             let indices = _mm256_or_si256(
-                _mm256_and_si256(hi, mask_lo_6bits),
                 _mm256_and_si256(lo, mask_hi_6bits),
+                _mm256_and_si256(hi, mask_lo_6bits),
             );
 
             // Found char values offsets
@@ -129,8 +129,7 @@ pub unsafe fn decode_slice_avx2(config: &Config, input: &[u8], mut dst: *mut u8)
     let mut src = input.as_ptr();
     let dst_start = dst;
 
-    // LUT for offsets based on high nibble (bits 4-7). 
-    // This maps the high nibble to the value needed to add to the char to get the index.
+    // LUT for offsets based on high nibble (bits 4-7).
     // 0x2_: '+'(43) -> 62 (diff +19).
     // 0x3_: '0'(48) -> 52 (diff +4).
     // 0x4_: 'A'(65) -> 0  (diff -65).
@@ -142,6 +141,7 @@ pub unsafe fn decode_slice_avx2(config: &Config, input: &[u8], mut dst: *mut u8)
         0, 0, 19, 4, -65, -65, -71, -71, 0, 0, 0, 0, 0, 0, 0, 0,
     );
 
+    // Range and offsets of special chars
     let (char_62, char_63) = if config.url_safe { (b'-', b'_') } else { (b'+', b'/') };
     let sym_62 = _mm256_set1_epi8(char_62 as i8);
     let sym_63 = _mm256_set1_epi8(char_63 as i8);
@@ -151,8 +151,6 @@ pub unsafe fn decode_slice_avx2(config: &Config, input: &[u8], mut dst: *mut u8)
     let delta_63 = _mm256_set1_epi8(fix_63);
 
     // Range Validation Constants
-    // We use saturating subtraction to check ranges.
-    // If (val - base) <= len, it is valid.
     let range_0 = _mm256_set1_epi8(b'0' as i8);
     let range_9_len = _mm256_set1_epi8(9);
 
@@ -206,12 +204,11 @@ pub unsafe fn decode_slice_avx2(config: &Config, input: &[u8], mut dst: *mut u8)
             let m = _mm256_maddubs_epi16($indices, pack_l1);
             let p = _mm256_madd_epi16(m, pack_l2);
             let out = _mm256_shuffle_epi8(p, pack_shuffle);
-            
-            let lane_lo = _mm256_castsi256_si128(out);
-            let lane_hi = _mm256_extracti128_si256(out, 1);
-            
-            unsafe { _mm_storeu_si128($dst_ptr as *mut __m128i, lane_lo) };
-            unsafe { _mm_storeu_si128($dst_ptr.add(12) as *mut __m128i, lane_hi) };
+
+            let lane_0 = _mm256_castsi256_si128(out);
+            unsafe { _mm_storeu_si128($dst_ptr as *mut __m128i, lane_0) };
+            let lane_1 = _mm256_extracti128_si256(out, 1);
+            unsafe { _mm_storeu_si128($dst_ptr.add(12) as *mut __m128i, lane_1) };
         }};
     }
 
