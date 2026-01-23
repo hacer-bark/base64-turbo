@@ -152,6 +152,8 @@ pub unsafe fn decode_slice_simd(config: &Config, input: &[u8], mut dst: *mut u8)
 mod kani_verification_ssse3 {
     use super::*;
 
+    // TODO: Need to write harness for all logic. As well as rewrite it.
+
     // 120 bytes input.
     const TEST_LIMIT: usize = 120;
     const MAX_ENCODED_SIZE: usize = 160;

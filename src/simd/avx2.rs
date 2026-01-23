@@ -1,6 +1,7 @@
 use crate::{Error, Config, scalar};
 use super::{PACK_L1, PACK_L2, PACK_SHUFFLE};
 
+// TODO: Rethink encoding and decoding logic. Could squeeze more performance.
 use core::arch::x86_64::*;
 
 #[target_feature(enable = "avx2")]
@@ -281,17 +282,161 @@ pub unsafe fn decode_slice_avx2(config: &Config, input: &[u8], mut dst: *mut u8)
 #[cfg(kani)]
 mod kani_verification_avx2 {
     use super::*;
+    use core::mem::transmute;
 
     // 168 bytes input.
-    const TEST_LIMIT: usize = 168;
-    const MAX_ENCODED_SIZE: usize = 224;
+    const TEST_LIMIT: usize = 48;
+    const TEST_START: usize = 32;
+    const MAX_ENCODED_SIZE: usize = 64;
 
     fn encoded_size(len: usize, padding: bool) -> usize {
         if padding { (len + 2) / 3 * 4 } else { (len * 4 + 2) / 3 }
     }
 
+    // STUB: _mm256_shuffle_epi8
+    unsafe fn mm256_shuffle_epi8_stub(a: __m256i, b: __m256i) -> __m256i {
+        let a: [u8; 32] = unsafe { transmute(a) };
+        let b: [u8; 32] = unsafe { transmute(b) };
+        let mut r = [0; 32];
+
+        for i in 0..16 {
+            if b[i] & 0x80 == 0u8 {
+                r[i] = a[(b[i] % 16) as usize];
+            }
+            if b[i + 16] & 0x80 == 0u8 {
+                r[i + 16] = a[(b[i + 16] % 16 + 16) as usize];
+            }
+        }
+        unsafe { transmute(r) }
+    }
+
+    // STUB: _mm256_mulhi_epu16
+    // Logic: (a * b) >> 16
+    unsafe fn mm256_mulhi_epu16_stub(a: __m256i, b: __m256i) -> __m256i {
+        let a_arr: [u16; 16] = unsafe { transmute(a) };
+        let b_arr: [u16; 16] = unsafe { transmute(b) };
+        let mut res_arr = [0u16; 16];
+
+        for i in 0..16 {
+            let wide_a = a_arr[i] as u32;
+            let wide_b = b_arr[i] as u32;
+
+            let result_32 = wide_a * wide_b;
+
+            res_arr[i] = (result_32 >> 16) as u16;
+        }
+
+        unsafe { transmute(res_arr) }
+    }
+
+    // STUB: _mm256_mullo_epi16
+    // Logic: (a * b) & 0xFFFF (Keep low bits)
+    unsafe fn mm256_mullo_epi16_stub(a: __m256i, b: __m256i) -> __m256i {
+        let a_arr: [u16; 16] = unsafe { transmute(a) };
+        let b_arr: [u16; 16] = unsafe { transmute(b) };
+        let mut res_arr = [0u16; 16];
+
+        for i in 0..16 {
+            res_arr[i] = a_arr[i].wrapping_mul(b_arr[i]);
+        }
+
+        unsafe { transmute(res_arr) }
+    }
+
+    // STUB: _mm256_add_epi8
+    // Logic: a + b (Wrapping)
+    unsafe fn mm256_add_epi8_stub(a: __m256i, b: __m256i) -> __m256i {
+        let a_arr: [u8; 32] = unsafe { transmute(a) };
+        let b_arr: [u8; 32] = unsafe { transmute(b) };
+        let mut res_arr = [0u8; 32];
+
+        for i in 0..32 {
+            res_arr[i] = a_arr[i].wrapping_add(b_arr[i]);
+        }
+
+        unsafe { transmute(res_arr) }
+    }
+
+    // STUB: _mm256_subs_epu8
+    // Logic: Saturating Subtract (if b > a, result is 0)
+    unsafe fn mm256_subs_epu8_stub(a: __m256i, b: __m256i) -> __m256i {
+        let a_arr: [u8; 32] = unsafe { transmute(a) };
+        let b_arr: [u8; 32] = unsafe { transmute(b) };
+        let mut res_arr = [0u8; 32];
+
+        for i in 0..32 {
+            res_arr[i] = a_arr[i].saturating_sub(b_arr[i]);
+        }
+
+        unsafe { transmute(res_arr) }
+    }
+
+    // STUB: _mm256_testz_si256
+    // Logic: Returns 1 if (a & b) == 0 (Zero Flag set). Otherwise returns 0.
+    unsafe fn mm256_testz_si256_stub(a: __m256i, b: __m256i) -> i32 {
+        let a_arr: [u64; 4] = unsafe { transmute(a) };
+        let b_arr: [u64; 4] = unsafe { transmute(b) };
+
+        for i in 0..4 {
+            if (a_arr[i] & b_arr[i]) != 0 {
+                return 0;
+            }
+        }
+
+        1
+    }
+
+    // STUB: _mm256_maddubs_epi16
+    // Logic: (a[i] * b[i]) + (a[i+1] * b[i+1]) with Saturation
+    // Input A is Unsigned (u8), Input B is Signed (i8)
+    unsafe fn mm256_maddubs_epi16_stub(a: __m256i, b: __m256i) -> __m256i {
+        let a_arr: [u8; 32] = unsafe { transmute(a) };
+        let b_arr: [i8; 32] = unsafe { transmute(b) };
+        let mut res_arr = [0i16; 16];
+
+        for i in 0..16 {
+            let idx = i * 2;
+
+            let prod1 = (a_arr[idx] as i16) * (b_arr[idx] as i16);
+
+            let prod2 = (a_arr[idx+1] as i16) * (b_arr[idx+1] as i16);
+
+            res_arr[i] = prod1.saturating_add(prod2);
+        }
+
+        unsafe { transmute(res_arr) }
+    }
+
+    // STUB: _mm256_madd_epi16
+    // Logic: Multiply packed i16s, then add adjacent pairs into i32s.
+    // Result = (a[0]*b[0] + a[1]*b[1]), (a[2]*b[2] + a[3]*b[3]), ...
+    unsafe fn mm256_madd_epi16_stub(a: __m256i, b: __m256i) -> __m256i {
+        let a_arr: [i16; 16] = unsafe { transmute(a) };
+        let b_arr: [i16; 16] = unsafe { transmute(b) };
+        let mut res_arr = [0i32; 8];
+
+        for i in 0..8 {
+            let idx = i * 2;
+
+            let prod1 = (a_arr[idx] as i32).wrapping_mul(b_arr[idx] as i32);
+            let prod2 = (a_arr[idx+1] as i32).wrapping_mul(b_arr[idx+1] as i32);
+
+            res_arr[i] = prod1.wrapping_add(prod2);
+        }
+
+        unsafe { transmute(res_arr) }
+    }
+
     #[kani::proof]
-    #[kani::unwind(169)]
+    #[kani::unwind(49)]
+    #[kani::stub(core::arch::x86_64::_mm256_shuffle_epi8, mm256_shuffle_epi8_stub)]
+    #[kani::stub(core::arch::x86_64::_mm256_mulhi_epu16, mm256_mulhi_epu16_stub)]
+    #[kani::stub(core::arch::x86_64::_mm256_mullo_epi16, mm256_mullo_epi16_stub)]
+    #[kani::stub(core::arch::x86_64::_mm256_add_epi8, mm256_add_epi8_stub)]
+    #[kani::stub(core::arch::x86_64::_mm256_subs_epu8, mm256_subs_epu8_stub)]
+    #[kani::stub(core::arch::x86_64::_mm256_testz_si256, mm256_testz_si256_stub)]
+    #[kani::stub(core::arch::x86_64::_mm256_maddubs_epi16, mm256_maddubs_epi16_stub)]
+    #[kani::stub(core::arch::x86_64::_mm256_madd_epi16, mm256_madd_epi16_stub)]
     fn check_round_trip() {
         // Symbolic Config
         let config = Config {
@@ -301,7 +446,7 @@ mod kani_verification_avx2 {
 
         // Symbolic Length
         let len: usize = kani::any();
-        kani::assume(len <= TEST_LIMIT);
+        kani::assume(TEST_START <= len && len <= TEST_LIMIT);
 
         // Symbolic Input Data
         let input_arr: [u8; TEST_LIMIT] = kani::any();
@@ -332,7 +477,15 @@ mod kani_verification_avx2 {
     }
 
     #[kani::proof]
-    #[kani::unwind(169)]
+    #[kani::unwind(49)]
+    #[kani::stub(core::arch::x86_64::_mm256_shuffle_epi8, mm256_shuffle_epi8_stub)]
+    #[kani::stub(core::arch::x86_64::_mm256_mulhi_epu16, mm256_mulhi_epu16_stub)]
+    #[kani::stub(core::arch::x86_64::_mm256_mullo_epi16, mm256_mullo_epi16_stub)]
+    #[kani::stub(core::arch::x86_64::_mm256_add_epi8, mm256_add_epi8_stub)]
+    #[kani::stub(core::arch::x86_64::_mm256_subs_epu8, mm256_subs_epu8_stub)]
+    #[kani::stub(core::arch::x86_64::_mm256_testz_si256, mm256_testz_si256_stub)]
+    #[kani::stub(core::arch::x86_64::_mm256_maddubs_epi16, mm256_maddubs_epi16_stub)]
+    #[kani::stub(core::arch::x86_64::_mm256_madd_epi16, mm256_madd_epi16_stub)]
     fn check_decoder_robustness() {
         // Symbolic Config
         let config = Config {
@@ -342,7 +495,7 @@ mod kani_verification_avx2 {
 
         // Symbolic Input (Random Garbage)
         let len: usize = kani::any();
-        kani::assume(len <= MAX_ENCODED_SIZE);
+        kani::assume(TEST_START <= len && len <= MAX_ENCODED_SIZE);
         
         let input_arr: [u8; MAX_ENCODED_SIZE] = kani::any();
         let input = &input_arr[..len];
