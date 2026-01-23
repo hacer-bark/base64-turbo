@@ -5,32 +5,15 @@ on:
     branches: [ "main" ]
     tags-ignore:
       - '**'
-  pull_request:
-    branches: [ "main" ]
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_BUILD_JOBS: 4
 
 jobs:
   miri-suite:
-    name: MIRI Safety Check (${{ matrix.name }})
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: true
-      matrix:
-        include:
-          # 1. AVX2 Path
-          - name: AVX2
-            rustflags: "-C target-feature=+avx2"
-            test_filter: "avx2_miri_tests"
-
-          # 2. SSSE3 Path
-          - name: SSSE3
-            rustflags: "-C target-feature=+ssse3"
-            test_filter: "ssse3_miri_tests"
-
-          # 3. Scalar Path (No specific SIMD flags needed)
-          - name: Scalar
-            rustflags: "" 
-            test_filter: "scalar_miri_tests"
-
+    name: MIRI Safety Checks (Sequential)
+    runs-on: self-hosted
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -40,12 +23,23 @@ jobs:
         with:
           components: miri
 
-      - name: Cache dependencies
-        uses: swatinem/rust-cache@v2
-
-      - name: Run MIRI
+      # AVX2
+      - name: Run MIRI (AVX2)
         env:
-          RUSTFLAGS: ${{ matrix.rustflags }}
+          RUSTFLAGS: "-C target-feature=+avx2"
           MIRIFLAGS: "-Zmiri-symbolic-alignment-check" 
-        run: |
-          cargo +nightly miri test ${{ matrix.test_filter }}
+        run: cargo +nightly miri test avx2_miri_tests
+
+      # SSSE3
+      - name: Run MIRI (SSSE3)
+        env:
+          RUSTFLAGS: "-C target-feature=+ssse3"
+          MIRIFLAGS: "-Zmiri-symbolic-alignment-check" 
+        run: cargo +nightly miri test ssse3_miri_tests
+
+      # Scalar
+      - name: Run MIRI (Scalar)
+        env:
+          RUSTFLAGS: "" 
+          MIRIFLAGS: "-Zmiri-symbolic-alignment-check" 
+        run: cargo +nightly miri test scalar_miri_tests
