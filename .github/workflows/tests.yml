@@ -6,34 +6,14 @@ on:
     tags-ignore:
       - '**'
 
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_BUILD_JOBS: 2
+
 jobs:
-  test-suite:
-    name: Test (${{ matrix.name }})
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: true
-      matrix:
-        include:
-          # 0. no_std: Pure Scalar (SIMD off, Parallel off)
-          - name: no_std
-            features: ""
-
-          # 1. Baseline: Pure Scalar (SIMD off, Parallel off)
-          - name: Scalar Only
-            features: "std"
-
-          # 2. SIMD: Enables runtime detection (AVX2/SSSE3)
-          - name: SIMD Enabled
-            features: "std,simd"
-
-          # 3. Parallel: Enables Rayon
-          - name: Parallel
-            features: "std,parallel"
-
-          # 4. Full: Everything enabled
-          - name: Full Features
-            features: "std,simd,parallel"
-
+  logic-parallel:
+    name: Logic Tests
+    runs-on: self-hosted 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -41,8 +21,77 @@ jobs:
       - name: Install Rust Stable
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache dependencies
-        uses: swatinem/rust-cache@v2
+      - name: Run Tests
+        run: |
+          echo "Starting Parallel Logic Suite..."
 
-      - name: Run Cargo Test
-        run: cargo test --verbose --no-default-features --features "${{ matrix.features }}"
+          # --- 1. NO_STD (Compilation Check / Basic Tests) ---
+          (
+            export CARGO_TARGET_DIR="target_logic_nostd"
+            echo "[no_std] Running..."
+            # Note: Running test without std often requires custom harness, 
+            # assuming your crate supports it or just checks compilation.
+            cargo test --verbose --no-default-features --features "" > nostd.log 2>&1
+          ) &
+          PID_NOSTD=$!
+
+          # --- 2. SCALAR ONLY (std) ---
+          (
+            export CARGO_TARGET_DIR="target_logic_scalar"
+            echo "[Scalar] Running..."
+            cargo test --verbose --no-default-features --features "std" > scalar.log 2>&1
+          ) &
+          PID_SCALAR=$!
+
+          # --- 3. SIMD ENABLED (std, simd) ---
+          (
+            export CARGO_TARGET_DIR="target_logic_simd"
+            echo "[SIMD] Running..."
+            cargo test --verbose --no-default-features --features "std,simd" > simd.log 2>&1
+          ) &
+          PID_SIMD=$!
+
+          # --- 4. PARALLEL ENABLED (std, parallel) ---
+          (
+            export CARGO_TARGET_DIR="target_logic_rayon"
+            echo "[Rayon] Running..."
+            cargo test --verbose --no-default-features --features "std,parallel" > rayon.log 2>&1
+          ) &
+          PID_RAYON=$!
+
+          # --- 5. FULL FEATURES (std, simd, parallel) ---
+          (
+            export CARGO_TARGET_DIR="target_logic_full"
+            echo "[Full] Running..."
+            cargo test --verbose --no-default-features --features "std,simd,parallel" > full.log 2>&1
+          ) &
+          PID_FULL=$!
+
+          # --- WAIT AND REPORT ---
+          FAILED=0
+
+          wait $PID_NOSTD
+          if [ $? -ne 0 ]; then echo "[no_std] FAILED. Logs:"; cat nostd.log; FAILED=1; else echo "[no_std] PASSED"; fi
+
+          wait $PID_SCALAR
+          if [ $? -ne 0 ]; then echo "[Scalar] FAILED. Logs:"; cat scalar.log; FAILED=1; else echo "[Scalar] PASSED"; fi
+
+          wait $PID_SIMD
+          if [ $? -ne 0 ]; then echo "[SIMD] FAILED. Logs:"; cat simd.log; FAILED=1; else echo "[SIMD] PASSED"; fi
+
+          wait $PID_RAYON
+          if [ $? -ne 0 ]; then echo "[Rayon] FAILED. Logs:"; cat rayon.log; FAILED=1; else echo "[Rayon] PASSED"; fi
+
+          wait $PID_FULL
+          if [ $? -ne 0 ]; then echo "[Full] FAILED. Logs:"; cat full.log; FAILED=1; else echo "[Full] PASSED"; fi
+
+          if [ $FAILED -ne 0 ]; then
+            exit 1
+          fi
+
+          echo "All Logic tests passed!"
+
+      - name: Cleanup Artifacts
+        if: always()
+        run: |
+          rm -rf target_logic_* *.log
