@@ -114,7 +114,7 @@ We prioritize **zero-dependencies**, **deterministic latency**, and **strict for
 
 #### 2. `avx512`
 *   **Verification Gap (MIRI):** While the AVX512 path is stable and has withstood over **2 Billion+ Fuzzing Iterations**, it is **not yet covered by the MIRI audit**. The Rust MIRI interpreter does not currently support AVX512 intrinsics. Therefore, it cannot formally guarantee that this specific path is free of Undefined Behavior (UB) to the same rigorous standard as Scalar and AVX2 paths.
-*   *Recommendation:* Enable this if you are deploying on supported hardware (Zen 4 / Ice Lake) and require the additional ~60% throughput per core, accepting that this path relies on Fuzzing and Kani verification rather than MIRI.
+*   *Recommendation:* Enable this if you are deploying on supported hardware (Zen 4 / Ice Lake) and require the additional ~60% throughput per core, accepting that this path relies on Fuzzing (Done) and Kani (In Progress) verification rather than MIRI.
 
 ## Architecture & Hardware Sympathy
 
@@ -131,7 +131,7 @@ Achieving maximum throughput should not come at the cost of memory safety. While
 
 To ensure strict adherence to these standards, **GitHub CI pipeline** is configured to block any release that fails to pass logical tests or MIRI verification.
 
-*   **Formal Verification (Kani)**: The logic for Scalar, SSSE3, AVX2, and AVX512 implementations has been verified using the **Kani Model Checker**. This provides a mathematical proof that there are no possible inputs that can trigger Panics or Undefined Behavior (UB) within the core arithmetic.
+*   **Formal Verification (Kani)**: The logic for Scalar (Done), SSSE3 (In Progress), AVX2 (Done), and AVX512 (In Progress) implementations has been verified using the **Kani Model Checker**. This provides a mathematical proof that there are no possible inputs that can trigger Panics or Undefined Behavior (UB) within the core arithmetic.
 *   **MIRI Analysis**: The Scalar, SSSE3, and AVX2 execution paths are audited against the **MIRI Interpreter**. This ensures strict compliance with the Rust memory model, checking for data races, misalignment, and out-of-bounds access.
     *   *Note regarding AVX512*: MIRI does not currently support AVX512 intrinsics. Consequently, AVX512 paths are verified via Kani and Fuzzing, but not MIRI. For more details on this upstream limitation, please refer to the [FAQ](https://github.com/hacer-bark/base64-turbo/tree/main?tab=readme-ov-file#why-are-parallel-and-avx512-disabled-by-default).
 *   **Deep Fuzzing**: The decoder and encoder have withstood over **2 Billion fuzzing iterations** via `cargo fuzz`. This ensures resilience against edge cases, invalid inputs, and complex buffer boundary conditions.
