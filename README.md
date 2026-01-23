@@ -3,17 +3,17 @@
 [![Crates.io](https://img.shields.io/crates/v/base64-turbo.svg)](https://crates.io/crates/base64-turbo)
 [![Documentation](https://docs.rs/base64-turbo/badge.svg)](https://docs.rs/base64-turbo)
 [![License](https://img.shields.io/github/license/hacer-bark/base64-turbo)](https://github.com/hacer-bark/base64-turbo/blob/main/LICENSE)
+[![Formal Verification](https://img.shields.io/badge/Formal%20Verification-Kani%20Verified-success)](https://github.com/model-checking/kani)
 [![MIRI Verified](https://img.shields.io/github/actions/workflow/status/hacer-bark/base64-turbo/miri.yml?label=MIRI%20Verified)](https://github.com/hacer-bark/base64-turbo/actions/workflows/miri.yml)
 [![Logic Tests](https://img.shields.io/github/actions/workflow/status/hacer-bark/base64-turbo/tests.yml?label=Logic%20Tests)](https://github.com/hacer-bark/base64-turbo/actions/workflows/tests.yml)
-[![Formal Verification](https://img.shields.io/badge/Formal%20Verification-Kani%20Verified-success)](https://github.com/model-checking/kani)
 
-**Hardware-Accelerated, Zero-Allocation Base64 Engine for Rust.**
+**AVX512-Accelerated, Zero-Allocation Base64 Engine for Rust.**
 
 `base64-turbo` is a production-grade library engineered for **High Frequency Trading (HFT)**, **Mission-Critical Servers**, and **Embedded Systems** where CPU cycles and memory bandwidth are scarce resources.
 
 Designed to align with **modern hardware reality** without sacrificing **portability**, this crate ensures optimal performance across the entire spectrum of computing devices:
 
-*   **Universal Optimization:** Performance is not limited to high-end servers. Even on non-SIMD targets (WASM, IoT, legacy hardware), our highly optimized Scalar fallback executes **~1.5x faster** than the ecosystem standard.
+*   **Universal Optimization:** Performance is not limited to high-end servers. Even on non-SIMD targets (WASM, IoT, legacy hardware), highly optimized Scalar fallback executes **~1.5x faster** than the ecosystem standard.
 *   **Bare-Metal Ready:** Zero dependencies and full `no_std` support make it ideal for embedded firmware, operating system kernels, and bootloaders.
 *   **Hardware Sympathy:** The engine performs runtime CPU detection. On supported x86 hardware, it unlocks hand-written AVX2 and AVX512 intrinsics to achieve **10x-12x higher throughput** compared to standard implementations.
 
@@ -27,12 +27,22 @@ We believe in radical transparency. Below is a fact-based comparison against the
 `base64-turbo` outperforms the current Rust standard by approximately **2x** in raw throughput. This performance delta is achieved through aggressive loop unrolling, reduced instruction count per encoded byte, and hybrid logics.
 
 ![Benchmark Graph](https://github.com/hacer-bark/base64-turbo/blob/main/benches/img/base64_intel.png?raw=true)
+
+**Benchmark Summarize:**
+
+| Metric | `base64-turbo` (This Crate) | `base64-simd` | Speedup |
+| :--- | :--- | :--- | :--- |
+| **Decode (Read)** | **~21.1 GiB/s** | ~10.0 GiB/s | **+111%** |
+| **Encode (Write)** | **~12.5 GiB/s** | ~10.5 GiB/s | **+20%** |
+| **Small Data (32B)** | **~3.0 GiB/s** | ~1.6 GiB/s | **+87%** |
+| **Latency (32B)** | **~10ns** | ~18 ns | **1.8x Lower** |
+
 > *Figure 1: Comparative benchmarks conducted on an **AWS c7i.large** instance (Intel Xeon Platinum 8488C).*
 
 ### 2. vs. C Ecosystem (`turbo-base64`)
 The C library `turbo-base64` currently sets the "speed of light" for Base64 encoding. It achieves extreme velocities by utilizing pure C, unchecked pointer arithmetic, and bypassing memory safety checks.
 
-`base64-turbo` (this crate) offers a strategic compromise: it delivers **40-50% of the C speed** while maintaining **100% Rust memory safety guarantees** and a permissive license.
+`base64-turbo` (this crate) offers a strategic compromise: it delivers **40-50% of the C speed** while maintaining **100% Rust memory verifications guarantees** and a permissive license.
 
 | Feature | `base64-turbo` (This Crate) | `turbo-base64` (C Library) |
 | :--- | :--- | :--- |
@@ -97,29 +107,29 @@ By default, this crate is **dependency-free** and compiles on Stable Rust. Featu
 We prioritize **zero-dependencies**, **deterministic latency**, and **strict formal verification** in the default configuration.
 
 #### 1. `parallel` (Rayon)
-*   **Dependency Weight:** By default, we strive to keep the crate dependency-free to ensure fast compilation and minimal binary size. Enabling this flag pulls in `rayon`, which is a significant external dependency.
+*   **Dependency Weight:** By default, it strive to keep the crate dependency-free to ensure fast compilation and minimal binary size. Enabling this flag pulls in `rayon`, which is a significant external dependency.
 *   **Deterministic Latency:** In latency-sensitive environments (such as High-Frequency Trading or Async Web Servers), a library implicitly spawning threads or blocking a global thread pool can introduce unpredictable jitter.
 *   **Context Switching Overhead:** For payloads under 512KB, the cost of thread synchronization and context switching often outweighs the throughput gains of parallelism.
 *   *Recommendation:* Enable this only if you are processing massive datasets (MBs/GBs) and are willing to trade unpredictable jitter for memory-saturating throughput.
 
 #### 2. `avx512`
-*   **Verification Gap (MIRI):** While the AVX512 path is stable and has withstood over **2 Billion+ Fuzzing Iterations**, it is **not yet covered by the MIRI audit**. The Rust MIRI interpreter does not currently support AVX512 intrinsics. Therefore, we cannot formally guarantee that this specific path is free of Undefined Behavior (UB) to the same rigorous standard as our Scalar and AVX2 paths.
+*   **Verification Gap (MIRI):** While the AVX512 path is stable and has withstood over **2 Billion+ Fuzzing Iterations**, it is **not yet covered by the MIRI audit**. The Rust MIRI interpreter does not currently support AVX512 intrinsics. Therefore, it cannot formally guarantee that this specific path is free of Undefined Behavior (UB) to the same rigorous standard as Scalar and AVX2 paths.
 *   *Recommendation:* Enable this if you are deploying on supported hardware (Zen 4 / Ice Lake) and require the additional ~60% throughput per core, accepting that this path relies on Fuzzing and Kani verification rather than MIRI.
 
 ## Architecture & Hardware Sympathy
 
-This engine is not merely a loop over a lookup table; it is engineered to exploit the micro-architectural mechanics of modern x86 processors. By aligning software logic with hardware capabilities, we are trying to achieve maximum Instruction Level Parallelism (ILP).
+This engine is not merely a loop over a lookup table; it is engineered to exploit the micro-architectural mechanics of modern x86 processors. By aligning software logic with hardware capabilities, it is trying to achieve maximum Instruction Level Parallelism (ILP).
 
-*   **AVX2 Lane Stitching:** Standard AVX2 instructions (specifically `vpshufb`) are restricted to 128-bit lanes, preventing data from crossing between the lower and upper halves of a register. We utilize "double-load" intrinsics to bridge this gap, allowing full utilization of the 32-byte YMM registers without pipeline stalls.
-*   **Vectorized Arithmetic:** To minimize L1 cache pressure, we replace traditional memory-based lookups with vector arithmetic comparisons. This "logic-over-memory" approach eliminates branch misprediction penalties caused by random input data (entropy).
-*   **Optimized Port Saturation (LUTs):** While we minimize memory lookups, we utilize highly optimized register-based Look-Up Tables (LUTs) for specific shuffle operations. These are designed to balance the load across CPU execution ports (ALU vs. Shuffle ports), preventing bottlenecks in the superscalar pipeline.
+*   **AVX2 Lane Stitching:** Standard AVX2 instructions (specifically `vpshufb`) are restricted to 128-bit lanes, preventing data from crossing between the lower and upper halves of a register. It utilize "double-load" intrinsics to bridge this gap, allowing full utilization of the 32-byte YMM registers without pipeline stalls.
+*   **Vectorized Arithmetic:** To minimize L1 cache pressure, it replace traditional memory-based lookups with vector arithmetic comparisons. This "logic-over-memory" approach eliminates branch misprediction penalties caused by random input data (entropy).
+*   **Optimized Port Saturation (LUTs):** While minimize memory lookups, it utilize highly optimized register-based Look-Up Tables (LUTs) for specific shuffle operations. These are designed to balance the load across CPU execution ports (ALU vs. Shuffle ports), preventing bottlenecks in the superscalar pipeline.
 *   **AVX512:** The library features a dedicated AVX512 implementation. Unlike simple AVX2 ports, this path leverages the larger register width and masking capabilities found in Zen 4 and Ice Lake CPUs to significantly increase throughput per core.
 
 ## Safety & Formal Verification
 
 Achieving maximum throughput should not come at the cost of memory safety. While this crate leverages `unsafe` intrinsics for SIMD optimizations, the codebase is rigorously audited and formally verified to guarantee stability.
 
-To ensure strict adherence to these standards, our **GitHub CI pipeline** is configured to block any release that fails to pass logical tests or MIRI verification.
+To ensure strict adherence to these standards, **GitHub CI pipeline** is configured to block any release that fails to pass logical tests or MIRI verification.
 
 *   **Formal Verification (Kani)**: The logic for Scalar, SSSE3, AVX2, and AVX512 implementations has been verified using the **Kani Model Checker**. This provides a mathematical proof that there are no possible inputs that can trigger Panics or Undefined Behavior (UB) within the core arithmetic.
 *   **MIRI Analysis**: The Scalar, SSSE3, and AVX2 execution paths are audited against the **MIRI Interpreter**. This ensures strict compliance with the Rust memory model, checking for data races, misalignment, and out-of-bounds access.
@@ -129,7 +139,7 @@ To ensure strict adherence to these standards, our **GitHub CI pipeline** is con
 
 ## Binary Footprint
 
-As part of our transparency policy, we track the size of the compiled library artifact (`.rlib`) under maximum optimization settings (`lto = "fat"`, `codegen-units = 1`).
+As part of transparency policy, here the sizes of the compiled library artifact (`.rlib`) under maximum optimization settings (`lto = "fat"`, `codegen-units = 1`).
 
 | Configuration | Size | Details |
 | :--- | :--- | :--- |
@@ -158,4 +168,3 @@ This project references several external Base64 libraries. Below is a comparativ
 ## License
 
 MIT License. Copyright (c) 2026.
-

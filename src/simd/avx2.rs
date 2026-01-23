@@ -358,7 +358,7 @@ mod kani_verification_avx2 {
 }
 
 #[cfg(all(test, miri))]
-mod scalar_miri_tests {
+mod avx2_miri_tests {
     use super::{encode_slice_avx2, decode_slice_avx2};
     use crate::Config;
     use base64::{engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD}};
@@ -425,7 +425,7 @@ mod scalar_miri_tests {
     // --- Tests ---
 
     #[test]
-    fn miri_scalar_url_safe_roundtrip() {
+    fn miri_avx2_url_safe_roundtrip() {
         run_miri_cycle(
             Config { url_safe: true, padding: true }, 
             &URL_SAFE
@@ -433,7 +433,7 @@ mod scalar_miri_tests {
     }
 
     #[test]
-    fn miri_scalar_url_safe_no_pad_roundtrip() {
+    fn miri_avx2_url_safe_no_pad_roundtrip() {
         run_miri_cycle(
             Config { url_safe: true, padding: false }, 
             &URL_SAFE_NO_PAD
@@ -441,7 +441,7 @@ mod scalar_miri_tests {
     }
 
     #[test]
-    fn miri_scalar_standard_roundtrip() {
+    fn miri_avx2_standard_roundtrip() {
         run_miri_cycle(
             Config { url_safe: false, padding: true }, 
             &STANDARD
@@ -449,7 +449,7 @@ mod scalar_miri_tests {
     }
 
     #[test]
-    fn miri_scalar_standard_no_pad_roundtrip() {
+    fn miri_avx2_standard_no_pad_roundtrip() {
         run_miri_cycle(
             Config { url_safe: false, padding: false }, 
             &STANDARD_NO_PAD
@@ -459,7 +459,7 @@ mod scalar_miri_tests {
     // --- Error Checks ---
 
     #[test]
-    fn miri_scalar_invalid_input() {
+    fn miri_avx2_invalid_input() {
         let config = Config { url_safe: true, padding: false };
         let mut out = vec![0u8; 10];
 
