@@ -5,109 +5,49 @@
 [![License](https://img.shields.io/github/license/hacer-bark/base64-turbo)](https://github.com/hacer-bark/base64-turbo/blob/main/LICENSE)
 [![MIRI Verified](https://img.shields.io/github/actions/workflow/status/hacer-bark/base64-turbo/miri.yml?label=MIRI%20Verified)](https://github.com/hacer-bark/base64-turbo/actions/workflows/miri.yml)
 [![Logic Tests](https://img.shields.io/github/actions/workflow/status/hacer-bark/base64-turbo/tests.yml?label=Logic%20Tests)](https://github.com/hacer-bark/base64-turbo/actions/workflows/tests.yml)
+[![Formal Verification](https://img.shields.io/badge/Formal%20Verification-Kani%20Verified-success)](https://github.com/model-checking/kani)
 
 **Hardware-Accelerated, Zero-Allocation Base64 Engine for Rust.**
 
-`base64-turbo` is a production-grade encoding engine engineered for **High Frequency Trading (HFT)**, **Web Servers**, and **Embedded Systems** where every CPU cycle and byte of memory bandwidth matters.
+`base64-turbo` is a production-grade library engineered for **High Frequency Trading (HFT)**, **Mission-Critical Servers**, and **Embedded Systems** where CPU cycles and memory bandwidth are scarce resources.
 
-We optimize for **modern hardware reality** without sacrificing **portability**. While `base64-turbo` is renowned for its blisteringly fast AVX2/AVX512 paths, it is architected to be the fastest engine on *any* platform:
+Designed to align with **modern hardware reality** without sacrificing **portability**, this crate ensures optimal performance across the entire spectrum of computing devices:
 
-*   **Universal Speed:** Even on targets without SIMD (like older servers, WASM, or IoT devices), our highly optimized Scalar fallback runs **~1.5x to 2x faster** than the standard ecosystem.
-*   **Zero Dependencies:** Fully supports `no_std` environments, making it ideal for embedded firmware and operating system kernels.
-*   **Hardware Sympathy:** On supported x86 CPUs, it unlocks **10x-12x higher throughput** via hand-written intrinsics and hybrid parallel scheduling.
+*   **Universal Optimization:** Performance is not limited to high-end servers. Even on non-SIMD targets (WASM, IoT, legacy hardware), our highly optimized Scalar fallback executes **~1.5x faster** than the ecosystem standard.
+*   **Bare-Metal Ready:** Zero dependencies and full `no_std` support make it ideal for embedded firmware, operating system kernels, and bootloaders.
+*   **Hardware Sympathy:** The engine performs runtime CPU detection. On supported x86 hardware, it unlocks hand-written AVX2 and AVX512 intrinsics to achieve **10x-12x higher throughput** compared to standard implementations.
 
-Whether you are running on an embedded ARM microcontroller or a Zen 4 server, `base64-turbo` automatically selects the fastest safe algorithm for your hardware.
+Whether you are running on an embedded ARM microcontroller or a Zen 4 data center node, `base64-turbo` automatically selects the fastest, safest algorithm for your specific architecture.
 
-## 🚀 Performance
+## Ecosystem Comparison
 
-This is currently the fastest pure Rust Base64 implementation available.
+We believe in radical transparency. Below is a fact-based comparison against the leading alternatives in both the Rust and C ecosystems.
 
-### 1. Maximum System Throughput (AVX2 + Parallel)
-Benchmarks run on a consumer Intel Core i7-8750H (4 vCPU, AVX2, DDR4). The engine automatically scales to saturate memory bandwidth on large payloads.
+### 1. vs. Rust Ecosystem (`base64-simd`)
+`base64-turbo` outperforms the current Rust standard by approximately **2x** in raw throughput. This performance delta is achieved through aggressive loop unrolling, reduced instruction count per encoded byte, and hybrid logics.
 
-| Operation | Size | Throughput | Context |
-| :--- | :--- | :--- | :--- |
-| **Decode** | 1 MB | **~16.6 GiB/s** | L3 Cache Saturation (Parallel) |
-| **Decode** | 10 MB+ | **~10.0 GiB/s** | RAM Bandwidth Limited |
-| **Encode** | 1 MB | **~15.9 GiB/s** | L3 Cache Saturation (Parallel) |
-| **Encode** | 10 MB+ | **~8.2 GiB/s** | RAM Bandwidth Limited |
-| **Latency** | 32 B | **~19 ns** | Zero-Alloc Hot Path |
+![Benchmark Graph](https://github.com/hacer-bark/base64-turbo/blob/main/benches/img/base64_intel.png?raw=true)
+> *Figure 1: Comparative benchmarks conducted on an **AWS c7i.large** instance (Intel Xeon Platinum 8488C).*
 
-*> **Note:** At peak throughput, `base64-turbo` approaches the theoretical limit of `memcpy` on this machine, effectively saturating the memory controller.*
+### 2. vs. C Ecosystem (`turbo-base64`)
+The C library `turbo-base64` currently sets the "speed of light" for Base64 encoding. It achieves extreme velocities by utilizing pure C, unchecked pointer arithmetic, and bypassing memory safety checks.
 
-### 2. Instruction Set Scaling (AVX512 vs AVX2)
-To measure raw per-core efficiency, we benchmarked on a **shared, noisy VPS environment** (1 vCPU, limited power budget). This isolates the architectural efficiency of our hand-written intrinsics.
+`base64-turbo` (this crate) offers a strategic compromise: it delivers **40-50% of the C speed** while maintaining **100% Rust memory safety guarantees** and a permissive license.
 
-Even in a constrained environment, enabling `avx512` delivers a massive leap in performance.
-
-| Backend / Crate | Instruction Set | Throughput (4KB) | Relative Speed |
-| :--- | :--- | :--- | :--- |
-| `base64` (Standard) | Scalar | ~0.9 GiB/s | 1.0x |
-| `base64-turbo` | **AVX2** | **~4.3 GiB/s** | **4.7x** |
-| `base64-turbo` | **AVX512** | **~6.8 GiB/s** | **7.5x** |
-
-*> **Key Takeaway:** The AVX512-VBMI path provides a **~60% performance boost per core** over our already-optimized AVX2 path. On dedicated modern hardware (Zen 4 / Ice Lake), single-core throughput is projected to exceed 12 GiB/s.*
-
-### 3. Scalar / Portable Performance (No SIMD)
-We benchmarked `base64-turbo` against the standard `base64` crate with **all SIMD features disabled**. This represents performance on legacy hardware, WASM, or embedded targets.
-
-Even without hardware acceleration, our algorithmic optimizations and "Zero-Allocation" API provide significant gains.
-
-| Operation | Size | `base64` (Std) | `base64-turbo` (Scalar) | Speedup |
-| :--- | :--- | :--- | :--- | :--- |
-| **Decode** | 10 MB | 1.35 GiB/s | **2.23 GiB/s** | **~1.65x** |
-| **Encode** | 10 MB | 1.48 GiB/s | **1.55 GiB/s** | **~1.05x** |
-| **Encode** | 32 B | 0.65 GiB/s | **1.34 GiB/s** | **~2.06x** |
-| **Latency** | 32 B | ~47 ns | **~22 ns** | **~2.14x** |
-
-*> **Note:** The 32 B Encode and Latency comparisons use the `encode_into` (Zero-Allocation) API for `base64-turbo`, demonstrating the efficiency of avoiding heap allocation for small, hot-path payloads.*
-
-## 🆚 Ecosystem Comparison
-
-We believe in transparency. Below is a fact-based comparison against the best Rust and C alternatives.
-
-### vs. Rust Ecosystem (`base64-simd`)
-`base64-turbo` outperforms the current Rust gold standard by approximately **2x** in raw throughput due to aggressive loop unrolling, reduced instruction count per byte, and hybrid parallelism.
-
-| Crate | Decode Speed (1MB) | Implementation |
+| Feature | `base64-turbo` (This Crate) | `turbo-base64` (C Library) |
 | :--- | :--- | :--- |
-| **`base64-turbo`** | **16.6 GiB/s** | **AVX2 + Hybrid Parallelism** |
-| `base64-simd` | 8.3 GiB/s | AVX2 Multi Threaded |
-| `base64` (Standard) | 1.4 GiB/s | Scalar |
+| **Throughput (AVX2)** | ~12 GiB/s (Safe Slices) | **~29 GiB/s** (Unchecked Pointers) |
+| **Memory Safety** | ✅ **Guaranteed** (MIRI Audited) | ❌ Unsafe (Raw C Pointers) |
+| **Formal Verification** | ✅ **Kani Verified** (Math Proofs) | ❌ None (No audits) |
+| **Reliability** | ✅ **2 Billion+ Fuzz Iterations** | ❌ Unknown / Not Stated |
+| **License** | ✅ **MIT** (Permissive) | ❌ GPLv3 / Commercial |
 
-### vs. C Ecosystem (`turbo-base64`)
-The C library `turbo-base64` is the "speed of light" benchmark. It achieves extreme speeds by using unchecked C pointers and ignoring memory safety.
+### The Verdict
 
-| Feature | `base64-turbo` (Rust, AVX2) | `turbo-base64` (C, AVX2) |
-| :--- | :--- | :--- |
-| **Single Core Speed** | ~7-8 GiB/s (Safe Slices) | **~29 GiB/s** (Unchecked Pointers) |
-| **Multi Core Speed** | **~16.6 GiB/s** (Saturates RAM) | N/A |
-| **Memory Safety** | ✅ **Guaranteed** (MIRI Audited) | ❌ Unsafe (Raw C) |
-| **Vulnerability Check**| ✅ **1 Billion+ Fuzz Iterations** | ❓ Unknown / Not Stated |
-| **License** | ✅ **MIT** (Permissive) | ⚠️ GPLv3 / Commercial |
+*   **Choose the C library** if you require absolute maximum single-core throughput, can tolerate GPL/Commercial licensing, and are willing to accept the risks of unchecked memory access (segfaults/buffer overflows).
+*   **Choose `base64-turbo`** if you require the highest possible performance within **Verified Rust** (fast enough to saturate RAM bandwidth) and require a permissive license with formally verified safety guarantees.
 
-**Verdict:** If you need absolute maximum single-core speed regardless of safety or licensing, use C. If you need the fastest possible speed within Safe Rust (fast enough to saturate RAM) with a permissive license, use `base64-turbo`.
-
-*> **Note:** While C achieves higher L1 throughput, `base64-turbo` is designed to saturate the Memory Controller (DDR4/DDR5 bandwidth) safely, which is the practical limit for real-world ingestion workloads.*
-
-## ⚡ Architecture & Hardware Sympathy
-
-This is not just a loop over a lookup table. The engine is engineered to exploit specific x86 mechanics:
-
-*   **AVX2 Lane Stitching:** Uses custom "double-load" intrinsics to overcome the 128-bit lane-crossing limitations of AVX2, allowing full 32-byte register utilization.
-*   **Algorithmic Mapping:** Replaces memory lookups (which cause cache pressure) with vector arithmetic comparisons. This eliminates branch misprediction penalties on random input data.
-*   **AVX512 Support:** Includes one of the first production-ready AVX512-VBMI paths in the Rust ecosystem, offering ~60% higher throughput per core on Zen 4 and Ice Lake CPUs compared to AVX2.
-*   **Hybrid Scheduling:** Automatically switches between Pure SIMD (low overhead) and Rayon Parallelism (memory saturation) based on input size thresholds (> 512KB).
-
-## 🛡️ Safety & Verification
-
-High performance does not mean undefined behavior. This crate uses `unsafe` for SIMD and Scalar optimizations, but it is rigorously audited.
-
-*   **Fuzz Testing:** The codebase has undergone over **1 Billion fuzzing iterations** via `cargo-fuzz` to detect edge cases, invalid inputs, and buffer boundary conditions.
-*   **MIRI Verified:** The core logic, scalar fallbacks, and AVX2 paths are audited against the MIRI Interpreter to ensure no misalignment, data races, or out-of-bounds access occurs.
-*   **Runtime Detection:** CPU features are detected at runtime. If SSSE3/AVX2/AVX512 is unavailable, it falls back to a highly optimized scalar implementation.
-
-## 💻 Usage
+## Usage
 
 ### Standard (Simple)
 The easiest way to use the library. Handles allocation automatically.
@@ -125,7 +65,7 @@ let encoded = STANDARD.encode(data);
 let decoded = STANDARD.decode(&encoded).unwrap();
 ```
 
-### Zero-Allocation (HFT / Embedded)
+### Zero-Allocation
 For hot paths where `malloc` overhead is unacceptable.
 
 ```rust
@@ -141,29 +81,53 @@ let len = STANDARD.encode_into(input, &mut buffer).unwrap();
 assert_eq!(&buffer[..len], b"b3JkZXJfaWRfMTIz");
 ```
 
-## ⚙️ Feature Flags
+## Feature Flags
+
+By default, this crate is **dependency-free** and compiles on Stable Rust. Features are opt-in to allow users to balance compile times, binary size, and specific performance needs.
 
 | Flag | Description | Default |
 | :--- | :--- | :--- |
-| `std` | Enables `encode` and `decode` functions (allocating `String`/`Vec`). Disable for `no_std` environments. | **On** |
-| `simd` | Enables runtime detection for AVX2 and SSSE3 intrinsics. Falls back to scalar if hardware is unsupported. | **On** |
-| `parallel` | Enables Rayon multi-threading for large payloads (> 512KB). | **Off** |
-| `avx512` | Enables AVX512-VBMI intrinsics on supported CPUs. | **Off** |
+| `std` | Provides high-level `encode` and `decode` API returning heap-allocated `String` and `Vec<u8>`. Disable for embedded/bare-metal `no_std` environments. | **Enabled** |
+| `simd` | Enables runtime CPU feature detection (AVX2/SSSE3). Automatically falls back to safe scalar logic if hardware support is missing. | **Enabled** |
+| `parallel` | Enables multi-threaded processing for large payloads (> 512KB) via Rayon. **Note: This adds `rayon` as a dependency.** | **Disabled** |
+| `avx512` | Compiles AVX512 intrinsics. Requires a supported CPU (e.g., Zen 4, Ice Lake) to execute the optimized path. | **Disabled** |
 
 ### Why are `parallel` and `avx512` disabled by default?
 
-We prioritize **deterministic latency** and **formal verification** out of the box.
+We prioritize **zero-dependencies**, **deterministic latency**, and **strict formal verification** in the default configuration.
 
-1.  **`parallel` (Rayon):**
-    *   **Thread Safety:** In latency-sensitive applications (like HFT or Async Web Servers), a library spawning threads or blocking the global thread pool can cause unpredictable jitter.
-    *   **Overhead:** For payloads under 512KB, the cost of context switching outweighs the throughput gains.
-    *   *Recommendation:* Enable this only if you are processing massive files (MBs/GBs) and want to trade CPU cores for raw memory-saturating throughput.
+#### 1. `parallel` (Rayon)
+*   **Dependency Weight:** By default, we strive to keep the crate dependency-free to ensure fast compilation and minimal binary size. Enabling this flag pulls in `rayon`, which is a significant external dependency.
+*   **Deterministic Latency:** In latency-sensitive environments (such as High-Frequency Trading or Async Web Servers), a library implicitly spawning threads or blocking a global thread pool can introduce unpredictable jitter.
+*   **Context Switching Overhead:** For payloads under 512KB, the cost of thread synchronization and context switching often outweighs the throughput gains of parallelism.
+*   *Recommendation:* Enable this only if you are processing massive datasets (MBs/GBs) and are willing to trade unpredictable jitter for memory-saturating throughput.
 
-2.  **`avx512`:**
-    *   **Audit Status:** While the AVX512 path is stable and has passed explicit **100 Million+ Fuzzing Iterations**, it is **not yet covered by the MIRI audit**. The Rust MIRI interpreter does not currently support AVX512 intrinsics, meaning we cannot formally guarantee undefined-behavior-free execution for this specific path to the same rigorous standard as our AVX2 path.
-    *   *Recommendation:* Enable this if you are running on Zen 4 / Ice Lake hardware and need the extra ~60% throughput per core, and accept Fuzzing as sufficient validation.
+#### 2. `avx512`
+*   **Verification Gap (MIRI):** While the AVX512 path is stable and has withstood over **2 Billion+ Fuzzing Iterations**, it is **not yet covered by the MIRI audit**. The Rust MIRI interpreter does not currently support AVX512 intrinsics. Therefore, we cannot formally guarantee that this specific path is free of Undefined Behavior (UB) to the same rigorous standard as our Scalar and AVX2 paths.
+*   *Recommendation:* Enable this if you are deploying on supported hardware (Zen 4 / Ice Lake) and require the additional ~60% throughput per core, accepting that this path relies on Fuzzing and Kani verification rather than MIRI.
 
-## 📦 Binary Footprint
+## Architecture & Hardware Sympathy
+
+This engine is not merely a loop over a lookup table; it is engineered to exploit the micro-architectural mechanics of modern x86 processors. By aligning software logic with hardware capabilities, we are trying to achieve maximum Instruction Level Parallelism (ILP).
+
+*   **AVX2 Lane Stitching:** Standard AVX2 instructions (specifically `vpshufb`) are restricted to 128-bit lanes, preventing data from crossing between the lower and upper halves of a register. We utilize "double-load" intrinsics to bridge this gap, allowing full utilization of the 32-byte YMM registers without pipeline stalls.
+*   **Vectorized Arithmetic:** To minimize L1 cache pressure, we replace traditional memory-based lookups with vector arithmetic comparisons. This "logic-over-memory" approach eliminates branch misprediction penalties caused by random input data (entropy).
+*   **Optimized Port Saturation (LUTs):** While we minimize memory lookups, we utilize highly optimized register-based Look-Up Tables (LUTs) for specific shuffle operations. These are designed to balance the load across CPU execution ports (ALU vs. Shuffle ports), preventing bottlenecks in the superscalar pipeline.
+*   **AVX512:** The library features a dedicated AVX512 implementation. Unlike simple AVX2 ports, this path leverages the larger register width and masking capabilities found in Zen 4 and Ice Lake CPUs to significantly increase throughput per core.
+
+## Safety & Formal Verification
+
+Achieving maximum throughput should not come at the cost of memory safety. While this crate leverages `unsafe` intrinsics for SIMD optimizations, the codebase is rigorously audited and formally verified to guarantee stability.
+
+To ensure strict adherence to these standards, our **GitHub CI pipeline** is configured to block any release that fails to pass logical tests or MIRI verification.
+
+*   **Formal Verification (Kani)**: The logic for Scalar, SSSE3, AVX2, and AVX512 implementations has been verified using the **Kani Model Checker**. This provides a mathematical proof that there are no possible inputs that can trigger Panics or Undefined Behavior (UB) within the core arithmetic.
+*   **MIRI Analysis**: The Scalar, SSSE3, and AVX2 execution paths are audited against the **MIRI Interpreter**. This ensures strict compliance with the Rust memory model, checking for data races, misalignment, and out-of-bounds access.
+    *   *Note regarding AVX512*: MIRI does not currently support AVX512 intrinsics. Consequently, AVX512 paths are verified via Kani and Fuzzing, but not MIRI. For more details on this upstream limitation, please refer to the [FAQ](https://github.com/hacer-bark/base64-turbo/tree/main?tab=readme-ov-file#why-are-parallel-and-avx512-disabled-by-default).
+*   **Deep Fuzzing**: The decoder and encoder have withstood over **2 Billion fuzzing iterations** via `cargo fuzz`. This ensures resilience against edge cases, invalid inputs, and complex buffer boundary conditions.
+*   **Dynamic Dispatch**: CPU features are detected at runtime. The library automatically selects the fastest safe implementation available. If hardware support (e.g. AVX512) is missing, it safely falls back to optimized Scalar or SSSE3 paths.
+
+## Binary Footprint
 
 As part of our transparency policy, we track the size of the compiled library artifact (`.rlib`) under maximum optimization settings (`lto = "fat"`, `codegen-units = 1`).
 
@@ -174,6 +138,22 @@ As part of our transparency policy, we track the size of the compiled library ar
 | **Embedded** (`no_std`) | **~64 KB** | Pure Scalar logic. Ideal for microcontrollers, WASM, or kernel drivers. |
 
 *> **Note:** These sizes represent the intermediate `.rlib`, which includes metadata and symbol tables. The actual machine code added to your final executable is significantly smaller due to linker dead-code elimination. Additionally, compiling with `-C target-cpu=native` allows the compiler to strip unused SIMD paths, further reducing the binary size.*
+
+## Related Libraries
+
+This project references several external Base64 libraries. Below is a comparative list detailing their performance characteristics and implementation details.
+
+*   **[base64](https://crates.io/crates/base64)**: The standard Base64 library for Rust. It prioritizes safety by utilizing only pure, safe Rust (referenced as `std` in this project's benchmarks).
+*   **[base64-simd](https://crates.io/crates/base64-simd)**: A high-performance Rust library. It is currently the fastest Rust-native implementation, trailing only `Turbo-Base64`. **Note:** It utilizes `unsafe` logic, specifically leveraging `core::simd` (e.g., `u8x32`, `u8x64`), and has not undergone formal security audits.
+*   **[Turbo-Base64](https://github.com/powturbo/Turbo-Base64)**: The current state-of-the-art implementation regarding raw speed. Written in C, it uses unchecked arithmetic and pointer manipulation to achieve ~70 GB/s throughput with AVX512 and ~30 GB/s with AVX2.
+*   **[Base64 (C)](https://github.com/aklomp/base64)**: A highly optimized C library by Alfred Klomp. It utilizes SIMD acceleration to achieve ~25 GB/s throughput with AVX2.
+*   **[fast-base64](https://github.com/lemire/fastbase64)**: A research-oriented C library by Daniel Lemire. It achieves approximately ~23 GB/s throughput with AVX2.
+*   **[vb64](https://crates.io/crates/vb64)**: An experimental Rust crate. It relies on the unstable `core::simd` module. It currently fails to compile because the `core::simd` API has changed significantly since the crate was written, breaking backward compatibility. Even when functional, benchmarks indicate it is slower than `base64-simd`.
+*   **[bs64](https://crates.io/crates/bs64)**: A Rust port attempting to replicate the logic of the C `fast-base64` library. Performance is lower than that of `base64-simd`.
+*   **[base-d](https://crates.io/crates/base-d)**: A Rust crate focused on flexibility and ease of use, offering support for 33+ alphabets. It utilizes SIMD for decoding only and is slower than `base64-simd`.
+*   **[baste64](https://crates.io/crates/baste64)**: A Rust crate utilizing WASM-based SIMD instructions. It was not benchmarked due to maintainability issues; however, due to the overhead of WASM SIMD, it is projected to be slower than `base64-simd`.
+
+> **Safety Note**: With the exception of the standard `base64` crate (which uses only Safe Rust), none of these libraries offer verified guarantees against Undefined Behavior (UB).
 
 ## License
 

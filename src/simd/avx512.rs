@@ -265,6 +265,85 @@ pub unsafe fn decode_slice_avx512(config: &Config, input: &[u8], mut dst: *mut u
     Ok(unsafe { dst.offset_from(dst_start) } as usize)
 }
 
+#[cfg(kani)]
+mod kani_verification_avx512 {
+    use super::*;
+
+    // 240 bytes input.
+    const TEST_LIMIT: usize = 240;
+    const MAX_ENCODED_SIZE: usize = 320;
+
+    fn encoded_size(len: usize, padding: bool) -> usize {
+        if padding { (len + 2) / 3 * 4 } else { (len * 4 + 2) / 3 }
+    }
+
+    #[kani::proof]
+    #[kani::unwind(241)]
+    fn check_round_trip() {
+        // Symbolic Config
+        let config = Config {
+            url_safe: kani::any(),
+            padding: kani::any(),
+        };
+
+        // Symbolic Length
+        let len: usize = kani::any();
+        kani::assume(len <= TEST_LIMIT);
+
+        // Symbolic Input Data
+        let input_arr: [u8; TEST_LIMIT] = kani::any();
+        let input = &input_arr[..len];
+
+        // Setup Encoding Buffer 
+        let enc_len = encoded_size(len, config.padding);
+
+        // Sanity check for the verification harness itself
+        assert!(enc_len <= MAX_ENCODED_SIZE);
+
+        let mut enc_buf = [0u8; MAX_ENCODED_SIZE];
+        unsafe { encode_slice_avx512(&config, input, enc_buf.as_mut_ptr()); }
+
+        // Decoding
+        let mut dec_buf = [0u8; TEST_LIMIT];
+
+        unsafe {
+            let src_slice = &enc_buf[..enc_len];
+
+            let written = decode_slice_avx512(&config, src_slice, dec_buf.as_mut_ptr())
+                .expect("Decoder returned error on valid input");
+
+            let my_decoded = &dec_buf[..written];
+
+            assert_eq!(my_decoded, input, "Kani Decoding Mismatch!");
+        }
+    }
+
+    #[kani::proof]
+    #[kani::unwind(241)]
+    fn check_decoder_robustness() {
+        // Symbolic Config
+        let config = Config {
+            url_safe: kani::any(),
+            padding: kani::any(),
+        };
+
+        // Symbolic Input (Random Garbage)
+        let len: usize = kani::any();
+        kani::assume(len <= MAX_ENCODED_SIZE);
+        
+        let input_arr: [u8; MAX_ENCODED_SIZE] = kani::any();
+        let input = &input_arr[..len];
+
+        // Decoding Buffer
+        let mut dec_buf = [0u8; MAX_ENCODED_SIZE];
+
+        unsafe {
+            // We verify what function NEVER panics/crashes
+            let _ = decode_slice_avx512(&config, input, dec_buf.as_mut_ptr());
+        }
+    }
+}
+
 // Hoping for the support of AVX512 in Miri...
 
 // Tests itself outdated. If and when support for AVX512 would released, tests must be fixed for newer syntax.

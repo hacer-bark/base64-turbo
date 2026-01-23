@@ -163,17 +163,17 @@ pub unsafe fn decode_slice_unsafe(config: &Config, input: &[u8], mut dst: *mut u
         STANDARD_DECODE_TABLE.as_ptr()
     };
 
-    // Calculate the safe limit for the "Fast Loop".
-    // We need at least 8 bytes for the fast loop to run safely.
-    // We also reserve the last 4 bytes to handle padding logic carefully in the tail loop.
-    let len_safe = len.saturating_sub(4);
-
-    // Align to 8-byte boundaries for the fast loop
-    let src_end_fast = unsafe { src.add(len_safe.saturating_sub(len_safe % 8)) };
-
-    // --- FAST LOOP (Middle Chunks) ---
-    // Processes 8 input bytes -> 6 output bytes per iteration.
     unsafe {
+        // Calculate the safe limit for the "Fast Loop".
+        // We need at least 8 bytes for the fast loop to run safely.
+        // We also reserve the last 4 bytes to handle padding logic carefully in the tail loop.
+        let len_safe = len.saturating_sub(4);
+
+        // Align to 8-byte boundaries for the fast loop
+        let src_end_fast = src.add(len_safe.saturating_sub(len_safe % 8));
+
+        // --- FAST LOOP (Middle Chunks) ---
+        // Processes 8 input bytes -> 6 output bytes per iteration.
         while src < src_end_fast {
             // 1. Scalar Loads & Lookups
             // We load 8 bytes and immediately look them up in the table.
@@ -311,8 +311,87 @@ pub unsafe fn decode_slice_unsafe(config: &Config, input: &[u8], mut dst: *mut u
     }
 }
 
+#[cfg(kani)]
+mod kani_verification_avx2 {
+    use super::*;
+
+    // 48 bytes input
+    const TEST_LIMIT: usize = 48;
+    const MAX_ENCODED_SIZE: usize = 64;
+
+    fn encoded_size(len: usize, padding: bool) -> usize {
+        if padding { (len + 2) / 3 * 4 } else { (len * 4 + 2) / 3 }
+    }
+
+    #[kani::proof]
+    #[kani::unwind(49)]
+    fn check_round_trip() {
+        // Symbolic Config
+        let config = Config {
+            url_safe: kani::any(),
+            padding: kani::any(),
+        };
+
+        // Symbolic Length
+        let len: usize = kani::any();
+        kani::assume(len <= TEST_LIMIT);
+
+        // Symbolic Input Data
+        let input_arr: [u8; TEST_LIMIT] = kani::any();
+        let input = &input_arr[..len];
+
+        // Setup Encoding Buffer 
+        let enc_len = encoded_size(len, config.padding);
+
+        // Sanity check for the verification harness itself
+        assert!(enc_len <= MAX_ENCODED_SIZE);
+
+        let mut enc_buf = [0u8; MAX_ENCODED_SIZE];
+        unsafe { encode_slice_unsafe(&config, input, enc_buf.as_mut_ptr()); }
+
+        // Decoding
+        let mut dec_buf = [0u8; TEST_LIMIT];
+
+        unsafe {
+            let src_slice = &enc_buf[..enc_len];
+
+            let written = decode_slice_unsafe(&config, src_slice, dec_buf.as_mut_ptr())
+                .expect("Decoder returned error on valid input");
+
+            let my_decoded = &dec_buf[..written];
+
+            assert_eq!(my_decoded, input, "Kani Decoding Mismatch!");
+        }
+    }
+
+    #[kani::proof]
+    #[kani::unwind(49)]
+    fn check_decoder_robustness() {
+        // Symbolic Config
+        let config = Config {
+            url_safe: kani::any(),
+            padding: kani::any(),
+        };
+
+        // Symbolic Input (Random Garbage)
+        let len: usize = kani::any();
+        kani::assume(len <= MAX_ENCODED_SIZE);
+        
+        let input_arr: [u8; MAX_ENCODED_SIZE] = kani::any();
+        let input = &input_arr[..len];
+
+        // Decoding Buffer
+        let mut dec_buf = [0u8; MAX_ENCODED_SIZE];
+
+        unsafe {
+            // We verify what function NEVER panics/crashes
+            let _ = decode_slice_unsafe(&config, input, dec_buf.as_mut_ptr());
+        }
+    }
+}
+
 #[cfg(all(test, miri))]
-mod scalar_miri_tests {
+mod avx2_miri_tests {
     use super::{encode_slice_unsafe, decode_slice_unsafe};
     use crate::Config;
     use base64::{engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD}};
@@ -320,15 +399,16 @@ mod scalar_miri_tests {
 
     // --- Helpers ---
 
-    fn encoded_size(len: usize) -> usize { (len + 2) / 3 * 4 }
-    fn encoded_size_unpadded(len: usize) -> usize { (len * 4 + 2) / 3 }
+    fn encoded_size(len: usize, padding: bool) -> usize {
+        if padding { (len + 2) / 3 * 4 } else { (len * 4 + 2) / 3 }
+    }
     fn estimated_decoded_length(len: usize) -> usize { (len / 4 + 1) * 3 }
 
     /// Miri Runner:
     /// 1. Runs deterministic boundary tests (0..64 bytes) to hit every loop edge.
     /// 2. Runs a small set of random fuzz tests (50 iterations) to catch weird patterns.
     fn run_miri_cycle<E: base64::Engine>(config: Config, reference_engine: &E) {
-        // PART 1: Deterministic Boundary Testing
+        // Deterministic Boundary Testing
         for len in 0..=64 {
             let mut rng = rng();
             let mut input = vec![0u8; len];
@@ -337,7 +417,7 @@ mod scalar_miri_tests {
             verify_roundtrip(&config, &input, reference_engine);
         }
 
-        // PART 2: Small Fuzzing (Random Lengths)
+        // Small Fuzzing (Random Lengths)
         let mut rng = rng();
         for _ in 0..100 {
             let len = rng.random_range(65..512);
@@ -354,18 +434,12 @@ mod scalar_miri_tests {
         // --- Encoding ---
         let expected_string = reference_engine.encode(input);
 
-        let enc_len = if config.padding { encoded_size(len) } else { encoded_size_unpadded(len) };
+        let enc_len = encoded_size(len, config.padding);
         let mut enc_buf = vec![0u8; enc_len];
 
-        unsafe { 
-            encode_slice_unsafe(config, input, enc_buf.as_mut_ptr()); 
-        }
+        unsafe { encode_slice_unsafe(config, input, enc_buf.as_mut_ptr()); }
 
-        assert_eq!(
-            &enc_buf, 
-            expected_string.as_bytes(), 
-            "Miri Encoding Mismatch! Len: {}", len
-        );
+        assert_eq!(&enc_buf, expected_string.as_bytes(), "Miri Encoding Mismatch!");
 
         // --- Decoding ---
         let dec_max_len = estimated_decoded_length(enc_len);
@@ -377,11 +451,7 @@ mod scalar_miri_tests {
 
             let my_decoded = &dec_buf[..written];
 
-            assert_eq!(
-                my_decoded, 
-                input, 
-                "Miri Decoding Mismatch! Len: {}", len
-            );
+            assert_eq!(my_decoded, input, "Miri Decoding Mismatch!");
         }
     }
 

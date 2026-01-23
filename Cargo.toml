@@ -38,6 +38,9 @@ base64-turbo = { path = "." }
 name = "encoding_bench"
 harness = false
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+
 [profile.release]
 opt-level = 3
 lto = "fat"
