@@ -1,6 +1,6 @@
 [package]
 name = "base64-turbo"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 description = "Hardware-accelerated, formally verified Base64 engine. Features AVX2/AVX512 support, zero-allocation, and no_std compatibility."
 license = "MIT"
