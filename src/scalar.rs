@@ -312,7 +312,7 @@ pub unsafe fn decode_slice_unsafe(config: &Config, input: &[u8], mut dst: *mut u
 }
 
 #[cfg(kani)]
-mod kani_verification_avx2 {
+mod kani_verification_scalar {
     use super::*;
 
     // 48 bytes input
@@ -391,7 +391,7 @@ mod kani_verification_avx2 {
 }
 
 #[cfg(all(test, miri))]
-mod avx2_miri_tests {
+mod scalar_miri_tests {
     use super::{encode_slice_unsafe, decode_slice_unsafe};
     use crate::Config;
     use base64::{engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD}};
