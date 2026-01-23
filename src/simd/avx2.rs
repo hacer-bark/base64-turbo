@@ -284,7 +284,8 @@ mod kani_verification_avx2 {
     use super::*;
     use core::mem::transmute;
 
-    // 168 bytes input.
+    // TODO: Add formal references of stubs to the Intel's docs
+
     const TEST_LIMIT: usize = 48;
     const TEST_START: usize = 32;
     const MAX_ENCODED_SIZE: usize = 64;
@@ -427,6 +428,20 @@ mod kani_verification_avx2 {
         unsafe { transmute(res_arr) }
     }
 
+    // STUB: _mm256_sub_epi8
+    // Logic: a - b (Wrapping)
+    unsafe fn mm256_sub_epi8_stub(a: __m256i, b: __m256i) -> __m256i {
+        let a_arr: [u8; 32] = unsafe { transmute(a) };
+        let b_arr: [u8; 32] = unsafe { transmute(b) };
+        let mut res_arr = [0u8; 32];
+
+        for i in 0..32 {
+            res_arr[i] = a_arr[i].wrapping_sub(b_arr[i]);
+        }
+
+        unsafe { transmute(res_arr) }
+    }
+
     #[kani::proof]
     #[kani::unwind(49)]
     #[kani::stub(core::arch::x86_64::_mm256_shuffle_epi8, mm256_shuffle_epi8_stub)]
@@ -486,6 +501,7 @@ mod kani_verification_avx2 {
     #[kani::stub(core::arch::x86_64::_mm256_testz_si256, mm256_testz_si256_stub)]
     #[kani::stub(core::arch::x86_64::_mm256_maddubs_epi16, mm256_maddubs_epi16_stub)]
     #[kani::stub(core::arch::x86_64::_mm256_madd_epi16, mm256_madd_epi16_stub)]
+    #[kani::stub(core::arch::x86_64::_mm256_sub_epi8, mm256_sub_epi8_stub)]
     fn check_decoder_robustness() {
         // Symbolic Config
         let config = Config {
