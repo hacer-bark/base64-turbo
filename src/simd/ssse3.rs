@@ -2,6 +2,8 @@ use crate::{Error, Config, scalar};
 use super::{PACK_L1, PACK_L2, PACK_SHUFFLE};
 use core::arch::x86_64::*;
 
+// Start refactoring logic...
+
 #[target_feature(enable = "ssse3")]
 pub unsafe fn encode_slice_simd(config: &Config, input: &[u8], mut dst: *mut u8) {
     let len = input.len();
