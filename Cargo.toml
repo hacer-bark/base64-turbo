@@ -2,7 +2,7 @@
 name = "base64-turbo"
 version = "0.1.2"
 edition = "2024"
-description = "Fastest pure Rust Base64 encoder/decoder with AVX2/AVX512 and fallback for no_std."
+description = "Hardware-accelerated, formally verified Base64 engine. Features AVX2/AVX512 support, zero-allocation, and no_std compatibility."
 license = "MIT"
 repository = "https://github.com/hacer-bark/base64-turbo"
 homepage = "https://github.com/hacer-bark/base64-turbo"
@@ -14,7 +14,8 @@ categories = ["encoding", "no-std", "web-programming"]
 exclude = [
     ".github",
     ".gitignore",
-    "benches/results/*"
+    "benches/results/*",
+    "benches/img/*",
 ]
 
 [features]

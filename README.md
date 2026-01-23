@@ -113,7 +113,7 @@ We prioritize **zero-dependencies**, **deterministic latency**, and **strict for
 *   *Recommendation:* Enable this only if you are processing massive datasets (MBs/GBs) and are willing to trade unpredictable jitter for memory-saturating throughput.
 
 #### 2. `avx512`
-*   **Verification Gap (MIRI):** While the AVX512 path is stable and has withstood over **2 Billion+ Fuzzing Iterations**, it is **not yet covered by the MIRI audit**. The Rust MIRI interpreter does not currently support AVX512 intrinsics. Therefore, it cannot formally guarantee that this specific path is free of Undefined Behavior (UB) to the same rigorous standard as Scalar and AVX2 paths.
+*   **Verification Gap (MIRI):** While the AVX512 path is stable and has withstood over **2.5 Billion+ Fuzzing Iterations**, it is **not yet covered by the MIRI audit**. The Rust MIRI interpreter does not currently support AVX512 intrinsics. Therefore, it cannot formally guarantee that this specific path is free of Undefined Behavior (UB) to the same rigorous standard as Scalar and AVX2 paths.
 *   *Recommendation:* Enable this if you are deploying on supported hardware (Zen 4 / Ice Lake) and require the additional ~60% throughput per core, accepting that this path relies on Fuzzing (Done) and Kani (In Progress) verification rather than MIRI.
 
 ## Architecture & Hardware Sympathy
@@ -134,7 +134,7 @@ To ensure strict adherence to these standards, **GitHub CI pipeline** is configu
 *   **Formal Verification (Kani)**: The logic for Scalar (Done), SSSE3 (In Progress), AVX2 (Done), and AVX512 (In Progress) implementations has been verified using the **Kani Model Checker**. This provides a mathematical proof that there are no possible inputs that can trigger Panics or Undefined Behavior (UB) within the core arithmetic.
 *   **MIRI Analysis**: The Scalar, SSSE3, and AVX2 execution paths are audited against the **MIRI Interpreter**. This ensures strict compliance with the Rust memory model, checking for data races, misalignment, and out-of-bounds access.
     *   *Note regarding AVX512*: MIRI does not currently support AVX512 intrinsics. Consequently, AVX512 paths are verified via Kani and Fuzzing, but not MIRI. For more details on this upstream limitation, please refer to the [FAQ](https://github.com/hacer-bark/base64-turbo/tree/main?tab=readme-ov-file#why-are-parallel-and-avx512-disabled-by-default).
-*   **Deep Fuzzing**: The decoder and encoder have withstood over **2 Billion fuzzing iterations** via `cargo fuzz`. This ensures resilience against edge cases, invalid inputs, and complex buffer boundary conditions.
+*   **Deep Fuzzing**: The decoder and encoder have withstood over **2.5 Billion fuzzing iterations** via `cargo fuzz`. This ensures resilience against edge cases, invalid inputs, and complex buffer boundary conditions.
 *   **Dynamic Dispatch**: CPU features are detected at runtime. The library automatically selects the fastest safe implementation available. If hardware support (e.g. AVX512) is missing, it safely falls back to optimized Scalar or SSSE3 paths.
 
 ## Binary Footprint
@@ -154,13 +154,14 @@ As part of transparency policy, here the sizes of the compiled library artifact 
 This project references several external Base64 libraries. Below is a comparative list detailing their performance characteristics and implementation details.
 
 *   **[base64](https://crates.io/crates/base64)**: The standard Base64 library for Rust. It prioritizes safety by utilizing only pure, safe Rust (referenced as `std` in this project's benchmarks).
-*   **[base64-simd](https://crates.io/crates/base64-simd)**: A high-performance Rust library. It is currently the fastest Rust-native implementation, trailing only `Turbo-Base64`. **Note:** It utilizes `unsafe` logic, specifically leveraging `core::simd` (e.g., `u8x32`, `u8x64`), and has not undergone formal security audits.
+*   **[base64-simd](https://crates.io/crates/base64-simd)**: A high-performance Rust library. It is currently the fastest Rust-native implementation, trailing only `base64-turbo` (This Crate). **Note:** It utilizes `unsafe` logic, specifically leveraging `core::simd` (e.g., `u8x32`, `u8x64`), and has not undergone formal security audits.
 *   **[Turbo-Base64](https://github.com/powturbo/Turbo-Base64)**: The current state-of-the-art implementation regarding raw speed. Written in C, it uses unchecked arithmetic and pointer manipulation to achieve ~70 GB/s throughput with AVX512 and ~30 GB/s with AVX2.
 *   **[Base64 (C)](https://github.com/aklomp/base64)**: A highly optimized C library by Alfred Klomp. It utilizes SIMD acceleration to achieve ~25 GB/s throughput with AVX2.
 *   **[fast-base64](https://github.com/lemire/fastbase64)**: A research-oriented C library by Daniel Lemire. It achieves approximately ~23 GB/s throughput with AVX2.
 *   **[vb64](https://crates.io/crates/vb64)**: An experimental Rust crate. It relies on the unstable `core::simd` module. It currently fails to compile because the `core::simd` API has changed significantly since the crate was written, breaking backward compatibility. Even when functional, benchmarks indicate it is slower than `base64-simd`.
 *   **[bs64](https://crates.io/crates/bs64)**: A Rust port attempting to replicate the logic of the C `fast-base64` library. Performance is lower than that of `base64-simd`.
 *   **[base-d](https://crates.io/crates/base-d)**: A Rust crate focused on flexibility and ease of use, offering support for 33+ alphabets. It utilizes SIMD for decoding only and is slower than `base64-simd`.
+*   **[webbuf](https://crates.io/crates/webbuf)**: A utility crate supporting both Base64 and Hex encoding. It prioritizes WebAssembly (WASM) compatibility and convenience features (such as whitespace stripping) over raw hardware acceleration.
 *   **[baste64](https://crates.io/crates/baste64)**: A Rust crate utilizing WASM-based SIMD instructions. It was not benchmarked due to maintainability issues; however, due to the overhead of WASM SIMD, it is projected to be slower than `base64-simd`.
 
 > **Safety Note**: With the exception of the standard `base64` crate (which uses only Safe Rust), none of these libraries offer verified guarantees against Undefined Behavior (UB).
