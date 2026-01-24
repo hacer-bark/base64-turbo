@@ -2,7 +2,7 @@ use crate::{Error, Config, scalar};
 use super::{PACK_L1, PACK_L2, PACK_SHUFFLE};
 use core::arch::x86_64::*;
 
-#[target_feature(enable = "ssse3,sse4.1")]
+#[target_feature(enable = "sse4.1")]
 pub unsafe fn encode_slice_simd(config: &Config, input: &[u8], mut dst: *mut u8) {
     let len = input.len();
     let mut src = input.as_ptr();
@@ -327,7 +327,7 @@ mod kani_verification_ssse3 {
 }
 
 #[cfg(all(test, miri))]
-mod ssse3_miri_tests {
+mod sse4_miri_tests {
     use super::{encode_slice_simd, decode_slice_simd};
     use crate::Config;
     use base64::{engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD}};
@@ -394,7 +394,7 @@ mod ssse3_miri_tests {
     // --- Tests ---
 
     #[test]
-    fn miri_ssse3_url_safe_roundtrip() {
+    fn miri_sse4_url_safe_roundtrip() {
         run_miri_cycle(
             Config { url_safe: true, padding: true }, 
             &URL_SAFE
@@ -402,7 +402,7 @@ mod ssse3_miri_tests {
     }
 
     #[test]
-    fn miri_ssse3_url_safe_no_pad_roundtrip() {
+    fn miri_sse4_url_safe_no_pad_roundtrip() {
         run_miri_cycle(
             Config { url_safe: true, padding: false }, 
             &URL_SAFE_NO_PAD
@@ -410,7 +410,7 @@ mod ssse3_miri_tests {
     }
 
     #[test]
-    fn miri_ssse3_standard_roundtrip() {
+    fn miri_sse4_standard_roundtrip() {
         run_miri_cycle(
             Config { url_safe: false, padding: true }, 
             &STANDARD
@@ -418,7 +418,7 @@ mod ssse3_miri_tests {
     }
 
     #[test]
-    fn miri_ssse3_standard_no_pad_roundtrip() {
+    fn miri_sse4_standard_no_pad_roundtrip() {
         run_miri_cycle(
             Config { url_safe: false, padding: false }, 
             &STANDARD_NO_PAD
@@ -428,7 +428,7 @@ mod ssse3_miri_tests {
     // --- Error Checks ---
 
     #[test]
-    fn miri_ssse3_invalid_input() {
+    fn miri_sse4_invalid_input() {
         let config = Config { url_safe: true, padding: false };
         let mut out = vec![0u8; 10];
 

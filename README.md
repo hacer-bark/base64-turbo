@@ -67,7 +67,7 @@ use base64_turbo::STANDARD;
 
 let data = b"huge_market_data_feed...";
 
-// Automatically selects the fastest SIMD algorithm (AVX2, SSSE3, or AVX512) at runtime.
+// Automatically selects the fastest SIMD algorithm (AVX2, SSE4.1, or AVX512) at runtime.
 // 
 // Note: Multi-threaded processing (Rayon) is opt-in via the `parallel` feature
 // to ensure deterministic latency in standard deployments.
@@ -98,7 +98,7 @@ By default, this crate is **dependency-free** and compiles on Stable Rust. Featu
 | Flag | Description | Default |
 | :--- | :--- | :--- |
 | `std` | Provides high-level `encode` and `decode` API returning heap-allocated `String` and `Vec<u8>`. Disable for embedded/bare-metal `no_std` environments. | **Enabled** |
-| `simd` | Enables runtime CPU feature detection (AVX2/SSSE3). Automatically falls back to safe scalar logic if hardware support is missing. | **Enabled** |
+| `simd` | Enables runtime CPU feature detection (AVX2/SSE4.1). Automatically falls back to safe scalar logic if hardware support is missing. | **Enabled** |
 | `parallel` | Enables multi-threaded processing for large payloads (> 512KB) via Rayon. **Note: This adds `rayon` as a dependency.** | **Disabled** |
 | `avx512` | Compiles AVX512 intrinsics. Requires a supported CPU (e.g., Zen 4, Ice Lake) to execute the optimized path. | **Disabled** |
 
@@ -131,11 +131,11 @@ Achieving maximum throughput should not come at the cost of memory safety. While
 
 To ensure strict adherence to these standards, **GitHub CI pipeline** is configured to block any release that fails to pass logical tests or MIRI verification.
 
-*   **Formal Verification (Kani)**: The logic for Scalar (Done), SSSE3 (In Progress), AVX2 (Done), and AVX512 (In Progress) implementations has been verified using the **Kani Model Checker**. This provides a mathematical proof that there are no possible inputs that can trigger Panics or Undefined Behavior (UB) within the core arithmetic.
-*   **MIRI Analysis**: The Scalar, SSSE3, and AVX2 execution paths are audited against the **MIRI Interpreter**. This ensures strict compliance with the Rust memory model, checking for data races, misalignment, and out-of-bounds access.
+*   **Formal Verification (Kani)**: The logic for Scalar (Done), SSE4.1 (In Progress), AVX2 (Done), and AVX512 (In Progress) implementations has been verified using the **Kani Model Checker**. This provides a mathematical proof that there are no possible inputs that can trigger Panics or Undefined Behavior (UB) within the core arithmetic.
+*   **MIRI Analysis**: The Scalar, SSE4.1, and AVX2 execution paths are audited against the **MIRI Interpreter**. This ensures strict compliance with the Rust memory model, checking for data races, misalignment, and out-of-bounds access.
     *   *Note regarding AVX512*: MIRI does not currently support AVX512 intrinsics. Consequently, AVX512 paths are verified via Kani and Fuzzing, but not MIRI. For more details on this upstream limitation, please refer to the [FAQ](https://github.com/hacer-bark/base64-turbo/tree/main?tab=readme-ov-file#why-are-parallel-and-avx512-disabled-by-default).
 *   **Deep Fuzzing**: The decoder and encoder have withstood over **2.5 Billion fuzzing iterations** via `cargo fuzz`. This ensures resilience against edge cases, invalid inputs, and complex buffer boundary conditions.
-*   **Dynamic Dispatch**: CPU features are detected at runtime. The library automatically selects the fastest safe implementation available. If hardware support (e.g. AVX512) is missing, it safely falls back to optimized Scalar or SSSE3 paths.
+*   **Dynamic Dispatch**: CPU features are detected at runtime. The library automatically selects the fastest safe implementation available. If hardware support (e.g. AVX512) is missing, it safely falls back to optimized Scalar or SSE4.1 paths.
 
 ## Binary Footprint
 
@@ -143,7 +143,7 @@ As part of transparency policy, here the sizes of the compiled library artifact 
 
 | Configuration | Size | Details |
 | :--- | :--- | :--- |
-| **Default** (`std` + `simd`) | **~512 KB** | "Fat Binary" containing **AVX2, SSSE3**, and Scalar paths to support runtime CPU detection. |
+| **Default** (`std` + `simd`) | **~512 KB** | "Fat Binary" containing **AVX2, SSE4.1**, and Scalar paths to support runtime CPU detection. |
 | **Scalar** (`std` only) | **~82 KB** | SIMD disabled. Optimized for legacy x86 or generic architectures. |
 | **Embedded** (`no_std`) | **~64 KB** | Pure Scalar logic. Ideal for microcontrollers, WASM, or kernel drivers. |
 
