@@ -39,7 +39,7 @@ pub unsafe fn encode_slice_avx2(config: &Config, input: &[u8], mut dst: *mut u8)
     let (sym_plus, sym_slash) = if config.url_safe { (-88, -39) } else { (-90, -87) };
     let lut_offsets = _mm256_setr_epi8(
         0, -75, -75, -75, -75, -75, -75, -75, -75, -75, -75, sym_plus, sym_slash, 0, 0, 0,
-        0, -75, -75, -75, -75, -75, -75, -75, -75, -75, -75, sym_plus, sym_slash, 0, 0, 0
+        0, -75, -75, -75, -75, -75, -75, -75, -75, -75, -75, sym_plus, sym_slash, 0, 0, 0,
     );
 
     macro_rules! encode_vec {
