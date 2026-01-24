@@ -8,6 +8,10 @@ on:
   pull_request:
     branches: [ "main" ]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
   CARGO_BUILD_JOBS: 2
@@ -25,6 +29,9 @@ jobs:
 
       - name: Run Tests
         run: |
+          # 1. Disable "Exit on Error"
+          set +e
+
           echo "Starting Parallel Logic Suite..."
 
           # --- 1. NO_STD (Compilation Check / Basic Tests) ---
@@ -90,6 +97,9 @@ jobs:
           if [ $FAILED -ne 0 ]; then
             exit 1
           fi
+
+          # 2. Re-enable Strict Mode
+          set -e
 
           echo "All Logic tests passed!"
 

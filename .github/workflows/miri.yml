@@ -8,6 +8,10 @@ on:
   pull_request:
     branches: [ "main" ]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
   CARGO_BUILD_JOBS: 2 
@@ -27,6 +31,9 @@ jobs:
 
       - name: Run MIRI
         run: |
+          # 1. Disable "Exit on Error"
+          set +e
+
           echo "Starting Parallel MIRI Suite..."
 
           # --- JOB 1: AVX2 ---
@@ -95,6 +102,9 @@ jobs:
           if [ $FAILED -ne 0 ]; then
             exit 1
           fi
+
+          # 2. Re-enable Strict Mode
+          set -e
           
           echo "All MIRI tests passed!"
 
