@@ -177,47 +177,47 @@ pub unsafe fn decode_slice_simd(config: &Config, input: &[u8], mut dst: *mut u8)
             let p = _mm_madd_epi16(m, pack_l2);
             let out = _mm_shuffle_epi8(p, pack_shuffle);
 
-            unsafe { _mm_storeu_si128(dst as *mut __m128i, out) };
+            unsafe { _mm_storeu_si128($dst_ptr as *mut __m128i, out) };
         }};
     }
 
-    // // Process 64 bytes (4 chunks) at a time
-    // let safe_len_batch = len.saturating_sub(4);
-    // let aligned_len_batch = safe_len_batch - (safe_len_batch % 64);
-    // let src_end_batch = unsafe { src.add(aligned_len_batch) };
+    // Process 64 bytes (4 chunks) at a time
+    let safe_len_batch = len.saturating_sub(4);
+    let aligned_len_batch = safe_len_batch - (safe_len_batch % 64);
+    let src_end_batch = unsafe { src.add(aligned_len_batch) };
 
-    // while src < src_end_batch {
-    //     // Load 4 vectors
-    //     let v0 = unsafe { _mm_loadu_si128(src as *const __m128i) };
-    //     let v1 = unsafe { _mm_loadu_si128(src.add(16) as *const __m128i) };
-    //     let v2 = unsafe { _mm_loadu_si128(src.add(32) as *const __m128i) };
-    //     let v3 = unsafe { _mm_loadu_si128(src.add(48) as *const __m128i) };
+    while src < src_end_batch {
+        // Load 4 vectors
+        let v0 = unsafe { _mm_loadu_si128(src as *const __m128i) };
+        let v1 = unsafe { _mm_loadu_si128(src.add(16) as *const __m128i) };
+        let v2 = unsafe { _mm_loadu_si128(src.add(32) as *const __m128i) };
+        let v3 = unsafe { _mm_loadu_si128(src.add(48) as *const __m128i) };
 
-    //     // Process
-    //     let (r0, e0) = decode_vec!(v0);
-    //     let (r1, e1) = decode_vec!(v1);
-    //     let (r2, e2) = decode_vec!(v2);
-    //     let (r3, e3) = decode_vec!(v3);
+        // Process
+        let (r0, e0) = decode_vec!(v0);
+        let (r1, e1) = decode_vec!(v1);
+        let (r2, e2) = decode_vec!(v2);
+        let (r3, e3) = decode_vec!(v3);
 
-    //     // Check Errors
-    //     let err_any = _mm_or_si128(
-    //         _mm_or_si128(e0, e1), 
-    //         _mm_or_si128(e2, e3)
-    //     );
+        // Check Errors
+        let err_any = _mm_or_si128(
+            _mm_or_si128(e0, e1), 
+            _mm_or_si128(e2, e3)
+        );
 
-    //     if _mm_testz_si128(err_any, err_any) != 1 {
-    //         return Err(Error::InvalidCharacter);
-    //     }
+        if _mm_testz_si128(err_any, err_any) != 1 {
+            return Err(Error::InvalidCharacter);
+        }
 
-    //     // Store 4 chunks
-    //     pack_and_store!(r0, dst);
-    //     pack_and_store!(r1, dst.add(12));
-    //     pack_and_store!(r2, dst.add(24));
-    //     pack_and_store!(r3, dst.add(36));
+        // Store 4 chunks
+        pack_and_store!(r0, dst);
+        pack_and_store!(r1, dst.add(12));
+        pack_and_store!(r2, dst.add(24));
+        pack_and_store!(r3, dst.add(36));
 
-    //     src = unsafe { src.add(64) };
-    //     dst = unsafe { dst.add(48) };
-    // }
+        src = unsafe { src.add(64) };
+        dst = unsafe { dst.add(48) };
+    }
 
     // Process remaining 16-byte chunks
     let safe_len_single = len.saturating_sub(4);

@@ -2,11 +2,11 @@
 use libfuzzer_sys::fuzz_target;
 use base64::engine::general_purpose::{
     STANDARD as REF_STD, STANDARD_NO_PAD as REF_STD_NP,
-    URL_SAFE as REF_URL, URL_SAFE_NO_PAD as REF_URL_NP
+    URL_SAFE as REF_URL, URL_SAFE_NO_PAD as REF_URL_NP,
 };
 use base64_turbo::{
     STANDARD as TURBO_STD, STANDARD_NO_PAD as TURBO_STD_NP,
-    URL_SAFE as TURBO_URL, URL_SAFE_NO_PAD as TURBO_URL_NP
+    URL_SAFE as TURBO_URL, URL_SAFE_NO_PAD as TURBO_URL_NP,
 };
 
 fuzz_target!(|data: &[u8]| {
