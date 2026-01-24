@@ -595,7 +595,9 @@ impl Engine {
             }
 
             // Smart degrade: If len < 16, skip SSSE3 and go straight to scalar.
-            if len >= 16 && std::is_x86_feature_detected!("ssse3") {
+            if len >= 16 
+                && std::is_x86_feature_detected!("ssse3")
+                && std::is_x86_feature_detected!("sse4.1")  {
                 unsafe { simd::encode_slice_simd(&self.config, input, dst); }
                 return;
             }
@@ -628,7 +630,9 @@ impl Engine {
             }
 
             // Smart degrade: Fallback to SSSE3 if len is between 16 and 32.
-            if len >= 16 && std::is_x86_feature_detected!("ssse3") {
+            if len >= 16 
+                && std::is_x86_feature_detected!("ssse3")
+                && std::is_x86_feature_detected!("sse4.1")  {
                 return unsafe { simd::decode_slice_simd(&self.config, input, dst) };
             }
         }

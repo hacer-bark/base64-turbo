@@ -2,149 +2,248 @@ use crate::{Error, Config, scalar};
 use super::{PACK_L1, PACK_L2, PACK_SHUFFLE};
 use core::arch::x86_64::*;
 
-#[target_feature(enable = "ssse3")]
+// Start refactoring logic...
+
+#[target_feature(enable = "ssse3,sse4.1")]
 pub unsafe fn encode_slice_simd(config: &Config, input: &[u8], mut dst: *mut u8) {
     let len = input.len();
     let mut src = input.as_ptr();
-    let mut i = 0;
 
-    let safe_limit = len.saturating_sub(4);
-    let aligned_len = safe_limit - (safe_limit % 12);
-    let src_end_aligned = unsafe { src.add(aligned_len) };
-
+    // Shuffle bytes for mul
     let shuffle = _mm_setr_epi8(1, 0, 2, 1, 4, 3, 5, 4, 7, 6, 8, 7, 10, 9, 11, 10);
-    let mask_6bit = _mm_set1_epi16(0x003F);
-    let mask_hi_bits = _mm_set1_epi16(0x3F00);
+
+    // Masks for bit extraction
+    let mask_lo_6bits = _mm_set1_epi16(0x003F);
+    let mask_hi_6bits = _mm_set1_epi16(0x3F00);
+
+    // Multiplier for shift of bytes.
     let mul_right_shift = _mm_setr_epi16(0x0040, 0x0400, 0x0040, 0x0400, 0x0040, 0x0400, 0x0040, 0x0400);
     let mul_left_shift = _mm_setr_epi16(0x0010, 0x0100, 0x0010, 0x0100, 0x0010, 0x0100, 0x0010, 0x0100);
-    let set_25 = _mm_set1_epi8(25);
-    let set_51 = _mm_set1_epi8(51);
-    let set_61 = _mm_set1_epi8(61);
-    let set_63 = _mm_set1_epi8(63);
+
+    // Mapping logic for letters
     let offset_base = _mm_set1_epi8(65);
-    let delta_25 = _mm_set1_epi8(6);
-    let delta_51 = _mm_set1_epi8(-75);
+    let set_25 = _mm_set1_epi8(25);
+    let delta_lower = _mm_set1_epi8(6);
+    let set_51 = _mm_set1_epi8(51);
 
-    let (val_61, val_63) = if config.url_safe { (-13, 49) } else { (-15, 3) };
-    let delta_61 = _mm_set1_epi8(val_61);
-    let delta_63 = _mm_set1_epi8(val_63);
+    // LUT Table for numbers and special chars
+    let (sym_plus, sym_slash) = if config.url_safe { (-88, -39) } else { (-90, -87) };
+    let lut_offsets = _mm_setr_epi8(0, -75, -75, -75, -75, -75, -75, -75, -75, -75, -75, sym_plus, sym_slash, 0, 0, 0);
 
-    while src < src_end_aligned {
-        let v_in = unsafe { _mm_loadu_si128(src as *const __m128i) };
-        let v = _mm_shuffle_epi8(v_in, shuffle);
+    macro_rules! encode_vec {
+        ($in_vec:expr) => {{
+            // Compute 3 bytes => 4 letters
+            let v = _mm_shuffle_epi8($in_vec, shuffle);
 
-        let res_low = _mm_and_si128(_mm_mulhi_epu16(v, mul_right_shift), mask_6bit);
-        let res_high = _mm_and_si128(_mm_mullo_epi16(v, mul_left_shift), mask_hi_bits);
-        let indices = _mm_or_si128(res_low, res_high);
+            let lo = _mm_mullo_epi16(v, mul_left_shift);
+            let hi = _mm_mulhi_epu16(v, mul_right_shift);
+            let indices = _mm_or_si128(
+                _mm_and_si128(lo, mask_hi_6bits),
+                _mm_and_si128(hi, mask_lo_6bits),
+            );
 
-        let gt_25 = _mm_cmpgt_epi8(indices, set_25);
-        let gt_51 = _mm_cmpgt_epi8(indices, set_51);
-        let gt_61 = _mm_cmpgt_epi8(indices, set_61);
-        let eq_63 = _mm_cmpeq_epi8(indices, set_63);
+            // Found char values offsets
+            let mut char_val = _mm_add_epi8(indices, offset_base);
+            let offset_lower = _mm_and_si128(_mm_cmpgt_epi8(indices, set_25), delta_lower);
+            char_val = _mm_add_epi8(char_val, offset_lower);
 
-        let d25 = _mm_and_si128(gt_25, delta_25);
-        let d51 = _mm_and_si128(gt_51, delta_51);
-        let d61 = _mm_and_si128(gt_61, delta_61);
-        let d63 = _mm_and_si128(eq_63, delta_63);
+            // Found numbers and special symbols offsets
+            let offset_special = _mm_shuffle_epi8(lut_offsets, _mm_subs_epu8(indices, set_51));
 
-        let sum_a = _mm_add_epi8(d25, d51);
-        let sum_b = _mm_add_epi8(d61, d63);
-        let sum_c = _mm_add_epi8(sum_a, sum_b);
-        let total_offset = _mm_add_epi8(sum_c, offset_base);
+            // Final sum
+            _mm_add_epi8(char_val, offset_special)
+        }};
+    }
 
-        let result = _mm_add_epi8(indices, total_offset);
+    // Process 48 bytes (4 chunks) at a time
+    let safe_len_batch = len.saturating_sub(4);
+    let aligned_len_batch = safe_len_batch - (safe_len_batch % 48);
+    let src_end_batch = unsafe { src.add(aligned_len_batch) };
 
-        unsafe { _mm_storeu_si128(dst as *mut __m128i, result) };
+    while src < src_end_batch {
+        // Load 4 vectors
+        let v0 = unsafe { _mm_loadu_si128(src as *const __m128i) };
+        let v1 = unsafe { _mm_loadu_si128(src.add(12) as *const __m128i) };
+        let v2 = unsafe { _mm_loadu_si128(src.add(24) as *const __m128i) };
+        let v3 = unsafe { _mm_loadu_si128(src.add(36) as *const __m128i) };
+
+        // Process
+        let r0 = encode_vec!(v0);
+        let r1 = encode_vec!(v1);
+        let r2 = encode_vec!(v2);
+        let r3 = encode_vec!(v3);
+
+        // Store 4 chunks
+        unsafe { _mm_storeu_si128(dst as *mut __m128i, r0) };
+        unsafe { _mm_storeu_si128(dst.add(16) as *mut __m128i, r1) };
+        unsafe { _mm_storeu_si128(dst.add(32) as *mut __m128i, r2) };
+        unsafe { _mm_storeu_si128(dst.add(48) as *mut __m128i, r3) };
+
+        src = unsafe { src.add(48) };
+        dst = unsafe { dst.add(64) };
+    }
+
+    // Process remaining 12-byte chunks
+    let safe_len_single = len.saturating_sub(4);
+    let aligned_len_single = safe_len_single - (safe_len_single % 12);
+    let src_end_single = unsafe { input.as_ptr().add(aligned_len_single) };
+
+    while src < src_end_single {
+        let v = unsafe { _mm_loadu_si128(src as *const __m128i) };
+        let res = encode_vec!(v);
+        unsafe { _mm_storeu_si128(dst as *mut __m128i, res) };
 
         src = unsafe { src.add(12) };
         dst = unsafe { dst.add(16) };
-        i += 12;
     }
 
-    if i < len {
-        unsafe { scalar::encode_slice_unsafe(config, &input[i..], dst) };
+    // Scalar Fallback
+    let processed_len = unsafe { src.offset_from(input.as_ptr()) } as usize;
+    if processed_len < len {
+        unsafe { scalar::encode_slice_unsafe(config, &input[processed_len..], dst) };
     }
 }
 
-#[target_feature(enable = "ssse3")]
+#[target_feature(enable = "ssse3,sse4.1")]
 pub unsafe fn decode_slice_simd(config: &Config, input: &[u8], mut dst: *mut u8) -> Result<usize, Error> {
     let len = input.len();
     let mut src = input.as_ptr();
-    let mut i = 0;
     let dst_start = dst;
 
-    let safe_len = len.saturating_sub(16);
-    let aligned_len = safe_len - (safe_len % 16);
-    let src_end_aligned = unsafe { src.add(aligned_len) };
+    // LUT for offsets based on high nibble (bits 4-7).
+    let lut_hi_nibble = _mm_setr_epi8(0, 0, 19, 4, -65, -65, -71, -71, 0, 0, 0, 0, 0, 0, 0, 0);
 
-    let range_a = _mm_set1_epi8(b'a' as i8);
-    let range_z = _mm_set1_epi8(b'z' as i8);
-    let range_capital_a = _mm_set1_epi8(b'A' as i8);
-    let range_capital_z = _mm_set1_epi8(b'Z' as i8);
+    // Range and offsets of special chars
+    let (char_62, char_63) = if config.url_safe { (b'-', b'_') } else { (b'+', b'/') };
+    let sym_62 = _mm_set1_epi8(char_62 as i8);
+    let sym_63 = _mm_set1_epi8(char_63 as i8);
+
+    let (fix_62, fix_63) = if config.url_safe { (-2, 33) } else { (0, -3) };
+    let delta_62 = _mm_set1_epi8(fix_62);
+    let delta_63 = _mm_set1_epi8(fix_63);
+
+    // Range Validation Constants
     let range_0 = _mm_set1_epi8(b'0' as i8);
-    let range_9 = _mm_set1_epi8(b'9' as i8);
+    let range_9_len = _mm_set1_epi8(9);
 
-    let (sym_62, sym_63) = if config.url_safe { (b'-', b'_') } else { (b'+', b'/') };
-    let char_62 = _mm_set1_epi8(sym_62 as i8);
-    let char_63 = _mm_set1_epi8(sym_63 as i8);
+    let range_a = _mm_set1_epi8(b'A' as i8);
+    let range_z_len = _mm_set1_epi8(25);
 
-    let delta_lower = _mm_set1_epi8(-71);
-    let delta_upper = _mm_set1_epi8(-65);
-    let delta_digit = _mm_set1_epi8(4);
-    let val_62 = _mm_set1_epi8(62);
-    let val_63 = _mm_set1_epi8(63);
+    let range_a_low = _mm_set1_epi8(b'a' as i8);
+    let range_z_low_len = _mm_set1_epi8(25);
 
+    // Packing Constants
     let pack_l1 = unsafe { _mm_loadu_si128(PACK_L1.as_ptr() as *const __m128i) };
     let pack_l2 = unsafe { _mm_loadu_si128(PACK_L2.as_ptr() as *const __m128i) };
     let pack_shuffle = unsafe { _mm_loadu_si128(PACK_SHUFFLE.as_ptr() as *const __m128i) };
 
-    while src < src_end_aligned {
-        let v = unsafe { _mm_loadu_si128(src as *const __m128i) };
+    // Masks for nibble extraction
+    let mask_hi_nibble = _mm_set1_epi8(0x0F);
 
-        let ge_a = _mm_cmpgt_epi8(v, _mm_sub_epi8(range_a, _mm_set1_epi8(1)));
-        let le_z = _mm_cmpgt_epi8(_mm_add_epi8(range_z, _mm_set1_epi8(1)), v);
-        let mk_lower = _mm_and_si128(ge_a, le_z);
+    // Decode & Validate Single Vector
+    macro_rules! decode_vec {
+        ($input:expr) => {{
+            let hi = _mm_and_si128(_mm_srli_epi16($input, 4), mask_hi_nibble);
+            let offset = _mm_shuffle_epi8(lut_hi_nibble, hi);
+            let mut indices = _mm_add_epi8($input, offset);
 
-        let ge_capital_a = _mm_cmpgt_epi8(v, _mm_sub_epi8(range_capital_a, _mm_set1_epi8(1)));
-        let le_capital_z = _mm_cmpgt_epi8(_mm_add_epi8(range_capital_z, _mm_set1_epi8(1)), v);
-        let mk_upper = _mm_and_si128(ge_capital_a, le_capital_z);
+            let mask_62 = _mm_cmpeq_epi8($input, sym_62);
+            let mask_63 = _mm_cmpeq_epi8($input, sym_63);
 
-        let ge_0 = _mm_cmpgt_epi8(v, _mm_sub_epi8(range_0, _mm_set1_epi8(1)));
-        let le_9 = _mm_cmpgt_epi8(_mm_add_epi8(range_9, _mm_set1_epi8(1)), v);
-        let mk_digit = _mm_and_si128(ge_0, le_9);
+            let fix = _mm_or_si128(
+                _mm_and_si128(mask_62, delta_62),
+                _mm_and_si128(mask_63, delta_63),
+            );
+            indices = _mm_add_epi8(indices, fix);
 
-        let mk_62 = _mm_cmpeq_epi8(v, char_62);
-        let mk_63 = _mm_cmpeq_epi8(v, char_63);
+            let is_sym = _mm_or_si128(mask_62, mask_63);
 
-        let valid_mask = _mm_or_si128(
-            _mm_or_si128(mk_lower, mk_upper),
-            _mm_or_si128(mk_digit, _mm_or_si128(mk_62, mk_63))
+            let sub_0 = _mm_subs_epu8(_mm_sub_epi8($input, range_0), range_9_len);
+            let sub_a = _mm_subs_epu8(_mm_sub_epi8($input, range_a), range_z_len);
+            let sub_a_low = _mm_subs_epu8(_mm_sub_epi8($input, range_a_low), range_z_low_len);
+
+            let err = _mm_andnot_si128(
+                is_sym,
+                _mm_and_si128(sub_0, _mm_and_si128(sub_a, sub_a_low)),
+            );
+
+            (indices, err)
+        }};
+    }
+
+    macro_rules! pack_and_store {
+        ($indices:expr, $dst_ptr:expr) => {{
+            let m = _mm_maddubs_epi16($indices, pack_l1);
+            let p = _mm_madd_epi16(m, pack_l2);
+            let out = _mm_shuffle_epi8(p, pack_shuffle);
+
+            unsafe { _mm_storeu_si128($dst_ptr as *mut __m128i, out) };
+        }};
+    }
+
+    // Process 64 bytes (4 chunks) at a time
+    let safe_len_batch = len.saturating_sub(4);
+    let aligned_len_batch = safe_len_batch - (safe_len_batch % 64);
+    let src_end_batch = unsafe { src.add(aligned_len_batch) };
+
+    while src < src_end_batch {
+        // Load 4 vectors
+        let v0 = unsafe { _mm_loadu_si128(src as *const __m128i) };
+        let v1 = unsafe { _mm_loadu_si128(src.add(16) as *const __m128i) };
+        let v2 = unsafe { _mm_loadu_si128(src.add(32) as *const __m128i) };
+        let v3 = unsafe { _mm_loadu_si128(src.add(48) as *const __m128i) };
+
+        // Process
+        let (r0, e0) = decode_vec!(v0);
+        let (r1, e1) = decode_vec!(v1);
+        let (r2, e2) = decode_vec!(v2);
+        let (r3, e3) = decode_vec!(v3);
+
+        // Check Errors
+        let err_any = _mm_or_si128(
+            _mm_or_si128(e0, e1), 
+            _mm_or_si128(e2, e3)
         );
 
-        if _mm_movemask_epi8(valid_mask) != 0xFFFF {
+        if _mm_testz_si128(err_any, err_any) != 1 {
             return Err(Error::InvalidCharacter);
         }
 
-        let mut indices = _mm_and_si128(mk_lower, _mm_add_epi8(v, delta_lower));
-        indices = _mm_or_si128(indices, _mm_and_si128(mk_upper, _mm_add_epi8(v, delta_upper)));
-        indices = _mm_or_si128(indices, _mm_and_si128(mk_digit, _mm_add_epi8(v, delta_digit)));
-        indices = _mm_or_si128(indices, _mm_and_si128(mk_62, val_62));
-        indices = _mm_or_si128(indices, _mm_and_si128(mk_63, val_63));
+        // Store 4 chunks
+        pack_and_store!(r0, dst);
+        pack_and_store!(r1, dst.add(12));
+        pack_and_store!(r2, dst.add(24));
+        pack_and_store!(r3, dst.add(36));
 
-        let merged = _mm_maddubs_epi16(indices, pack_l1);
-        let packed_u32 = _mm_madd_epi16(merged, pack_l2);
-        let final_bytes = _mm_shuffle_epi8(packed_u32, pack_shuffle);
+        src = unsafe { src.add(64) };
+        dst = unsafe { dst.add(48) };
+    }
 
-        unsafe { _mm_storeu_si128(dst as *mut __m128i, final_bytes) };
+    // Process remaining 16-byte chunks
+    let safe_len_single = len.saturating_sub(4);
+    let aligned_len_single = safe_len_single - (safe_len_single % 16);
+    let src_end_single = unsafe { input.as_ptr().add(aligned_len_single) };
+
+    while src < src_end_single {
+        let v = unsafe { _mm_loadu_si128(src as *const __m128i) };
+        let (idx, err) = decode_vec!(v);
+
+        if _mm_testz_si128(err, err) != 1 {
+            return Err(Error::InvalidCharacter);
+        }
+
+        pack_and_store!(idx, dst);
 
         src = unsafe { src.add(16) };
         dst = unsafe { dst.add(12) };
-        i += 16;
     }
 
-    if i < len {
-        dst = unsafe { dst.add(scalar::decode_slice_unsafe(config, &input[i..], dst)?) };
+    // Scalar Fallback
+    let processed_len = unsafe { src.offset_from(input.as_ptr()) } as usize;
+    if processed_len < len {
+        dst = unsafe { dst.add(scalar::decode_slice_unsafe(config, &input[processed_len..], dst)?) };
     }
+
     Ok(unsafe { dst.offset_from(dst_start) } as usize)
 }
 
@@ -238,15 +337,16 @@ mod ssse3_miri_tests {
 
     // --- Helpers ---
 
-    fn encoded_size(len: usize) -> usize { (len + 2) / 3 * 4 }
-    fn encoded_size_unpadded(len: usize) -> usize { (len * 4 + 2) / 3 }
+    fn encoded_size(len: usize, padding: bool) -> usize {
+        if padding { (len + 2) / 3 * 4 } else { (len * 4 + 2) / 3 }
+    }
     fn estimated_decoded_length(len: usize) -> usize { (len / 4 + 1) * 3 }
 
     /// Miri Runner:
     /// 1. Runs deterministic boundary tests (0..64 bytes) to hit every loop edge.
     /// 2. Runs a small set of random fuzz tests (50 iterations) to catch weird patterns.
     fn run_miri_cycle<E: base64::Engine>(config: Config, reference_engine: &E) {
-        // PART 1: Deterministic Boundary Testing
+        // Deterministic Boundary Testing
         for len in 0..=64 {
             let mut rng = rng();
             let mut input = vec![0u8; len];
@@ -255,7 +355,7 @@ mod ssse3_miri_tests {
             verify_roundtrip(&config, &input, reference_engine);
         }
 
-        // PART 2: Small Fuzzing (Random Lengths)
+        // Small Fuzzing (Random Lengths)
         let mut rng = rng();
         for _ in 0..100 {
             let len = rng.random_range(65..512);
@@ -272,18 +372,12 @@ mod ssse3_miri_tests {
         // --- Encoding ---
         let expected_string = reference_engine.encode(input);
 
-        let enc_len = if config.padding { encoded_size(len) } else { encoded_size_unpadded(len) };
+        let enc_len = encoded_size(len, config.padding);
         let mut enc_buf = vec![0u8; enc_len];
 
-        unsafe { 
-            encode_slice_simd(config, input, enc_buf.as_mut_ptr()); 
-        }
+        unsafe { encode_slice_simd(config, input, enc_buf.as_mut_ptr()); }
 
-        assert_eq!(
-            &enc_buf, 
-            expected_string.as_bytes(), 
-            "Miri Encoding Mismatch! Len: {}", len
-        );
+        assert_eq!(&enc_buf, expected_string.as_bytes(), "Miri Encoding Mismatch!");
 
         // --- Decoding ---
         let dec_max_len = estimated_decoded_length(enc_len);
@@ -295,11 +389,7 @@ mod ssse3_miri_tests {
 
             let my_decoded = &dec_buf[..written];
 
-            assert_eq!(
-                my_decoded, 
-                input, 
-                "Miri Decoding Mismatch! Len: {}", len
-            );
+            assert_eq!(my_decoded, input, "Miri Decoding Mismatch!");
         }
     }
 
