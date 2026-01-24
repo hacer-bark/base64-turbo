@@ -25,6 +25,9 @@ jobs:
 
       - name: Run Tests
         run: |
+          # 1. Disable "Exit on Error"
+          set +e
+
           echo "Starting Parallel Logic Suite..."
 
           # --- 1. NO_STD (Compilation Check / Basic Tests) ---
@@ -90,6 +93,9 @@ jobs:
           if [ $FAILED -ne 0 ]; then
             exit 1
           fi
+
+          # 2. Re-enable Strict Mode
+          set -e
 
           echo "All Logic tests passed!"
 
