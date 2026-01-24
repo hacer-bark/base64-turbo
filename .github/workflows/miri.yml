@@ -42,7 +42,7 @@ jobs:
 
           # --- JOB 2: SSSE3 ---
           (
-            export RUSTFLAGS="-C target-feature=+ssse3"
+            export RUSTFLAGS="-C target-feature=+sse4.1"
             export MIRIFLAGS="-Zmiri-symbolic-alignment-check"
             export CARGO_TARGET_DIR="target_ssse3"
             echo "[SSSE3] Compiling and Testing..."
