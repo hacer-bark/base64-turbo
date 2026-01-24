@@ -132,6 +132,7 @@ pub unsafe fn decode_slice_simd(config: &Config, input: &[u8], mut dst: *mut u8)
     let val_62 = _mm_set1_epi8(62);
     let val_63 = _mm_set1_epi8(63);
 
+
     let pack_l1 = unsafe { _mm_loadu_si128(PACK_L1.as_ptr() as *const __m128i) };
     let pack_l2 = unsafe { _mm_loadu_si128(PACK_L2.as_ptr() as *const __m128i) };
     let pack_shuffle = unsafe { _mm_loadu_si128(PACK_SHUFFLE.as_ptr() as *const __m128i) };
