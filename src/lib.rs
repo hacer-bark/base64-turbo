@@ -9,7 +9,7 @@
 //!
 //! A SIMD-accelerated Base64 encoder/decoder for Rust, optimized for high-throughput systems.
 //!
-//! This crate provides runtime CPU detection to utilize AVX2, SSSE3, or AVX512 (via feature flag) intrinsics.
+//! This crate provides runtime CPU detection to utilize AVX2, SSE4.1, or AVX512 (via feature flag) intrinsics.
 //! It includes a highly optimized scalar fallback for non-SIMD targets and supports `no_std` environments.
 //!
 //! ## Usage
@@ -66,7 +66,7 @@
 //! | Feature | Default | Description |
 //! |---------|---------|-------------|
 //! | **`std`** | **Yes** | Enables `String` and `Vec` support. Disable this for `no_std` environments. |
-//! | **`simd`** | **Yes** | Enables runtime detection for AVX2 and SSSE3 intrinsics. If disabled or unsupported by hardware, the crate falls back to scalar logic automatic. |
+//! | **`simd`** | **Yes** | Enables runtime detection for AVX2 and SSE4.1 intrinsics. If disabled or unsupported by hardware, the crate falls back to scalar logic automatic. |
 //! | **`parallel`** | **No** | Enables [Rayon](https://crates.io/crates/rayon) support. Automatically parallelizes processing for payloads larger than 512KB. Recommended only for massive data ingestion tasks. |
 //! | **`avx512`** | **No** | Enables AVX512 intrinsics. |
 //!
@@ -74,14 +74,10 @@
 //!
 //! This crate utilizes `unsafe` code for SIMD intrinsics and pointer arithmetic to achieve maximum performance.
 //!
-//! *   **Formal Verification (Kani):** Scalar (Done), SSSE3 (In Progress), AVX2 (Done), AVX512 (In Progress) code mathematic proven to be UB free and panic free.
+//! *   **Formal Verification (Kani):** Scalar (Done), SSE4.1 (In Progress), AVX2 (Done), AVX512 (In Progress) code mathematic proven to be UB free and panic free.
 //! *   **MIRI Tests:** Core SIMD logic and scalar fallbacks are verified with **MIRI** (Undefined Behavior checker) in CI.
 //! *   **Fuzzing:** The codebase is fuzz-tested via `cargo-fuzz`.
 //! *   **Fallback:** Invalid or unsupported hardware instruction sets are detected at runtime, ensuring safe fallback to scalar code.
-
-// TODO: Add docs for SIMD
-// TODO: Update SSSE3 and AVX512 logic for new algo
-// TODO: Investigate low speed at small payloads
 
 #![cfg_attr(not(any(feature = "std", test)), no_std)]
 
@@ -594,10 +590,8 @@ impl Engine {
                 return;
             }
 
-            // Smart degrade: If len < 16, skip SSSE3 and go straight to scalar.
-            if len >= 16 
-                && std::is_x86_feature_detected!("ssse3")
-                && std::is_x86_feature_detected!("sse4.1")  {
+            // Smart degrade: If len < 16, skip SSE4.1 and go straight to scalar.
+            if len >= 16 && std::is_x86_feature_detected!("sse4.1")  {
                 unsafe { simd::encode_slice_simd(&self.config, input, dst); }
                 return;
             }
@@ -629,10 +623,8 @@ impl Engine {
                 return unsafe { simd::decode_slice_avx2(&self.config, input, dst) };
             }
 
-            // Smart degrade: Fallback to SSSE3 if len is between 16 and 32.
-            if len >= 16 
-                && std::is_x86_feature_detected!("ssse3")
-                && std::is_x86_feature_detected!("sse4.1")  {
+            // Smart degrade: Fallback to SSE4.1 if len is between 16 and 32.
+            if len >= 16 && std::is_x86_feature_detected!("sse4.1")  {
                 return unsafe { simd::decode_slice_simd(&self.config, input, dst) };
             }
         }

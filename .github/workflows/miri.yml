@@ -47,15 +47,15 @@ jobs:
           ) & 
           PID_AVX2=$!
 
-          # --- JOB 2: SSSE3 ---
+          # --- JOB 2: SSE4.1 ---
           (
             export RUSTFLAGS="-C target-feature=+sse4.1"
             export MIRIFLAGS="-Zmiri-symbolic-alignment-check"
-            export CARGO_TARGET_DIR="target_ssse3"
-            echo "[SSSE3] Compiling and Testing..."
-            cargo +nightly miri test ssse3_miri_tests > ssse3.log 2>&1
+            export CARGO_TARGET_DIR="target_sse4"
+            echo "[SSE4.1] Compiling and Testing..."
+            cargo +nightly miri test sse4_miri_tests > sse4.log 2>&1
           ) &
-          PID_SSSE3=$!
+          PID_SSE4=$!
 
           # --- JOB 3: SCALAR ---
           (
@@ -81,13 +81,13 @@ jobs:
             echo "[AVX2] PASSED"
           fi
 
-          wait $PID_SSSE3
+          wait $PID_SSE4
           if [ $? -ne 0 ]; then
-            echo "[SSSE3] FAILED. Logs:"
+            echo "[SSE4.1] FAILED. Logs:"
             cat ssse3.log
             FAILED=1
           else
-            echo "[SSSE3] PASSED"
+            echo "[SSE4.1] PASSED"
           fi
 
           wait $PID_SCALAR
@@ -111,4 +111,4 @@ jobs:
       - name: Cleanup Artifacts
         if: always()
         run: |
-          rm -rf target_avx2 target_ssse3 target_scalar *.log
+          rm -rf target_avx2 target_sse4 target_scalar *.log
