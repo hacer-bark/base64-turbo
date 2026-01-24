@@ -284,7 +284,7 @@ mod kani_verification_avx2 {
     use super::*;
     use core::mem::transmute;
 
-    // TODO: Add formal references of stubs to the Intel's docs
+    // TODO: Recheck all stubs against intel docs and re implement them 1 by 1
 
     const TEST_LIMIT: usize = 48;
     const TEST_START: usize = 32;
@@ -295,6 +295,7 @@ mod kani_verification_avx2 {
     }
 
     // STUB: _mm256_shuffle_epi8
+    // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#ig_expand=1,6006,6006&avxnewtechs=AVX2&text=_mm256_shuffle_epi8
     unsafe fn mm256_shuffle_epi8_stub(a: __m256i, b: __m256i) -> __m256i {
         let a: [u8; 32] = unsafe { transmute(a) };
         let b: [u8; 32] = unsafe { transmute(b) };
@@ -313,6 +314,7 @@ mod kani_verification_avx2 {
 
     // STUB: _mm256_mulhi_epu16
     // Logic: (a * b) >> 16
+    // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#ig_expand=1,6006,6006,4742&avxnewtechs=AVX2&text=_mm256_mulhi_epu16
     unsafe fn mm256_mulhi_epu16_stub(a: __m256i, b: __m256i) -> __m256i {
         let a_arr: [u16; 16] = unsafe { transmute(a) };
         let b_arr: [u16; 16] = unsafe { transmute(b) };
@@ -332,6 +334,7 @@ mod kani_verification_avx2 {
 
     // STUB: _mm256_mullo_epi16
     // Logic: (a * b) & 0xFFFF (Keep low bits)
+    // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#ig_expand=1,6006,6006,4742,4763&avxnewtechs=AVX2&text=_mm256_mullo_epi16
     unsafe fn mm256_mullo_epi16_stub(a: __m256i, b: __m256i) -> __m256i {
         let a_arr: [u16; 16] = unsafe { transmute(a) };
         let b_arr: [u16; 16] = unsafe { transmute(b) };
@@ -346,6 +349,7 @@ mod kani_verification_avx2 {
 
     // STUB: _mm256_add_epi8
     // Logic: a + b (Wrapping)
+    // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#ig_expand=1,6006,6006,4742,4763,110&avxnewtechs=AVX2&text=_mm256_add_epi8
     unsafe fn mm256_add_epi8_stub(a: __m256i, b: __m256i) -> __m256i {
         let a_arr: [u8; 32] = unsafe { transmute(a) };
         let b_arr: [u8; 32] = unsafe { transmute(b) };
@@ -360,6 +364,7 @@ mod kani_verification_avx2 {
 
     // STUB: _mm256_subs_epu8
     // Logic: Saturating Subtract (if b > a, result is 0)
+    // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#ig_expand=1,6006,6006,4742,4763,110,6699&avxnewtechs=AVX2&text=_mm256_subs_epu8
     unsafe fn mm256_subs_epu8_stub(a: __m256i, b: __m256i) -> __m256i {
         let a_arr: [u8; 32] = unsafe { transmute(a) };
         let b_arr: [u8; 32] = unsafe { transmute(b) };
@@ -374,6 +379,7 @@ mod kani_verification_avx2 {
 
     // STUB: _mm256_testz_si256
     // Logic: Returns 1 if (a & b) == 0 (Zero Flag set). Otherwise returns 0.
+    // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#ig_expand=1,6006,6006,4742,4763,110,6699,6858&text=_mm256_testz_si256&techs=AVX_ALL
     unsafe fn mm256_testz_si256_stub(a: __m256i, b: __m256i) -> i32 {
         let a_arr: [u64; 4] = unsafe { transmute(a) };
         let b_arr: [u64; 4] = unsafe { transmute(b) };
@@ -390,6 +396,7 @@ mod kani_verification_avx2 {
     // STUB: _mm256_maddubs_epi16
     // Logic: (a[i] * b[i]) + (a[i+1] * b[i+1]) with Saturation
     // Input A is Unsigned (u8), Input B is Signed (i8)
+    // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#ig_expand=1,6006,6006,4742,4763,110,6699,6858,4236&text=_mm256_maddubs_epi16&techs=AVX_ALL
     unsafe fn mm256_maddubs_epi16_stub(a: __m256i, b: __m256i) -> __m256i {
         let a_arr: [u8; 32] = unsafe { transmute(a) };
         let b_arr: [i8; 32] = unsafe { transmute(b) };
@@ -411,6 +418,7 @@ mod kani_verification_avx2 {
     // STUB: _mm256_madd_epi16
     // Logic: Multiply packed i16s, then add adjacent pairs into i32s.
     // Result = (a[0]*b[0] + a[1]*b[1]), (a[2]*b[2] + a[3]*b[3]), ...
+    // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#ig_expand=1,6006,6006,4742,4763,110,6699,6858,4236,4200&text=_mm256_madd_epi16&techs=AVX_ALL
     unsafe fn mm256_madd_epi16_stub(a: __m256i, b: __m256i) -> __m256i {
         let a_arr: [i16; 16] = unsafe { transmute(a) };
         let b_arr: [i16; 16] = unsafe { transmute(b) };
@@ -430,6 +438,7 @@ mod kani_verification_avx2 {
 
     // STUB: _mm256_sub_epi8
     // Logic: a - b (Wrapping)
+    // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#ig_expand=1,6006,6006,4742,4763,110,6699,6858,4236,4200,6603&text=_mm256_sub_epi8&techs=AVX_ALL
     unsafe fn mm256_sub_epi8_stub(a: __m256i, b: __m256i) -> __m256i {
         let a_arr: [u8; 32] = unsafe { transmute(a) };
         let b_arr: [u8; 32] = unsafe { transmute(b) };
