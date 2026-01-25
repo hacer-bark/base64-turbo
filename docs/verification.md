@@ -1,4 +1,4 @@
-# Safety & Formal Verification
+# 🛡️ Safety & Formal Verification
 
 **Philosophy:** `Security > Performance > Convenience`
 
@@ -59,7 +59,7 @@ The library exposes internal `unsafe` functions for users who need to bypass bou
 *   **Contract Violation:** If you use `unsafe` functions and pass a raw pointer with a length of `0` while the pointer is invalid (null/dangling), you have violated the safety contract documented in the code.
 *   **Responsibility:** We do not verify against contract violations in `unsafe` blocks. If you bypass the Safe API, you are responsible for maintaining memory invariants.
 
-## FAQ
+## ❓ FAQ
 
 **Q: Does this crate use `unsafe` Rust?**
 **A:** Yes, extensively. We use pointers and SIMD intrinsics to achieve speed. However, all `unsafe` blocks are encapsulated behind a Safe API and have been formally audited.
