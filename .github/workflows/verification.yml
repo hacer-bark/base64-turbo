@@ -33,9 +33,9 @@ jobs:
 
           # Pass your specific arguments here
           args: |
-            --harness kani_verification_avx2 
-            --output-format=terse 
-            -j 2 
+            --harness kani_verification_avx2
+            --output-format=terse
+            --jobs 2
             --unstable stubbing
 
       # Cleanup
