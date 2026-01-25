@@ -1,0 +1,46 @@
+name: Formal Verification
+
+on:
+  push:
+    branches: [ "main" ]
+    tags-ignore:
+      - '**'
+  pull_request:
+    branches: [ "main" ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_BUILD_JOBS: 2 
+
+jobs:
+  kani-proofs:
+    name: Kani Model Checker
+    runs-on: self-hosted
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Install Kani
+      - name: Install Kani
+        uses: model-checking/kani-github-action@v1.2
+        with:
+          enable-prover: true
+
+      # Run Proofs Sequentially
+      # Run them one by one to prevent OOM crashes on the VPS
+
+      - name: Verify AVX2 Logic
+        run: cargo kani --harness kani_verification_avx2 -j 2 --output-format=terse --unstable stubbing
+
+      # Placeholder for future SSSE3/Scalar proofs
+      # - name: Verify Scalar Logic
+      #   run: cargo kani --harness kani_verification_scalar -j 4 --output-format=terse --unstable stubbing
+
+      # Cleanup
+      - name: Cleanup Artifacts
+        if: always()
+        run: cargo clean
