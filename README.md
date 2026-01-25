@@ -56,7 +56,7 @@ Achieving maximum throughput must not cost memory safety. While we leverage `uns
 *   ✅ **MIRI Verified:** Validates that no Undefined Behavior (UB) occurs during execution.
 *   ✅ **Fuzz Tested:** Over 2.5 billion iterations with zero failures.
 
-**[See Verification Proofs](docs/safety/verification.md)**: Details on our threat model and formal verification strategy.
+**[See Verification Proofs](docs/verification.md)**: Details on our threat model and formal verification strategy.
 
 ## Ecosystem Comparison
 
@@ -79,8 +79,8 @@ The C library `turbo-base64` is the current "speed of light." However, it relies
 
 For detailed implementation data, please refer to our internal docs:
 
-*   [**Safety & Formal Verification**](docs/safety/verification.md) - MIRI/Kani proofs.
-*   [**Architecture & Design**](docs/architecture/design.md) - Internal data flow and SIMD selection logic.
+*   [**Safety & Formal Verification**](docs/verification.md) - MIRI/Kani proofs.
+*   [**Architecture & Design**](docs/design.md) - Internal data flow and SIMD selection logic.
 *   [**FAQ**](docs/faq.md) - Common questions about `no_std` and embedded support.
 
 ## License

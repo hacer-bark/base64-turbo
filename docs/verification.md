@@ -1,4 +1,4 @@
-# 🛡️ Safety & Formal Verification
+# 🛡️ Safety & Verification
 
 **Philosophy:** `Security > Performance > Convenience`
 
@@ -28,7 +28,7 @@ We use [Kani](https://github.com/model-checking/kani), the same formal verificat
 
 *   **How it works:** Unlike testing, which tries *some* inputs, Kani uses symbolic execution to analyze *all possible* execution paths.
 *   **The Guarantee:** We have mathematically proven that for any byte array of any size (from 0 to Infinity), the encoding/decoding loop will **never** read out of bounds or overflow.
-*   **SIMD Verification:** Since Kani does not natively support Intel intrinsics, we have written custom semantic stubs based on Intel documentation to verify the logic of our SIMD implementations.
+*   **SIMD Verification:** Since Kani does not natively support Intel intrinsics, we implemented semantic stubs **one-by-one**, strictly adhering to the behavior defined in the [Intel Intrinsics Guide](https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html).
 
 ### 2. MIRI (Undefined Behavior Analysis)
 We run our test suite under [MIRI](https://github.com/rust-lang/miri), an interpreter that checks for Undefined Behavior according to the Rust memory model.
@@ -71,7 +71,7 @@ The library exposes internal `unsafe` functions for users who need to bypass bou
 **A:** **No, you should not.** Do not trust the author's words. Trust the cryptographic proofs and the CI logs. You are encouraged to visit the [GitHub Actions](https://github.com/hacer-bark/base64-turbo/actions) tab and inspect the Kani and MIRI logs yourself.
 
 **Q: How do you verify SIMD with Kani?**
-**A:** We wrote custom semantic stubs for unsupported SIMD functions (e.g., `_mm256_shuffle_epi8`) that emulate the behavior of the CPU instructions in pure Rust. Kani verifies the logic using these stubs. You can inspect the implementation by yourself.
+**A:** We manually implemented semantic stubs for every unsupported SIMD function (e.g., `_mm256_loadu_si256`), **one-by-one**, strictly mirroring the logic described in the official [Intel Intrinsics Guide](https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html). These stubs emulate the CPU instructions in pure Rust, allowing Kani to verify the high-level logic.
 
 **Q: Why is AVX512 disabled by default?**
 **A:** MIRI does not support AVX512. While we have fuzzed it (2.5B+ ops), we hold ourselves to a standard where "Fuzzing is not enough." Until we can formally verify it with Kani or MIRI, it remains opt-in.
