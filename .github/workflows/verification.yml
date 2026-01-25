@@ -28,11 +28,7 @@ jobs:
       - name: Run Kani
         uses: model-checking/kani-github-action@v1.1
         with:
-          args: |
-            --harness kani_verification_avx2
-            --output-format=terse
-            --jobs 2
-            --unstable stubbing
+          args: '--harness kani_verification_avx2 --jobs 2 --output-format=terse'
 
       # Cleanup
       - name: Cleanup Artifacts
