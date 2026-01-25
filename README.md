@@ -13,8 +13,6 @@
 
 It aligns with **modern hardware reality** without sacrificing portability. Whether running on an embedded ARM microcontroller or a Zen 4 node, it automatically selects the fastest, safest SIMD algorithm for your specific architecture or very fast Scalar fallback.
 
----
-
 ## Quick Start
 
 ```toml
