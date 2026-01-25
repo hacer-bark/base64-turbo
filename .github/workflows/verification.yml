@@ -25,10 +25,15 @@ jobs:
         uses: actions/checkout@v4
 
       # Install Kani
-      - name: Install Kani
-        uses: model-checking/kani-github-action@v1.1
-        with:
-          enable-prover: true
+      - name: Setup Kani
+        run: |
+          if ! command -v cargo-kani &> /dev/null; then
+             echo "Kani not found! Installing..."
+             cargo install --locked kani-verifier
+             cargo kani setup
+          else
+             echo "Kani is already installed."
+          fi
 
       # Run Proofs Sequentially
       # Run them one by one to prevent OOM crashes on the VPS
