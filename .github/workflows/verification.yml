@@ -24,26 +24,19 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # Install Kani
-      - name: Setup Kani
-        run: |
-          if ! command -v cargo-kani &> /dev/null; then
-             echo "Kani not found! Installing..."
-             cargo install --locked kani-verifier
-             cargo kani setup
-          else
-             echo "Kani is already installed."
-          fi
+      # Run Kani
+      - name: Run Kani
+        uses: model-checking/kani-github-action@v1.2
+        with:
+          # Enable the solver
+          enable-prover: true
 
-      # Run Proofs Sequentially
-      # Run them one by one to prevent OOM crashes on the VPS
-
-      - name: Verify AVX2 Logic
-        run: cargo kani --harness kani_verification_avx2 -j 2 --output-format=terse
-
-      # Placeholder for future SSSE3/Scalar proofs
-      # - name: Verify Scalar Logic
-      #   run: cargo kani --harness kani_verification_scalar -j 4 --output-format=terse
+          # Pass your specific arguments here
+          args: |
+            --harness kani_verification_avx2 
+            --output-format=terse 
+            -j 2 
+            --unstable stubbing
 
       # Cleanup
       - name: Cleanup Artifacts
