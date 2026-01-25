@@ -328,6 +328,7 @@ mod kani_verification_avx2 {
 
     // STUB: _mm256_shuffle_epi8
     // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm256_shuffle_epi8
+    #[allow(dead_code)]
     unsafe fn mm256_shuffle_epi8_stub(a: __m256i, b: __m256i) -> __m256i {
         let a: [u8; 32] = unsafe { transmute(a) };
         let b: [u8; 32] = unsafe { transmute(b) };
@@ -347,6 +348,7 @@ mod kani_verification_avx2 {
     // STUB: _mm256_mulhi_epu16
     // Logic: (a * b) >> 16
     // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm256_mulhi_epu16
+    #[allow(dead_code)]
     unsafe fn mm256_mulhi_epu16_stub(a: __m256i, b: __m256i) -> __m256i {
         let a_arr: [u16; 16] = unsafe { transmute(a) };
         let b_arr: [u16; 16] = unsafe { transmute(b) };
@@ -367,6 +369,7 @@ mod kani_verification_avx2 {
     // STUB: _mm256_mullo_epi16
     // Logic: (a * b) & 0xFFFF (Keep low bits)
     // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm256_mullo_epi16
+    #[allow(dead_code)]
     unsafe fn mm256_mullo_epi16_stub(a: __m256i, b: __m256i) -> __m256i {
         let a_arr: [u16; 16] = unsafe { transmute(a) };
         let b_arr: [u16; 16] = unsafe { transmute(b) };
@@ -382,6 +385,7 @@ mod kani_verification_avx2 {
     // STUB: _mm256_add_epi8
     // Logic: a + b (Wrapping)
     // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm256_add_epi8
+    #[allow(dead_code)]
     unsafe fn mm256_add_epi8_stub(a: __m256i, b: __m256i) -> __m256i {
         let a_arr: [u8; 32] = unsafe { transmute(a) };
         let b_arr: [u8; 32] = unsafe { transmute(b) };
@@ -397,6 +401,7 @@ mod kani_verification_avx2 {
     // STUB: _mm256_subs_epu8
     // Logic: Saturating Subtract (if b > a, result is 0)
     // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm256_subs_epu8
+    #[allow(dead_code)]
     unsafe fn mm256_subs_epu8_stub(a: __m256i, b: __m256i) -> __m256i {
         let a_arr: [u8; 32] = unsafe { transmute(a) };
         let b_arr: [u8; 32] = unsafe { transmute(b) };
@@ -412,6 +417,7 @@ mod kani_verification_avx2 {
     // STUB: _mm256_testz_si256
     // Logic: Returns 1 if (a & b) == 0 (Zero Flag set). Otherwise returns 0.
     // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm256_testz_si256
+    #[allow(dead_code)]
     unsafe fn mm256_testz_si256_stub(a: __m256i, b: __m256i) -> i32 {
         let a_arr: [u64; 4] = unsafe { transmute(a) };
         let b_arr: [u64; 4] = unsafe { transmute(b) };
@@ -429,6 +435,7 @@ mod kani_verification_avx2 {
     // Logic: (a[i] * b[i]) + (a[i+1] * b[i+1]) with Saturation
     // Input A is Unsigned (u8), Input B is Signed (i8)
     // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm256_maddubs_epi16
+    #[allow(dead_code)]
     unsafe fn mm256_maddubs_epi16_stub(a: __m256i, b: __m256i) -> __m256i {
         let a_arr: [u8; 32] = unsafe { transmute(a) };
         let b_arr: [i8; 32] = unsafe { transmute(b) };
@@ -451,6 +458,7 @@ mod kani_verification_avx2 {
     // Logic: Multiply packed i16s, then add adjacent pairs into i32s.
     // Result = (a[0]*b[0] + a[1]*b[1]), (a[2]*b[2] + a[3]*b[3]), ...
     // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm256_madd_epi16
+    #[allow(dead_code)]
     unsafe fn mm256_madd_epi16_stub(a: __m256i, b: __m256i) -> __m256i {
         let a_arr: [i16; 16] = unsafe { transmute(a) };
         let b_arr: [i16; 16] = unsafe { transmute(b) };
@@ -471,6 +479,7 @@ mod kani_verification_avx2 {
     // STUB: _mm256_sub_epi8
     // Logic: a - b (Wrapping)
     // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm256_sub_epi8
+    #[allow(dead_code)]
     unsafe fn mm256_sub_epi8_stub(a: __m256i, b: __m256i) -> __m256i {
         let a_arr: [u8; 32] = unsafe { transmute(a) };
         let b_arr: [u8; 32] = unsafe { transmute(b) };

@@ -34,11 +34,11 @@ jobs:
       # Run them one by one to prevent OOM crashes on the VPS
 
       - name: Verify AVX2 Logic
-        run: cargo kani --harness kani_verification_avx2 -j 2 --output-format=terse --unstable stubbing
+        run: cargo kani --harness kani_verification_avx2 -j 2 --output-format=terse
 
       # Placeholder for future SSSE3/Scalar proofs
       # - name: Verify Scalar Logic
-      #   run: cargo kani --harness kani_verification_scalar -j 4 --output-format=terse --unstable stubbing
+      #   run: cargo kani --harness kani_verification_scalar -j 4 --output-format=terse
 
       # Cleanup
       - name: Cleanup Artifacts
