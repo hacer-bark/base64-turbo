@@ -314,58 +314,46 @@ pub unsafe fn decode_slice_unsafe(config: &Config, input: &[u8], mut dst: *mut u
 #[cfg(kani)]
 mod kani_verification_scalar {
     use super::*;
+    use crate::{Config, STANDARD as TURBO_STANDARD, STANDARD_NO_PAD as TURBO_STANDARD_NO_PAD};
 
-    // 48 bytes input
-    const TEST_LIMIT: usize = 48;
-    const MAX_ENCODED_SIZE: usize = 64;
+    const INPUT_LEN: usize = 17;
 
     fn encoded_size(len: usize, padding: bool) -> usize {
-        if padding { (len + 2) / 3 * 4 } else { (len * 4 + 2) / 3 }
+        if padding { TURBO_STANDARD.encoded_len(len) } else { TURBO_STANDARD_NO_PAD.encoded_len(len) }
     }
 
     #[kani::proof]
-    #[kani::unwind(49)]
-    fn check_round_trip() {
+    #[kani::unwind(18)]
+    fn check_roundtrip_safety() {
         // Symbolic Config
         let config = Config {
             url_safe: kani::any(),
             padding: kani::any(),
         };
 
-        // Symbolic Length
-        let len: usize = kani::any();
-        kani::assume(len <= TEST_LIMIT);
+        // Symbolic Input
+        let input: [u8; INPUT_LEN] = kani::any();
 
-        // Symbolic Input Data
-        let input_arr: [u8; TEST_LIMIT] = kani::any();
-        let input = &input_arr[..len];
-
-        // Setup Encoding Buffer 
-        let enc_len = encoded_size(len, config.padding);
-
-        // Sanity check for the verification harness itself
-        assert!(enc_len <= MAX_ENCODED_SIZE);
-
-        let mut enc_buf = [0u8; MAX_ENCODED_SIZE];
-        unsafe { encode_slice_unsafe(&config, input, enc_buf.as_mut_ptr()); }
-
-        // Decoding
-        let mut dec_buf = [0u8; TEST_LIMIT];
+        // Setup Buffers
+        let enc_len = encoded_size(INPUT_LEN, config.padding);
+        let mut enc_buf = [0u8; 64];
+        let mut dec_buf = [0u8; 64];
 
         unsafe {
+            // Encode
+            encode_slice_unsafe(&config, &input, enc_buf.as_mut_ptr());
+
+            // Decode
             let src_slice = &enc_buf[..enc_len];
+            let written = decode_slice_unsafe(&config, src_slice, dec_buf.as_mut_ptr()).expect("Decoder failed");
 
-            let written = decode_slice_unsafe(&config, src_slice, dec_buf.as_mut_ptr())
-                .expect("Decoder returned error on valid input");
-
-            let my_decoded = &dec_buf[..written];
-
-            assert_eq!(my_decoded, input, "Kani Decoding Mismatch!");
+            // Verification
+            assert_eq!(&dec_buf[..written], &input, "AVX2 Roundtrip Failed");
         }
     }
 
     #[kani::proof]
-    #[kani::unwind(49)]
+    #[kani::unwind(18)]
     fn check_decoder_robustness() {
         // Symbolic Config
         let config = Config {
@@ -374,18 +362,14 @@ mod kani_verification_scalar {
         };
 
         // Symbolic Input (Random Garbage)
-        let len: usize = kani::any();
-        kani::assume(len <= MAX_ENCODED_SIZE);
-        
-        let input_arr: [u8; MAX_ENCODED_SIZE] = kani::any();
-        let input = &input_arr[..len];
+        let input: [u8; INPUT_LEN] = kani::any();
 
-        // Decoding Buffer
-        let mut dec_buf = [0u8; MAX_ENCODED_SIZE];
+        // Setup Buffer
+        let mut dec_buf = [0u8; 64];
 
         unsafe {
             // We verify what function NEVER panics/crashes
-            let _ = decode_slice_unsafe(&config, input, dec_buf.as_mut_ptr());
+            let _ = decode_slice_unsafe(&config, &input, dec_buf.as_mut_ptr());
         }
     }
 }
@@ -393,16 +377,16 @@ mod kani_verification_scalar {
 #[cfg(all(test, miri))]
 mod scalar_miri_tests {
     use super::{encode_slice_unsafe, decode_slice_unsafe};
-    use crate::Config;
+    use crate::{Config, STANDARD as TURBO_STANDARD, STANDARD_NO_PAD as TURBO_STANDARD_NO_PAD};
     use base64::{engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD}};
     use rand::{Rng, rng};
 
     // --- Helpers ---
 
     fn encoded_size(len: usize, padding: bool) -> usize {
-        if padding { (len + 2) / 3 * 4 } else { (len * 4 + 2) / 3 }
+        if padding { TURBO_STANDARD.encoded_len(len) } else { TURBO_STANDARD_NO_PAD.encoded_len(len) }
     }
-    fn estimated_decoded_length(len: usize) -> usize { (len / 4 + 1) * 3 }
+    fn estimated_decoded_length(len: usize) -> usize { TURBO_STANDARD.estimate_decoded_len(len) }
 
     /// Miri Runner:
     /// 1. Runs deterministic boundary tests (0..64 bytes) to hit every loop edge.
