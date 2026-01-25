@@ -8,19 +8,21 @@ use crate::{
 };
 
 /// Encodes a byte slice into Base64 using a highly optimized scalar algorithm.
-///
-/// # Performance
-/// This function is manually unrolled to process **6 bytes of input** at a time, producing
-/// **8 bytes of output** (one 64-bit word). This allows the CPU to use its full 64-bit
-/// data paths and internal parallelism (superscalar execution) even without explicit SIMD instructions.
-///
-/// On modern CPUs, this implementation is approximately **1.5x - 2.0x faster** than the standard
-/// library's scalar loop.
-///
+/// 
 /// # Safety
-/// * The caller must ensure `dst` is valid and has enough capacity to hold the encoded result.
-/// * `config` must contain valid boolean flags.
-/// * This function performs unchecked pointer arithmetic for speed.
+/// This function is **unsafe** and requires the caller to uphold strict memory contracts. 
+/// Failure to do so will result in **Undefined Behavior** (buffer overflow).
+///
+/// * **Output Capacity**: The memory region pointed to by `dst` must have sufficient capacity 
+///   to store the encoded output. The required minimum size depends on `config.padding`:
+///     * If `padding` is **true**: `input.len().div_ceil(3) * 4`
+///     * If `padding` is **false**: `(input.len() * 4).div_ceil(3)`
+/// * **Pointer Validity**: `dst` must point to a valid, mutable memory region.
+///
+/// # Internal Use Only
+/// This is a low-level primitive intended for internal use. Callers should prefer the 
+/// safe, higher-level APIs (e.g., `Engine::encode`) which automatically handle 
+/// buffer allocation and configuration logic.
 #[inline(always)]
 pub unsafe fn encode_slice_unsafe(config: &Config, input: &[u8], mut dst: *mut u8) {
     let len = input.len();
@@ -133,20 +135,19 @@ pub unsafe fn encode_slice_unsafe(config: &Config, input: &[u8], mut dst: *mut u
 
 /// Decodes a Base64 byte slice using a highly optimized scalar algorithm.
 ///
-/// # Performance
-/// This function uses a "fast loop" strategy for the bulk of the data, processing
-/// **8 bytes of input** (2 Base64 blocks) at a time. It uses:
-///
-/// 1.  **Table Lookups:** Branchless conversion from ASCII -> 6-bit index using a pre-computed 256-byte table.
-/// 2.  **Bitwise OR Accumulation:** Combines multiple error checks into a single branch (`|` operations followed by `& 0xC0`).
-/// 3.  **Overlapping Writes:** Writes 32-bit integers to memory to output 3 bytes, allowing efficient pipelining of the write buffers.
-///
-/// On modern CPUs, this implementation is significantly faster than standard byte-by-byte decoding loops.
-///
 /// # Safety
-/// * The caller must ensure `dst` is valid and has enough capacity (estimated by `estimate_decoded_len`).
-/// * `config` must contain valid boolean flags.
-/// * This function performs unchecked pointer arithmetic for speed.
+/// This function is **unsafe** and requires the caller to uphold strict memory contracts. 
+/// Failure to do so will result in **Undefined Behavior** (buffer overflow).
+///
+/// * **Output Capacity**: The memory region pointed to by `dst` must have sufficient capacity 
+///   to store the decoded output. Due to SIMD optimizations performing overlapping writes, 
+///   the destination buffer **must** be at least `(input.len() / 4 + 1) * 3` bytes.
+/// * **Pointer Validity**: `dst` must point to a valid, mutable memory region.
+///
+/// # Internal Use Only
+/// This is a low-level primitive intended for internal use by the `Engine`.
+/// Callers should prefer the safe, higher-level APIs (e.g., `Engine::decode`), which
+/// automatically handle buffer sizing via `Engine::estimate_decoded_len`.
 #[inline(always)]
 pub unsafe fn decode_slice_unsafe(config: &Config, input: &[u8], mut dst: *mut u8) -> Result<usize, Error> {
     let len = input.len();
@@ -316,6 +317,8 @@ mod kani_verification_scalar {
     use super::*;
     use crate::{Config, STANDARD as TURBO_STANDARD, STANDARD_NO_PAD as TURBO_STANDARD_NO_PAD};
 
+    // Magic number
+    // It handles 2 loops unroll + tail.
     const INPUT_LEN: usize = 17;
 
     fn encoded_size(len: usize, padding: bool) -> usize {
@@ -388,9 +391,7 @@ mod scalar_miri_tests {
     }
     fn estimated_decoded_length(len: usize) -> usize { TURBO_STANDARD.estimate_decoded_len(len) }
 
-    /// Miri Runner:
-    /// 1. Runs deterministic boundary tests (0..64 bytes) to hit every loop edge.
-    /// 2. Runs a small set of random fuzz tests (50 iterations) to catch weird patterns.
+    /// Miri Runner
     fn run_miri_cycle<E: base64::Engine>(config: Config, reference_engine: &E) {
         // Deterministic Boundary Testing
         for len in 0..=64 {
