@@ -4,7 +4,7 @@ This directory contains detailed technical reports, formal verification proofs, 
 
 ## Index
 
-### [Safety & Verification](safety/verification.md)
+### [Safety & Verification](verification.md)
 **Target Audience:** Security Auditors, Systems Engineers
 *   **Formal Verification:** How we use Kani to mathematically prove the absence of panics/overflows.
 *   **UB Checks:** Details on MIRI usage and strict provenance.
@@ -16,7 +16,7 @@ This directory contains detailed technical reports, formal verification proofs, 
 *   **Hardware Specs:** Detailed breakdown of the test environments (Intel Xeon, Apple M3, etc.).
 *   **Reproduction:** Scripts to run the benchmarks yourself.
 
-### [Architecture & Design](architecture/design.md)
+### [Architecture & Design](design.md)
 **Target Audience:** Contributors, Curious Developers
 *   **SIMD Selection:** How the runtime detection logic works.
 *   **Data Flow:** How bytes move from the API to the CPU registers.
