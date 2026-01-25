@@ -28,10 +28,6 @@ jobs:
       - name: Run Kani
         uses: model-checking/kani-github-action@v1.1
         with:
-          # Enable the solver
-          enable-prover: true
-
-          # Pass your specific arguments here
           args: |
             --harness kani_verification_avx2
             --output-format=terse
