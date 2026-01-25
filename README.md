@@ -34,7 +34,7 @@ fn main() {
 
 ## Performance Summary
 
-> **Claim:** `base64-turbo` outperforms the current Rust standard by approximately **2x** in raw throughput and offers **1.8x lower latency**.
+**Claim:** `base64-turbo` outperforms the current Rust standard by approximately **2x** in raw throughput and offers **1.8x lower latency**.
 
 ![Benchmark Graph](https://github.com/hacer-bark/base64-turbo/blob/main/benches/img/base64_intel.png?raw=true)
 
