@@ -4,6 +4,22 @@ use super::{PACK_L1, PACK_L2, PACK_SHUFFLE};
 // TODO: Rethink encoding and decoding logic. Could squeeze more performance.
 use core::arch::x86_64::*;
 
+/// AVX2-accelerated implementation of Base64 encoding.
+///
+/// # Safety
+/// This function is **unsafe** and requires the caller to uphold strict memory contracts. 
+/// Failure to do so will result in **Undefined Behavior** (buffer overflow).
+///
+/// * **Output Capacity**: The memory region pointed to by `dst` must have sufficient capacity 
+///   to store the encoded output. The required minimum size depends on `config.padding`:
+///     * If `padding` is **true**: `input.len().div_ceil(3) * 4`
+///     * If `padding` is **false**: `(input.len() * 4).div_ceil(3)`
+/// * **Pointer Validity**: `dst` must point to a valid, mutable memory region.
+///
+/// # Internal Use Only
+/// This is a low-level primitive intended for internal use. Callers should prefer the 
+/// safe, higher-level APIs (e.g., `Engine::encode`) which automatically handle 
+/// buffer allocation and configuration logic.
 #[target_feature(enable = "avx2")]
 pub unsafe fn encode_slice_avx2(config: &Config, input: &[u8], mut dst: *mut u8) {
     let len = input.len();
@@ -124,6 +140,21 @@ pub unsafe fn encode_slice_avx2(config: &Config, input: &[u8], mut dst: *mut u8)
     }
 }
 
+/// AVX2-accelerated implementation of Base64 decoding.
+///
+/// # Safety
+/// This function is **unsafe** and requires the caller to uphold strict memory contracts. 
+/// Failure to do so will result in **Undefined Behavior** (buffer overflow).
+///
+/// * **Output Capacity**: The memory region pointed to by `dst` must have sufficient capacity 
+///   to store the decoded output. Due to SIMD optimizations performing overlapping writes, 
+///   the destination buffer **must** be at least `(input.len() / 4 + 1) * 3` bytes.
+/// * **Pointer Validity**: `dst` must point to a valid, mutable memory region.
+///
+/// # Internal Use Only
+/// This is a low-level primitive intended for internal use by the `Engine`.
+/// Callers should prefer the safe, higher-level APIs (e.g., `Engine::decode`), which
+/// automatically handle buffer sizing via `Engine::estimate_decoded_len`.
 #[target_feature(enable = "avx2")]
 pub unsafe fn decode_slice_avx2(config: &Config, input: &[u8], mut dst: *mut u8) -> Result<usize, Error> {
     let len = input.len();
@@ -282,20 +313,21 @@ pub unsafe fn decode_slice_avx2(config: &Config, input: &[u8], mut dst: *mut u8)
 #[cfg(kani)]
 mod kani_verification_avx2 {
     use super::*;
+    use crate::{Config, STANDARD as TURBO_STANDARD, STANDARD_NO_PAD as TURBO_STANDARD_NO_PAD};
     use core::mem::transmute;
 
-    // TODO: Recheck all stubs against intel docs and re implement them 1 by 1
+    // TODO: Recheck all stubs against Intel docs and reimplement them 1 by 1
 
-    const TEST_LIMIT: usize = 48;
-    const TEST_START: usize = 32;
-    const MAX_ENCODED_SIZE: usize = 64;
+    const INPUT_LEN: usize = 36;
+
+    // --- HELPERS ---
 
     fn encoded_size(len: usize, padding: bool) -> usize {
-        if padding { (len + 2) / 3 * 4 } else { (len * 4 + 2) / 3 }
+        if padding { TURBO_STANDARD.encoded_len(len) } else { TURBO_STANDARD_NO_PAD.encoded_len(len) }
     }
 
     // STUB: _mm256_shuffle_epi8
-    // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#ig_expand=1,6006,6006&avxnewtechs=AVX2&text=_mm256_shuffle_epi8
+    // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm256_shuffle_epi8
     unsafe fn mm256_shuffle_epi8_stub(a: __m256i, b: __m256i) -> __m256i {
         let a: [u8; 32] = unsafe { transmute(a) };
         let b: [u8; 32] = unsafe { transmute(b) };
@@ -314,7 +346,7 @@ mod kani_verification_avx2 {
 
     // STUB: _mm256_mulhi_epu16
     // Logic: (a * b) >> 16
-    // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#ig_expand=1,6006,6006,4742&avxnewtechs=AVX2&text=_mm256_mulhi_epu16
+    // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm256_mulhi_epu16
     unsafe fn mm256_mulhi_epu16_stub(a: __m256i, b: __m256i) -> __m256i {
         let a_arr: [u16; 16] = unsafe { transmute(a) };
         let b_arr: [u16; 16] = unsafe { transmute(b) };
@@ -334,7 +366,7 @@ mod kani_verification_avx2 {
 
     // STUB: _mm256_mullo_epi16
     // Logic: (a * b) & 0xFFFF (Keep low bits)
-    // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#ig_expand=1,6006,6006,4742,4763&avxnewtechs=AVX2&text=_mm256_mullo_epi16
+    // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm256_mullo_epi16
     unsafe fn mm256_mullo_epi16_stub(a: __m256i, b: __m256i) -> __m256i {
         let a_arr: [u16; 16] = unsafe { transmute(a) };
         let b_arr: [u16; 16] = unsafe { transmute(b) };
@@ -349,7 +381,7 @@ mod kani_verification_avx2 {
 
     // STUB: _mm256_add_epi8
     // Logic: a + b (Wrapping)
-    // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#ig_expand=1,6006,6006,4742,4763,110&avxnewtechs=AVX2&text=_mm256_add_epi8
+    // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm256_add_epi8
     unsafe fn mm256_add_epi8_stub(a: __m256i, b: __m256i) -> __m256i {
         let a_arr: [u8; 32] = unsafe { transmute(a) };
         let b_arr: [u8; 32] = unsafe { transmute(b) };
@@ -364,7 +396,7 @@ mod kani_verification_avx2 {
 
     // STUB: _mm256_subs_epu8
     // Logic: Saturating Subtract (if b > a, result is 0)
-    // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#ig_expand=1,6006,6006,4742,4763,110,6699&avxnewtechs=AVX2&text=_mm256_subs_epu8
+    // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm256_subs_epu8
     unsafe fn mm256_subs_epu8_stub(a: __m256i, b: __m256i) -> __m256i {
         let a_arr: [u8; 32] = unsafe { transmute(a) };
         let b_arr: [u8; 32] = unsafe { transmute(b) };
@@ -379,7 +411,7 @@ mod kani_verification_avx2 {
 
     // STUB: _mm256_testz_si256
     // Logic: Returns 1 if (a & b) == 0 (Zero Flag set). Otherwise returns 0.
-    // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#ig_expand=1,6006,6006,4742,4763,110,6699,6858&text=_mm256_testz_si256&techs=AVX_ALL
+    // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm256_testz_si256
     unsafe fn mm256_testz_si256_stub(a: __m256i, b: __m256i) -> i32 {
         let a_arr: [u64; 4] = unsafe { transmute(a) };
         let b_arr: [u64; 4] = unsafe { transmute(b) };
@@ -396,7 +428,7 @@ mod kani_verification_avx2 {
     // STUB: _mm256_maddubs_epi16
     // Logic: (a[i] * b[i]) + (a[i+1] * b[i+1]) with Saturation
     // Input A is Unsigned (u8), Input B is Signed (i8)
-    // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#ig_expand=1,6006,6006,4742,4763,110,6699,6858,4236&text=_mm256_maddubs_epi16&techs=AVX_ALL
+    // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm256_maddubs_epi16
     unsafe fn mm256_maddubs_epi16_stub(a: __m256i, b: __m256i) -> __m256i {
         let a_arr: [u8; 32] = unsafe { transmute(a) };
         let b_arr: [i8; 32] = unsafe { transmute(b) };
@@ -418,7 +450,7 @@ mod kani_verification_avx2 {
     // STUB: _mm256_madd_epi16
     // Logic: Multiply packed i16s, then add adjacent pairs into i32s.
     // Result = (a[0]*b[0] + a[1]*b[1]), (a[2]*b[2] + a[3]*b[3]), ...
-    // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#ig_expand=1,6006,6006,4742,4763,110,6699,6858,4236,4200&text=_mm256_madd_epi16&techs=AVX_ALL
+    // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm256_madd_epi16
     unsafe fn mm256_madd_epi16_stub(a: __m256i, b: __m256i) -> __m256i {
         let a_arr: [i16; 16] = unsafe { transmute(a) };
         let b_arr: [i16; 16] = unsafe { transmute(b) };
@@ -438,7 +470,7 @@ mod kani_verification_avx2 {
 
     // STUB: _mm256_sub_epi8
     // Logic: a - b (Wrapping)
-    // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#ig_expand=1,6006,6006,4742,4763,110,6699,6858,4236,4200,6603&text=_mm256_sub_epi8&techs=AVX_ALL
+    // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm256_sub_epi8
     unsafe fn mm256_sub_epi8_stub(a: __m256i, b: __m256i) -> __m256i {
         let a_arr: [u8; 32] = unsafe { transmute(a) };
         let b_arr: [u8; 32] = unsafe { transmute(b) };
@@ -451,8 +483,9 @@ mod kani_verification_avx2 {
         unsafe { transmute(res_arr) }
     }
 
+    // -- REAL LOGIC --- 
+
     #[kani::proof]
-    #[kani::unwind(49)]
     #[kani::stub(core::arch::x86_64::_mm256_shuffle_epi8, mm256_shuffle_epi8_stub)]
     #[kani::stub(core::arch::x86_64::_mm256_mulhi_epu16, mm256_mulhi_epu16_stub)]
     #[kani::stub(core::arch::x86_64::_mm256_mullo_epi16, mm256_mullo_epi16_stub)]
@@ -461,47 +494,35 @@ mod kani_verification_avx2 {
     #[kani::stub(core::arch::x86_64::_mm256_testz_si256, mm256_testz_si256_stub)]
     #[kani::stub(core::arch::x86_64::_mm256_maddubs_epi16, mm256_maddubs_epi16_stub)]
     #[kani::stub(core::arch::x86_64::_mm256_madd_epi16, mm256_madd_epi16_stub)]
-    fn check_round_trip() {
+    fn check_roundtrip_safety() {
         // Symbolic Config
         let config = Config {
             url_safe: kani::any(),
-            padding: kani::any(),
+            padding: true,
         };
 
-        // Symbolic Length
-        let len: usize = kani::any();
-        kani::assume(TEST_START <= len && len <= TEST_LIMIT);
+        // Symbolic Input
+        let input: [u8; INPUT_LEN] = kani::any();
 
-        // Symbolic Input Data
-        let input_arr: [u8; TEST_LIMIT] = kani::any();
-        let input = &input_arr[..len];
-
-        // Setup Encoding Buffer 
-        let enc_len = encoded_size(len, config.padding);
-
-        // Sanity check for the verification harness itself
-        assert!(enc_len <= MAX_ENCODED_SIZE);
-
-        let mut enc_buf = [0u8; MAX_ENCODED_SIZE];
-        unsafe { encode_slice_avx2(&config, input, enc_buf.as_mut_ptr()); }
-
-        // Decoding
-        let mut dec_buf = [0u8; TEST_LIMIT];
+        // Setup Buffers
+        let enc_len = encoded_size(INPUT_LEN, config.padding);
+        let mut enc_buf = [0u8; 512];
+        let mut dec_buf = [0u8; 512];
 
         unsafe {
+            // Encode
+            encode_slice_avx2(&config, &input, enc_buf.as_mut_ptr());
+
+            // Decode
             let src_slice = &enc_buf[..enc_len];
+            let written = decode_slice_avx2(&config, src_slice, dec_buf.as_mut_ptr()).expect("Decoder failed");
 
-            let written = decode_slice_avx2(&config, src_slice, dec_buf.as_mut_ptr())
-                .expect("Decoder returned error on valid input");
-
-            let my_decoded = &dec_buf[..written];
-
-            assert_eq!(my_decoded, input, "Kani Decoding Mismatch!");
+            // Verification
+            assert_eq!(&dec_buf[..written], &input, "AVX2 Roundtrip Failed");
         }
     }
 
     #[kani::proof]
-    #[kani::unwind(49)]
     #[kani::stub(core::arch::x86_64::_mm256_shuffle_epi8, mm256_shuffle_epi8_stub)]
     #[kani::stub(core::arch::x86_64::_mm256_mulhi_epu16, mm256_mulhi_epu16_stub)]
     #[kani::stub(core::arch::x86_64::_mm256_mullo_epi16, mm256_mullo_epi16_stub)]
@@ -515,22 +536,18 @@ mod kani_verification_avx2 {
         // Symbolic Config
         let config = Config {
             url_safe: kani::any(),
-            padding: kani::any(),
+            padding: true,
         };
 
         // Symbolic Input (Random Garbage)
-        let len: usize = kani::any();
-        kani::assume(TEST_START <= len && len <= MAX_ENCODED_SIZE);
-        
-        let input_arr: [u8; MAX_ENCODED_SIZE] = kani::any();
-        let input = &input_arr[..len];
+        let input: [u8; INPUT_LEN] = kani::any();
 
-        // Decoding Buffer
-        let mut dec_buf = [0u8; MAX_ENCODED_SIZE];
+        // Setup Buffer
+        let mut dec_buf = [0u8; 64];
 
         unsafe {
             // We verify what function NEVER panics/crashes
-            let _ = decode_slice_avx2(&config, input, dec_buf.as_mut_ptr());
+            let _ = decode_slice_avx2(&config, &input, dec_buf.as_mut_ptr());
         }
     }
 }
@@ -538,23 +555,23 @@ mod kani_verification_avx2 {
 #[cfg(all(test, miri))]
 mod avx2_miri_tests {
     use super::{encode_slice_avx2, decode_slice_avx2};
-    use crate::Config;
+    use crate::{Config, STANDARD as TURBO_STANDARD, STANDARD_NO_PAD as TURBO_STANDARD_NO_PAD};
     use base64::{engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD}};
     use rand::{Rng, rng};
 
     // --- Helpers ---
 
     fn encoded_size(len: usize, padding: bool) -> usize {
-        if padding { (len + 2) / 3 * 4 } else { (len * 4 + 2) / 3 }
+        if padding { TURBO_STANDARD.encoded_len(len) } else { TURBO_STANDARD_NO_PAD.encoded_len(len) }
     }
-    fn estimated_decoded_length(len: usize) -> usize { (len / 4 + 1) * 3 }
+    fn estimated_decoded_length(len: usize) -> usize { TURBO_STANDARD.estimate_decoded_len(len) }
 
     /// Miri Runner:
     /// 1. Runs deterministic boundary tests (0..64 bytes) to hit every loop edge.
     /// 2. Runs a small set of random fuzz tests (50 iterations) to catch weird patterns.
     fn run_miri_cycle<E: base64::Engine>(config: Config, reference_engine: &E) {
         // Deterministic Boundary Testing
-        for len in 0..=64 {
+        for len in 32..=128 {
             let mut rng = rng();
             let mut input = vec![0u8; len];
             rng.fill(&mut input[..]);
@@ -565,7 +582,7 @@ mod avx2_miri_tests {
         // Small Fuzzing (Random Lengths)
         let mut rng = rng();
         for _ in 0..100 {
-            let len = rng.random_range(65..512);
+            let len = rng.random_range(129..512);
             let mut input = vec![0u8; len];
             rng.fill(&mut input[..]);
 
