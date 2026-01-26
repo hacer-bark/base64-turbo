@@ -1,4 +1,4 @@
-name: Logic Tests
+name: Logic & Security Tests
 
 on:
   push:
@@ -18,7 +18,7 @@ env:
 
 jobs:
   logic-parallel:
-    name: Logic Tests
+    name: Logic Tests (Stable)
     runs-on: self-hosted 
     steps:
       - name: Checkout code
@@ -27,24 +27,20 @@ jobs:
       - name: Install Rust Stable
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Run Tests
+      - name: Run Parallel Logic Tests
         run: |
-          # 1. Disable "Exit on Error"
           set +e
-
           echo "Starting Parallel Logic Suite..."
 
-          # --- 1. NO_STD (Compilation Check / Basic Tests) ---
+          # --- 1. NO_STD ---
           (
             export CARGO_TARGET_DIR="target_logic_nostd"
             echo "[no_std] Running..."
-            # Note: Running test without std often requires custom harness, 
-            # assuming your crate supports it or just checks compilation.
             cargo test --verbose --no-default-features --features "" > nostd.log 2>&1
           ) &
           PID_NOSTD=$!
 
-          # --- 2. SCALAR ONLY (std) ---
+          # --- 2. SCALAR ONLY ---
           (
             export CARGO_TARGET_DIR="target_logic_scalar"
             echo "[Scalar] Running..."
@@ -52,7 +48,7 @@ jobs:
           ) &
           PID_SCALAR=$!
 
-          # --- 3. SIMD ENABLED (std, simd) ---
+          # --- 3. SIMD ENABLED ---
           (
             export CARGO_TARGET_DIR="target_logic_simd"
             echo "[SIMD] Running..."
@@ -60,7 +56,7 @@ jobs:
           ) &
           PID_SIMD=$!
 
-          # --- 4. PARALLEL ENABLED (std, parallel) ---
+          # --- 4. PARALLEL (RAYON) ---
           (
             export CARGO_TARGET_DIR="target_logic_rayon"
             echo "[Rayon] Running..."
@@ -68,7 +64,7 @@ jobs:
           ) &
           PID_RAYON=$!
 
-          # --- 5. FULL FEATURES (std, simd, parallel) ---
+          # --- 5. FULL FEATURES ---
           (
             export CARGO_TARGET_DIR="target_logic_full"
             echo "[Full] Running..."
@@ -94,16 +90,29 @@ jobs:
           wait $PID_FULL
           if [ $? -ne 0 ]; then echo "[Full] FAILED. Logs:"; cat full.log; FAILED=1; else echo "[Full] PASSED"; fi
 
-          if [ $FAILED -ne 0 ]; then
-            exit 1
-          fi
-
-          # 2. Re-enable Strict Mode
+          if [ $FAILED -ne 0 ]; then exit 1; fi
           set -e
-
           echo "All Logic tests passed!"
 
       - name: Cleanup Artifacts
         if: always()
+        run: rm -rf target_logic_* *.log
+
+  security-msan:
+    name: MemorySanitizer (Nightly)
+    runs-on: self-hosted
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust Nightly
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src 
+
+      - name: Run MSan (Full Features)
         run: |
-          rm -rf target_logic_* *.log
+          RUSTFLAGS="-Z sanitizer=memory" cargo test -Z build-std \
+            --target x86_64-unknown-linux-gnu \
+            --features "std,simd" \
+            --verbose
