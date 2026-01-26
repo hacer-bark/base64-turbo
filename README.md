@@ -46,7 +46,7 @@ fn main() {
 | **Encode Throughput** | **~12.5 GiB/s** | ~10.5 GiB/s | **+20%** |
 | **Latency (32B)** | **~10ns** | ~18 ns | **1.8x Lower** |
 
-**[See More Benchmark Reports](docs/benchmarks/README.md)**: Includes methodology, hardware specs, and reproduction scripts.
+**[See More Benchmark Reports](docs/benchmarks)**: Includes methodology, hardware specs, and reproduction scripts.
 
 ## Safety & Verification
 
@@ -79,8 +79,10 @@ The C library `turbo-base64` is the current "speed of light." However, it relies
 
 For detailed implementation data, please refer to our internal docs:
 
-*   [**Safety & Formal Verification**](docs/verification.md) - MIRI/Kani proofs.
+*   [**Safety & Verification**](docs/verification.md) - MIRI/Kani proofs.
+*   [**Benchmarks & Methodology**](docs/benchmarks) - Detailed benchmark and how they collected.
 *   [**Architecture & Design**](docs/design.md) - Internal data flow and SIMD selection logic.
+*   [**Ecosystem Comparison**](ecosystem_comparison.md) - Compression of top Rust and C libs.
 *   [**FAQ**](docs/faq.md) - Common questions about `no_std` and embedded support.
 
 ## License

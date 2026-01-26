@@ -2,7 +2,7 @@
 name = "base64-turbo"
 version = "0.1.3"
 edition = "2024"
-description = "Hardware-accelerated, formally verified Base64 engine. Features AVX2/AVX512 support, zero-allocation, and no_std compatibility."
+description = "The fastest memory-safe Base64 engine. Formally verified (Kani/MIRI). Features runtime AVX2/AVX512 detection, zero-allocation API, and robust no_std support."
 license = "MIT"
 repository = "https://github.com/hacer-bark/base64-turbo"
 homepage = "https://github.com/hacer-bark/base64-turbo"
@@ -10,7 +10,7 @@ documentation = "https://docs.rs/base64-turbo"
 readme = "README.md"
 authors = ["Hacer"]
 keywords = ["base64", "simd", "avx512", "performance", "encoding"]
-categories = ["encoding", "no-std", "web-programming"]
+categories = ["encoding", "hardware-support", "no-std", "web-programming"]
 exclude = [
     ".github",
     ".gitignore",
