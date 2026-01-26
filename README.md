@@ -82,7 +82,7 @@ For detailed implementation data, please refer to our internal docs:
 *   [**Safety & Verification**](docs/verification.md) - MIRI/Kani proofs.
 *   [**Benchmarks & Methodology**](docs/benchmarks) - Detailed benchmark and how they collected.
 *   [**Architecture & Design**](docs/design.md) - Internal data flow and SIMD selection logic.
-*   [**Ecosystem Comparison**](ecosystem_comparison.md) - Compression of top Rust and C libs.
+*   [**Ecosystem Comparison**](docs/ecosystem_comparison.md) - Compression of top Rust and C libs.
 *   [**FAQ**](docs/faq.md) - Common questions about `no_std` and embedded support.
 
 ## License
