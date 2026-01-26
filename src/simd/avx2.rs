@@ -401,6 +401,9 @@ mod kani_verification_avx2 {
             // dst[i+15:i] := tmp[31:16]
             dst[i] = (tmp >> 16) as u16;
         }
+        // ENDFOR
+
+        // dst[MAX:256] := 0
 
         unsafe { transmute(dst) }
     }
