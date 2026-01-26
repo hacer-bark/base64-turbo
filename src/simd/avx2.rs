@@ -2,7 +2,10 @@ use crate::{Error, Config, scalar};
 use super::{PACK_L1, PACK_L2, PACK_SHUFFLE};
 
 // TODO: Rethink encoding and decoding logic. Could squeeze more performance.
-use core::arch::x86_64::*;
+#[cfg(target_arch = "x86")]
+use std::arch::x86::*;
+#[cfg(target_arch = "x86_64")]
+use std::arch::x86_64::*;
 
 /// AVX2-accelerated implementation of Base64 encoding.
 ///
@@ -316,11 +319,16 @@ mod kani_verification_avx2 {
     use crate::{Config, STANDARD as TURBO_STANDARD, STANDARD_NO_PAD as TURBO_STANDARD_NO_PAD};
     use core::mem::transmute;
 
-    // TODO: Recheck all stubs against Intel docs and reimplement them 1 by 1
-
+    // Magic number: 36
+    // It handles one small loop unroll and Scalar tail fallback.
+    // Cuz we're using same macros in Small loop and Big loop we prove math for both of them.
+    // For edge cages which might happen at big loop unrolling refer to Miri implementation.
+    // 
+    // Note: if we can prove what one Small loop for any inputs, it automatically proves math
+    // for inputs of any size. From zero to infinity, it won't UB or Panic.
     const INPUT_LEN: usize = 36;
 
-    // --- HELPERS ---
+    // --- HELPERS AND STUBS ---
 
     fn encoded_size(len: usize, padding: bool) -> usize {
         if padding { TURBO_STANDARD.encoded_len(len) } else { TURBO_STANDARD_NO_PAD.encoded_len(len) }
@@ -332,177 +340,278 @@ mod kani_verification_avx2 {
     unsafe fn mm256_shuffle_epi8_stub(a: __m256i, b: __m256i) -> __m256i {
         let a: [u8; 32] = unsafe { transmute(a) };
         let b: [u8; 32] = unsafe { transmute(b) };
-        let mut r = [0; 32];
+        let mut dst = [0u8; 32];
 
-        for i in 0..16 {
-            if b[i] & 0x80 == 0u8 {
-                r[i] = a[(b[i] % 16) as usize];
+        // FOR j := 0 to 15
+        for j in 0..16 {
+            // i := j*8
+            // (In Rust we access bytes 'j' so '*8' offset is not needed)
+            let i = j;
+
+            // IF b[i+7] == 1
+            if (b[i] & 0x80) != 0 {
+                // dst[i+7:i] := 0
+                dst[i] = 0;
+            } else {
+                // index[3:0] := b[i+3:i]
+                let index = b[i] & 0x0F;
+                // dst[i+7:i] := a[index*8+7:index*8]
+                dst[i] = a[index as usize];
             }
-            if b[i + 16] & 0x80 == 0u8 {
-                r[i + 16] = a[(b[i + 16] % 16 + 16) as usize];
+            // FI
+
+            // IF b[128+i+7] == 1
+            if (b[16 + i] & 0x80) != 0 {
+                // dst[128+i+7:128+i] := 0
+                dst[16 + i] = 0;
+            } else {
+                // index[3:0] := b[128+i+3:128+i]
+                let index = b[16 + i] & 0x0F;
+                // dst[128+i+7:128+i] := a[128+index*8+7:128+index*8]
+                dst[16 + i] = a[(16 + index) as usize];
             }
+            // FI
         }
-        unsafe { transmute(r) }
+        // ENDFOR
+
+        // dst[MAX:256] := 0
+        // (__m256i is exactly 256 bits. There are no bits beyond 256 to zero out)
+
+        unsafe { transmute(dst) }
     }
 
     // STUB: _mm256_mulhi_epu16
-    // Logic: (a * b) >> 16
     // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm256_mulhi_epu16
     #[allow(dead_code)]
     unsafe fn mm256_mulhi_epu16_stub(a: __m256i, b: __m256i) -> __m256i {
-        let a_arr: [u16; 16] = unsafe { transmute(a) };
-        let b_arr: [u16; 16] = unsafe { transmute(b) };
-        let mut res_arr = [0u16; 16];
+        let a: [u16; 16] = unsafe { transmute(a) };
+        let b: [u16; 16] = unsafe { transmute(b) };
+        let mut dst = [0u16; 16];
 
-        for i in 0..16 {
-            let wide_a = a_arr[i] as u32;
-            let wide_b = b_arr[i] as u32;
+        // FOR j := 0 to 15
+        for j in 0..16 {
+            // i := j*16
+            let i = j;
 
-            let result_32 = wide_a * wide_b;
+            // tmp[31:0] := a[i+15:i] * b[i+15:i]
+            let op1 = a[i] as u32;
+            let op2 = b[i] as u32;
+            let tmp = op1 * op2;
 
-            res_arr[i] = (result_32 >> 16) as u16;
+            // dst[i+15:i] := tmp[31:16]
+            dst[i] = (tmp >> 16) as u16;
         }
+        // ENDFOR
 
-        unsafe { transmute(res_arr) }
+        // dst[MAX:256] := 0
+
+        unsafe { transmute(dst) }
     }
 
     // STUB: _mm256_mullo_epi16
-    // Logic: (a * b) & 0xFFFF (Keep low bits)
     // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm256_mullo_epi16
     #[allow(dead_code)]
     unsafe fn mm256_mullo_epi16_stub(a: __m256i, b: __m256i) -> __m256i {
-        let a_arr: [u16; 16] = unsafe { transmute(a) };
-        let b_arr: [u16; 16] = unsafe { transmute(b) };
-        let mut res_arr = [0u16; 16];
+        let a: [i16; 16] = unsafe { transmute(a) };
+        let b: [i16; 16] = unsafe { transmute(b) };
+        let mut dst = [0i16; 16];
 
-        for i in 0..16 {
-            res_arr[i] = a_arr[i].wrapping_mul(b_arr[i]);
+        // FOR j := 0 to 15
+        for j in 0..16 {
+            // i := j*16
+            let i = j;
+
+            // tmp[31:0] := SignExtend32(a[i+15:i]) * SignExtend32(b[i+15:i])
+            let op1 = a[i] as i32;
+            let op2 = b[i] as i32;
+            let tmp: i32 = op1.wrapping_mul(op2);
+
+            // dst[i+15:i] := tmp[15:0]
+            dst[j] = tmp as i16;
         }
+        // ENDFOR
 
-        unsafe { transmute(res_arr) }
+        // dst[MAX:256] := 0
+
+        unsafe { transmute(dst) }
     }
 
     // STUB: _mm256_add_epi8
-    // Logic: a + b (Wrapping)
     // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm256_add_epi8
     #[allow(dead_code)]
     unsafe fn mm256_add_epi8_stub(a: __m256i, b: __m256i) -> __m256i {
-        let a_arr: [u8; 32] = unsafe { transmute(a) };
-        let b_arr: [u8; 32] = unsafe { transmute(b) };
-        let mut res_arr = [0u8; 32];
+        let a: [u8; 32] = unsafe { transmute(a) };
+        let b: [u8; 32] = unsafe { transmute(b) };
+        let mut dst = [0u8; 32];
 
-        for i in 0..32 {
-            res_arr[i] = a_arr[i].wrapping_add(b_arr[i]);
+        // FOR j := 0 to 31
+        for j in 0..32 {
+            // i := j*8
+            let i = j;
+
+	        // dst[i+7:i] := a[i+7:i] + b[i+7:i]
+            dst[i] = a[i].wrapping_add(b[i]);
         }
+        // ENDFOR
 
-        unsafe { transmute(res_arr) }
+        // dst[MAX:256] := 0
+
+        unsafe { transmute(dst) }
     }
 
     // STUB: _mm256_subs_epu8
-    // Logic: Saturating Subtract (if b > a, result is 0)
     // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm256_subs_epu8
     #[allow(dead_code)]
     unsafe fn mm256_subs_epu8_stub(a: __m256i, b: __m256i) -> __m256i {
-        let a_arr: [u8; 32] = unsafe { transmute(a) };
-        let b_arr: [u8; 32] = unsafe { transmute(b) };
-        let mut res_arr = [0u8; 32];
+        let a: [u8; 32] = unsafe { transmute(a) };
+        let b: [u8; 32] = unsafe { transmute(b) };
+        let mut dst = [0u8; 32];
 
-        for i in 0..32 {
-            res_arr[i] = a_arr[i].saturating_sub(b_arr[i]);
+        // FOR j := 0 to 31
+        for j in 0..32 {
+            // i := j*8
+            let i = j;
+
+            // dst[i+7:i] := SaturateU8(a[i+7:i] - b[i+7:i])
+            dst[i] = a[i].saturating_sub(b[i]);
         }
+        // ENDFOR
 
-        unsafe { transmute(res_arr) }
+        // dst[MAX:256] := 0
+
+        unsafe { transmute(dst) }
     }
 
     // STUB: _mm256_testz_si256
-    // Logic: Returns 1 if (a & b) == 0 (Zero Flag set). Otherwise returns 0.
     // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm256_testz_si256
+    // Note: in this logic added complexity as Rust do not support 256 bits values.
     #[allow(dead_code)]
     unsafe fn mm256_testz_si256_stub(a: __m256i, b: __m256i) -> i32 {
-        let a_arr: [u64; 4] = unsafe { transmute(a) };
-        let b_arr: [u64; 4] = unsafe { transmute(b) };
+        let a: [u64; 4] = unsafe { transmute(a) };
+        let b: [u64; 4] = unsafe { transmute(b) };
+        let zf: i32;
+        let _cf: i32;
 
-        for i in 0..4 {
-            if (a_arr[i] & b_arr[i]) != 0 {
-                return 0;
-            }
+        // Perform 256 bit AND
+        let res_and = [
+            a[0] & b[0],
+            a[1] & b[1],
+            a[2] & b[2],
+            a[3] & b[3],
+        ];
+
+        // IF ((a[255:0] AND b[255:0]) == 0)
+        if res_and[0] == 0 && res_and[1] == 0 && res_and[2] == 0 && res_and[3] == 0 {
+            // ZF := 1
+            zf = 1;
+        } else {
+            // ZF := 0
+            zf = 0;
         }
+        // FI
 
-        1
+        // Perform 256 bit (NOT a) AND b
+        let res_not_and = [
+            (!a[0]) & b[0],
+            (!a[1]) & b[1],
+            (!a[2]) & b[2],
+            (!a[3]) & b[3],
+        ];
+
+        // IF (((NOT a[255:0]) AND b[255:0]) == 0)
+        if res_not_and[0] == 0 && res_not_and[1] == 0 && res_not_and[2] == 0 && res_not_and[3] == 0 {
+            // CF := 1
+            _cf = 1;
+        } else {
+            // CF := 0
+            _cf = 0;
+        }
+        // FI
+
+        // RETURN ZF
+        return zf;
     }
 
     // STUB: _mm256_maddubs_epi16
-    // Logic: (a[i] * b[i]) + (a[i+1] * b[i+1]) with Saturation
-    // Input A is Unsigned (u8), Input B is Signed (i8)
     // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm256_maddubs_epi16
     #[allow(dead_code)]
     unsafe fn mm256_maddubs_epi16_stub(a: __m256i, b: __m256i) -> __m256i {
-        let a_arr: [u8; 32] = unsafe { transmute(a) };
-        let b_arr: [i8; 32] = unsafe { transmute(b) };
-        let mut res_arr = [0i16; 16];
+        let a: [u8; 32] = unsafe { transmute(a) };
+        let b: [i8; 32] = unsafe { transmute(b) };
+        let mut dst = [0i16; 16];
 
-        for i in 0..16 {
-            let idx = i * 2;
+        // FOR j := 0 to 15
+        for j in 0..16 {
+            // i := j*16
+            let i = j * 2;
 
-            let prod1 = (a_arr[idx] as i16) * (b_arr[idx] as i16);
-
-            let prod2 = (a_arr[idx+1] as i16) * (b_arr[idx+1] as i16);
-
-            res_arr[i] = prod1.saturating_add(prod2);
+            // dst[i+15:i] := Saturate16( a[i+15:i+8]*b[i+15:i+8] + a[i+7:i]*b[i+7:i] )
+            dst[j] = ((a[i+1] as i16) * (b[i+1] as i16)).saturating_add((a[i] as i16) * (b[i] as i16));
         }
+        // ENDFOR
 
-        unsafe { transmute(res_arr) }
+        // dst[MAX:256] := 0
+
+        unsafe { transmute(dst) }
     }
 
     // STUB: _mm256_madd_epi16
-    // Logic: Multiply packed i16s, then add adjacent pairs into i32s.
-    // Result = (a[0]*b[0] + a[1]*b[1]), (a[2]*b[2] + a[3]*b[3]), ...
     // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm256_madd_epi16
     #[allow(dead_code)]
     unsafe fn mm256_madd_epi16_stub(a: __m256i, b: __m256i) -> __m256i {
-        let a_arr: [i16; 16] = unsafe { transmute(a) };
-        let b_arr: [i16; 16] = unsafe { transmute(b) };
-        let mut res_arr = [0i32; 8];
+        let a: [i16; 16] = unsafe { transmute(a) };
+        let b: [i16; 16] = unsafe { transmute(b) };
+        let mut dst = [0i32; 8];
 
-        for i in 0..8 {
-            let idx = i * 2;
+        // FOR j := 0 to 7
+        for j in 0..8 {
+            // i := j*32
+            let i = j * 2;
 
-            let prod1 = (a_arr[idx] as i32).wrapping_mul(b_arr[idx] as i32);
-            let prod2 = (a_arr[idx+1] as i32).wrapping_mul(b_arr[idx+1] as i32);
-
-            res_arr[i] = prod1.wrapping_add(prod2);
+            // dst[i+31:i] := SignExtend32(a[i+31:i+16]*b[i+31:i+16]) + SignExtend32(a[i+15:i]*b[i+15:i])
+            dst[j] = (a[i+1] as i32).wrapping_mul(b[i+1] as i32).wrapping_add((a[i] as i32).wrapping_mul(b[i] as i32));
         }
+        // ENDFOR
 
-        unsafe { transmute(res_arr) }
+        // dst[MAX:256] := 0
+
+        unsafe { transmute(dst) }
     }
 
     // STUB: _mm256_sub_epi8
-    // Logic: a - b (Wrapping)
     // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm256_sub_epi8
     #[allow(dead_code)]
     unsafe fn mm256_sub_epi8_stub(a: __m256i, b: __m256i) -> __m256i {
-        let a_arr: [u8; 32] = unsafe { transmute(a) };
-        let b_arr: [u8; 32] = unsafe { transmute(b) };
-        let mut res_arr = [0u8; 32];
+        let a: [u8; 32] = unsafe { transmute(a) };
+        let b: [u8; 32] = unsafe { transmute(b) };
+        let mut dst = [0u8; 32];
 
-        for i in 0..32 {
-            res_arr[i] = a_arr[i].wrapping_sub(b_arr[i]);
+        // FOR j := 0 to 31
+        for j in 0..32 {
+            // i := j*8
+            let i = j;
+
+            // dst[i+7:i] := a[i+7:i] - b[i+7:i]
+            dst[i] = a[i].wrapping_sub(b[i]);
         }
+        // ENDFOR
 
-        unsafe { transmute(res_arr) }
+        // dst[MAX:256] := 0
+
+        unsafe { transmute(dst) }
     }
 
     // -- REAL LOGIC --- 
 
     #[kani::proof]
-    #[kani::stub(core::arch::x86_64::_mm256_shuffle_epi8, mm256_shuffle_epi8_stub)]
-    #[kani::stub(core::arch::x86_64::_mm256_mulhi_epu16, mm256_mulhi_epu16_stub)]
-    #[kani::stub(core::arch::x86_64::_mm256_mullo_epi16, mm256_mullo_epi16_stub)]
-    #[kani::stub(core::arch::x86_64::_mm256_add_epi8, mm256_add_epi8_stub)]
-    #[kani::stub(core::arch::x86_64::_mm256_subs_epu8, mm256_subs_epu8_stub)]
-    #[kani::stub(core::arch::x86_64::_mm256_testz_si256, mm256_testz_si256_stub)]
-    #[kani::stub(core::arch::x86_64::_mm256_maddubs_epi16, mm256_maddubs_epi16_stub)]
-    #[kani::stub(core::arch::x86_64::_mm256_madd_epi16, mm256_madd_epi16_stub)]
+    #[kani::stub(_mm256_shuffle_epi8, mm256_shuffle_epi8_stub)]
+    #[kani::stub(_mm256_mulhi_epu16, mm256_mulhi_epu16_stub)]
+    #[kani::stub(_mm256_mullo_epi16, mm256_mullo_epi16_stub)]
+    #[kani::stub(_mm256_add_epi8, mm256_add_epi8_stub)]
+    #[kani::stub(_mm256_subs_epu8, mm256_subs_epu8_stub)]
+    #[kani::stub(_mm256_testz_si256, mm256_testz_si256_stub)]
+    #[kani::stub(_mm256_maddubs_epi16, mm256_maddubs_epi16_stub)]
+    #[kani::stub(_mm256_madd_epi16, mm256_madd_epi16_stub)]
     fn check_roundtrip_safety() {
         // Symbolic Config
         let config = Config {
@@ -532,15 +641,15 @@ mod kani_verification_avx2 {
     }
 
     #[kani::proof]
-    #[kani::stub(core::arch::x86_64::_mm256_shuffle_epi8, mm256_shuffle_epi8_stub)]
-    #[kani::stub(core::arch::x86_64::_mm256_mulhi_epu16, mm256_mulhi_epu16_stub)]
-    #[kani::stub(core::arch::x86_64::_mm256_mullo_epi16, mm256_mullo_epi16_stub)]
-    #[kani::stub(core::arch::x86_64::_mm256_add_epi8, mm256_add_epi8_stub)]
-    #[kani::stub(core::arch::x86_64::_mm256_subs_epu8, mm256_subs_epu8_stub)]
-    #[kani::stub(core::arch::x86_64::_mm256_testz_si256, mm256_testz_si256_stub)]
-    #[kani::stub(core::arch::x86_64::_mm256_maddubs_epi16, mm256_maddubs_epi16_stub)]
-    #[kani::stub(core::arch::x86_64::_mm256_madd_epi16, mm256_madd_epi16_stub)]
-    #[kani::stub(core::arch::x86_64::_mm256_sub_epi8, mm256_sub_epi8_stub)]
+    #[kani::stub(_mm256_shuffle_epi8, mm256_shuffle_epi8_stub)]
+    #[kani::stub(_mm256_mulhi_epu16, mm256_mulhi_epu16_stub)]
+    #[kani::stub(_mm256_mullo_epi16, mm256_mullo_epi16_stub)]
+    #[kani::stub(_mm256_add_epi8, mm256_add_epi8_stub)]
+    #[kani::stub(_mm256_subs_epu8, mm256_subs_epu8_stub)]
+    #[kani::stub(_mm256_testz_si256, mm256_testz_si256_stub)]
+    #[kani::stub(_mm256_maddubs_epi16, mm256_maddubs_epi16_stub)]
+    #[kani::stub(_mm256_madd_epi16, mm256_madd_epi16_stub)]
+    #[kani::stub(_mm256_sub_epi8, mm256_sub_epi8_stub)]
     fn check_decoder_robustness() {
         // Symbolic Config
         let config = Config {
