@@ -21,7 +21,7 @@ Not all architectures support the same verification tooling. We rely on a "Swiss
 
 > **Note on AVX512:** Since MIRI does not support AVX512 intrinsics, and Kani support is in progress, the `avx512` feature flag is **disabled by default**. We do not enable code by default unless it has passed MIRI or Kani analysis.
 
-> **🛡️ The "Stub Integrity" Guarantee**
+> **The "Stub Integrity" Guarantee**
 > Our verification stubs are **not** approximations. They are **transpiled** implementations of the Intel hardware description language.
 > *   **Optimizations:** None.
 > *   **Shortcuts:** None.
@@ -34,7 +34,6 @@ We use [Kani](https://github.com/model-checking/kani), the same formal verificat
 
 *   **How it works:** Unlike testing, which tries *some* inputs, Kani uses symbolic execution to analyze *all possible* execution paths.
 *   **The Guarantee:** We have mathematically proven that for any byte array of any size (from 0 to Infinity), the encoding/decoding loop will **never** read out of bounds or overflow.
-*   **SIMD Verification:** Since Kani does not natively support Intel intrinsics, we implemented semantic stubs **one-by-one**, strictly adhering to the behavior defined in the [Intel Intrinsics Guide](https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html).
 
 #### 1.1 SIMD Verification: The "Zero-Deviation" Protocol
 Since Kani does not verify hardware intrinsics (e.g., `_mm256_shuffle_epi8`), we must provide Rust implementations ("stubs") for the model checker to analyze. To ensure these stubs are accurate, we adhere to a strict **Zero-Deviation Protocol**:
