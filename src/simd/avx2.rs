@@ -319,6 +319,13 @@ mod kani_verification_avx2 {
     use crate::{Config, STANDARD as TURBO_STANDARD, STANDARD_NO_PAD as TURBO_STANDARD_NO_PAD};
     use core::mem::transmute;
 
+    // Magic number: 36
+    // It handles one small loop unroll and Scalar tail fallback.
+    // Cuz we're using same macros in Small loop and Big loop we prove math for both of them.
+    // For edge cages which might happen at big loop unrolling refer to Miri implementation.
+    // 
+    // Note: if we can prove what one Small loop for any inputs, it automatically proves math
+    // for inputs of any size. From zero to infinity, it won't UB or Panic.
     const INPUT_LEN: usize = 36;
 
     // --- HELPERS AND STUBS ---
