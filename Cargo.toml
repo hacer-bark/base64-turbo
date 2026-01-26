@@ -16,6 +16,7 @@ exclude = [
     ".gitignore",
     "benches/results/*",
     "benches/img/*",
+    "docs/*",
 ]
 
 [features]
