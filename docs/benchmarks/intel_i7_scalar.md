@@ -11,43 +11,43 @@
 ![Benchmark Graph](https://github.com/hacer-bark/base64-turbo/blob/main/benches/img/base64_i7_scalar.png?raw=true)
 
 **Key Findings:**
-1.  **Consistent Lead:** Even without SIMD, `base64-turbo` is consistently **20-40% faster** than the standard crate across all file sizes.
-2.  **Latency King:** Small payload encoding (32B) is **~1.6x faster** (30ns vs 48ns), making it ideal for high-throughput embedded logging or serial protocols.
-3.  **SWAR Efficiency:** The decoding throughput of **~2.0 GiB/s** (vs 1.4 GiB/s for Std) proves the effectiveness of our 64-bit SWAR logic, which processes 8 bytes per cycle using standard integer registers.
+1.  **SWAR Dominance in Decoding:** Even without SIMD, `base64-turbo` provides massive gains in decoding, consistently running **50-60% faster** (~2.4 GiB/s vs 1.5 GiB/s) than the standard crate.
+2.  **Latency King (No-Alloc):** The `TurboBuff` (no-allocation) implementation obliterates overhead for small payloads (32B), achieving **~20ns** latency vs **~45ns** for Std (>2x faster).
+3.  **Sustained Throughput:** While encoding speeds are competitive in the medium range, `base64-turbo` pulls ahead significantly in decoding for large files, proving the effectiveness of 64-bit register processing.
 
 ## 🏎️ Detailed Results
 
 ### 1. Small Payloads (32 Bytes)
-**Focus:** Embedded Logging, Serial Comms.
+**Focus:** Embedded Logging, Serial Comms, Zero-Allocation targets.
 
 | Crate | Mode | Encode Latency | Encode Speed | Decode Latency | Decode Speed |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **base64-turbo** | `Scalar` | **30.60 ns** | **0.99 GiB/s** | **33.92 ns** | **1.21 GiB/s** |
-| `base64` (std) | `Scalar` | 48.27 ns | 0.63 GiB/s | 53.54 ns | 0.78 GiB/s |
+| **base64-turbo** | `No-Alloc` | **20.80 ns** | **1.43 GiB/s** | **24.93 ns** | **1.64 GiB/s** |
+| `base64` (std) | `Scalar` | 45.01 ns | 0.66 GiB/s | 52.41 ns | 0.78 GiB/s |
 
-> **Analysis:** `base64-turbo` is **36% faster** in encoding and **36% faster** in decoding. This reduction in cycle count is critical for battery-powered or resource-constrained devices.
+> **Analysis:** The `base64-turbo` (TurboBuff) implementation is **~54% faster** in encoding latency and **~52% faster** in decoding latency compared to Std. This makes it the superior choice for high-frequency, small-packet operations where CPU cycles are precious.
 
 ### 2. Medium Payloads (64 KB)
 **Focus:** L1 Cache Efficiency (Scalar).
 
 | Crate | Encode Speed | vs `std` | Decode Speed | vs `std` |
 | :--- | :--- | :--- | :--- | :--- |
-| **base64-turbo** | **1.69 GiB/s** | **+1.8%** | **2.07 GiB/s** | **+30.1%** |
-| `base64` (std) | 1.66 GiB/s | - | 1.59 GiB/s | - |
+| **base64-turbo** | 1.77 GiB/s | -2.2% | **2.44 GiB/s** | **+62.7%** |
+| `base64` (std) | **1.81 GiB/s** | - | 1.50 GiB/s | - |
 
 > **Analysis:**
-> *   **Decoding:** The SWAR algorithm shines here, delivering a massive **30% speedup**. By reading `u64` chunks instead of bytes, we reduce memory access frequency.
-> *   **Encoding:** Performance is roughly effectively par with the standard library for medium chunks, indicating that the bottleneck here is likely L1 cache throughput rather than ALU ops.
+> *   **Decoding:** The SWAR algorithm shines brilliantly here, delivering a massive **~63% speedup**. By reading `u64` chunks, we minimize memory access overhead.
+> *   **Encoding:** The standard library edges out `base64-turbo` slightly (~2%) in this specific cache window, likely due to compiler optimizations favoring the standard loop structure in L1 cache, though the difference is negligible.
 
 ### 3. Large Payloads (10 MB)
-**Focus:** Sustained Throughput.
+**Focus:** Sustained Throughput (RAM/L3 Bottlenecks).
 
 | Crate | Encode Speed | Decode Speed |
 | :--- | :--- | :--- |
-| **base64-turbo** | **1.59 GiB/s** | **1.95 GiB/s** |
-| `base64` (std) | 1.40 GiB/s | 1.48 GiB/s |
+| **base64-turbo** | **1.71 GiB/s** | **2.33 GiB/s** |
+| `base64` (std) | 1.57 GiB/s | 1.43 GiB/s |
 
-> **Analysis:** On large files, the gap widens again. `base64-turbo` maintains a **~13% lead in encoding** and a **~31% lead in decoding**. This suggests our loop unrolling strategies are more cache-friendly than the standard implementation.
+> **Analysis:** On large files, `base64-turbo` reasserts its dominance. It maintains a **~9% lead in encoding** and a massive **~63% lead in decoding**. This suggests that as data exceeds L1 cache sizes, our loop unrolling and SWAR strategies handle memory bandwidth much more efficiently than the standard implementation.
 
 ## 📝 Raw Data Log
 <details>
@@ -55,116 +55,172 @@
 
 ```text
 Benchmarking Base64_Performances/Encode/Turbo/32
-  time: [30.490 ns 30.606 ns 30.748 ns]
-  thrpt: [992.51 MiB/s 997.10 MiB/s 1000.9 MiB/s]
+  time: [32.455 ns 32.629 ns 32.840 ns]
+  thrpt: [929.27 MiB/s 935.30 MiB/s 940.31 MiB/s]
+
+Benchmarking Base64_Performances/Encode/TurboBuff/32
+  time: [20.777 ns 20.795 ns 20.814 ns]
+  thrpt: [1.4319 GiB/s 1.4332 GiB/s 1.4344 GiB/s]
 
 Benchmarking Base64_Performances/Encode/Std/32
-  time: [48.114 ns 48.270 ns 48.463 ns]
-  thrpt: [629.71 MiB/s 632.23 MiB/s 634.28 MiB/s]
+  time: [44.960 ns 45.014 ns 45.068 ns]
+  thrpt: [677.14 MiB/s 677.96 MiB/s 678.77 MiB/s]
 
 Benchmarking Base64_Performances/Decode/Turbo/32
-  time: [33.819 ns 33.918 ns 34.031 ns]
-  thrpt: [1.2041 GiB/s 1.2082 GiB/s 1.2117 GiB/s]
+  time: [34.039 ns 34.069 ns 34.101 ns]
+  thrpt: [1.2017 GiB/s 1.2028 GiB/s 1.2038 GiB/s]
+
+Benchmarking Base64_Performances/Decode/TurboBuff/32
+  time: [24.920 ns 24.933 ns 24.948 ns]
+  thrpt: [1.6426 GiB/s 1.6435 GiB/s 1.6444 GiB/s]
 
 Benchmarking Base64_Performances/Decode/Std/32
-  time: [53.438 ns 53.540 ns 53.658 ns]
-  thrpt: [782.03 MiB/s 783.75 MiB/s 785.25 MiB/s]
+  time: [52.351 ns 52.409 ns 52.483 ns]
+  thrpt: [799.53 MiB/s 800.66 MiB/s 801.54 MiB/s]
 
 Benchmarking Base64_Performances/Encode/Turbo/512
-  time: [289.04 ns 289.73 ns 290.46 ns]
-  thrpt: [1.6417 GiB/s 1.6458 GiB/s 1.6497 GiB/s]
+  time: [293.36 ns 293.57 ns 293.79 ns]
+  thrpt: [1.6231 GiB/s 1.6243 GiB/s 1.6254 GiB/s]
+
+Benchmarking Base64_Performances/Encode/TurboBuff/512
+  time: [280.08 ns 280.44 ns 280.80 ns]
+  thrpt: [1.6981 GiB/s 1.7003 GiB/s 1.7025 GiB/s]
 
 Benchmarking Base64_Performances/Encode/Std/512
-  time: [324.38 ns 326.75 ns 329.60 ns]
-  thrpt: [1.4467 GiB/s 1.4593 GiB/s 1.4700 GiB/s]
+  time: [277.06 ns 277.26 ns 277.50 ns]
+  thrpt: [1.7183 GiB/s 1.7198 GiB/s 1.7211 GiB/s]
 
 Benchmarking Base64_Performances/Decode/Turbo/512
-  time: [316.87 ns 317.26 ns 317.68 ns]
-  thrpt: [2.0052 GiB/s 2.0079 GiB/s 2.0103 GiB/s]
+  time: [275.90 ns 276.09 ns 276.29 ns]
+  thrpt: [2.3056 GiB/s 2.3073 GiB/s 2.3089 GiB/s]
+
+Benchmarking Base64_Performances/Decode/TurboBuff/512
+  time: [266.44 ns 266.57 ns 266.71 ns]
+  thrpt: [2.3885 GiB/s 2.3897 GiB/s 2.3908 GiB/s]
 
 Benchmarking Base64_Performances/Decode/Std/512
-  time: [429.49 ns 431.35 ns 433.31 ns]
-  thrpt: [1.4701 GiB/s 1.4768 GiB/s 1.4832 GiB/s]
+  time: [443.79 ns 444.05 ns 444.32 ns]
+  thrpt: [1.4337 GiB/s 1.4346 GiB/s 1.4354 GiB/s]
 
 Benchmarking Base64_Performances/Encode/Turbo/4096
-  time: [2.3290 µs 2.3411 µs 2.3554 µs]
-  thrpt: [1.6196 GiB/s 1.6294 GiB/s 1.6379 GiB/s]
+  time: [2.2946 µs 2.2967 µs 2.2990 µs]
+  thrpt: [1.6593 GiB/s 1.6610 GiB/s 1.6624 GiB/s]
+
+Benchmarking Base64_Performances/Encode/TurboBuff/4096
+  time: [2.1652 µs 2.1664 µs 2.1680 µs]
+  thrpt: [1.7596 GiB/s 1.7608 GiB/s 1.7618 GiB/s]
 
 Benchmarking Base64_Performances/Encode/Std/4096
-  time: [2.4026 µs 2.4127 µs 2.4230 µs]
-  thrpt: [1.5744 GiB/s 1.5811 GiB/s 1.5877 GiB/s]
+  time: [2.1868 µs 2.1880 µs 2.1893 µs]
+  thrpt: [1.7424 GiB/s 1.7434 GiB/s 1.7444 GiB/s]
 
 Benchmarking Base64_Performances/Decode/Turbo/4096
-  time: [2.4758 µs 2.4868 µs 2.4996 µs]
-  thrpt: [2.0358 GiB/s 2.0463 GiB/s 2.0554 GiB/s]
+  time: [2.1396 µs 2.1414 µs 2.1434 µs]
+  thrpt: [2.3742 GiB/s 2.3764 GiB/s 2.3784 GiB/s]
+
+Benchmarking Base64_Performances/Decode/TurboBuff/4096
+  time: [2.0884 µs 2.0899 µs 2.0913 µs]
+  thrpt: [2.4333 GiB/s 2.4350 GiB/s 2.4367 GiB/s]
 
 Benchmarking Base64_Performances/Decode/Std/4096
-  time: [3.3578 µs 3.3766 µs 3.3983 µs]
-  thrpt: [1.4974 GiB/s 1.5071 GiB/s 1.5155 GiB/s]
+  time: [3.4759 µs 3.4788 µs 3.4819 µs]
+  thrpt: [1.4615 GiB/s 1.4628 GiB/s 1.4640 GiB/s]
 
 Benchmarking Base64_Performances/Encode/Turbo/65536
-  time: [35.720 µs 35.931 µs 36.177 µs]
-  thrpt: [1.6871 GiB/s 1.6987 GiB/s 1.7087 GiB/s]
+  time: [35.913 µs 35.934 µs 35.955 µs]
+  thrpt: [1.6975 GiB/s 1.6985 GiB/s 1.6995 GiB/s]
+
+Benchmarking Base64_Performances/Encode/TurboBuff/65536
+  time: [34.500 µs 34.524 µs 34.549 µs]
+  thrpt: [1.7666 GiB/s 1.7679 GiB/s 1.7691 GiB/s]
 
 Benchmarking Base64_Performances/Encode/Std/65536
-  time: [36.462 µs 36.581 µs 36.711 µs]
-  thrpt: [1.6626 GiB/s 1.6685 GiB/s 1.6739 GiB/s]
+  time: [33.765 µs 33.787 µs 33.813 µs]
+  thrpt: [1.8051 GiB/s 1.8064 GiB/s 1.8077 GiB/s]
 
 Benchmarking Base64_Performances/Decode/Turbo/65536
-  time: [39.074 µs 39.306 µs 39.563 µs]
-  thrpt: [2.0570 GiB/s 2.0705 GiB/s 2.0828 GiB/s]
+  time: [33.424 µs 33.436 µs 33.448 µs]
+  thrpt: [2.4331 GiB/s 2.4340 GiB/s 2.4348 GiB/s]
+
+Benchmarking Base64_Performances/Decode/TurboBuff/65536
+  time: [33.290 µs 33.310 µs 33.333 µs]
+  thrpt: [2.4415 GiB/s 2.4432 GiB/s 2.4447 GiB/s]
 
 Benchmarking Base64_Performances/Decode/Std/65536
-  time: [50.932 µs 51.061 µs 51.215 µs]
-  thrpt: [1.5890 GiB/s 1.5938 GiB/s 1.5979 GiB/s]
+  time: [54.358 µs 54.417 µs 54.485 µs]
+  thrpt: [1.4937 GiB/s 1.4955 GiB/s 1.4972 GiB/s]
 
 Benchmarking Base64_Performances/Encode/Turbo/524288
-  time: [281.77 µs 283.78 µs 286.00 µs]
-  thrpt: [1.7073 GiB/s 1.7207 GiB/s 1.7329 GiB/s]
+  time: [287.03 µs 287.19 µs 287.36 µs]
+  thrpt: [1.6992 GiB/s 1.7002 GiB/s 1.7011 GiB/s]
+
+Benchmarking Base64_Performances/Encode/TurboBuff/524288
+  time: [276.88 µs 277.05 µs 277.23 µs]
+  thrpt: [1.7613 GiB/s 1.7624 GiB/s 1.7635 GiB/s]
 
 Benchmarking Base64_Performances/Encode/Std/524288
-  time: [295.24 µs 296.77 µs 298.40 µs]
-  thrpt: [1.6363 GiB/s 1.6453 GiB/s 1.6538 GiB/s]
+  time: [273.03 µs 273.19 µs 273.37 µs]
+  thrpt: [1.7862 GiB/s 1.7873 GiB/s 1.7884 GiB/s]
 
 Benchmarking Base64_Performances/Decode/Turbo/524288
-  time: [306.14 µs 306.85 µs 307.60 µs]
-  thrpt: [2.1165 GiB/s 2.1217 GiB/s 2.1266 GiB/s]
+  time: [267.54 µs 267.68 µs 267.86 µs]
+  thrpt: [2.4306 GiB/s 2.4322 GiB/s 2.4334 GiB/s]
+
+Benchmarking Base64_Performances/Decode/TurboBuff/524288
+  time: [267.22 µs 267.34 µs 267.46 µs]
+  thrpt: [2.4341 GiB/s 2.4353 GiB/s 2.4363 GiB/s]
 
 Benchmarking Base64_Performances/Decode/Std/524288
-  time: [411.60 µs 412.93 µs 414.42 µs]
-  thrpt: [1.5710 GiB/s 1.5766 GiB/s 1.5817 GiB/s]
+  time: [434.42 µs 434.63 µs 434.86 µs]
+  thrpt: [1.4971 GiB/s 1.4979 GiB/s 1.4987 GiB/s]
 
 Benchmarking Base64_Performances/Encode/Turbo/1048576
-  time: [568.86 µs 577.58 µs 586.99 µs]
-  thrpt: [1.6637 GiB/s 1.6908 GiB/s 1.7167 GiB/s]
+  time: [574.66 µs 574.91 µs 575.18 µs]
+  thrpt: [1.6978 GiB/s 1.6986 GiB/s 1.6994 GiB/s]
+
+Benchmarking Base64_Performances/Encode/TurboBuff/1048576
+  time: [554.37 µs 554.74 µs 555.22 µs]
+  thrpt: [1.7589 GiB/s 1.7604 GiB/s 1.7616 GiB/s]
 
 Benchmarking Base64_Performances/Encode/Std/1048576
-  time: [609.04 µs 619.33 µs 631.19 µs]
-  thrpt: [1.5472 GiB/s 1.5768 GiB/s 1.6035 GiB/s]
+  time: [547.94 µs 548.23 µs 548.57 µs]
+  thrpt: [1.7802 GiB/s 1.7813 GiB/s 1.7823 GiB/s]
 
 Benchmarking Base64_Performances/Decode/Turbo/1048576
-  time: [634.57 µs 642.82 µs 651.78 µs]
-  thrpt: [1.9977 GiB/s 2.0256 GiB/s 2.0519 GiB/s]
+  time: [535.71 µs 537.79 µs 541.03 µs]
+  thrpt: [2.4067 GiB/s 2.4212 GiB/s 2.4306 GiB/s]
+
+Benchmarking Base64_Performances/Decode/TurboBuff/1048576
+  time: [534.32 µs 534.91 µs 535.89 µs]
+  thrpt: [2.4297 GiB/s 2.4342 GiB/s 2.4369 GiB/s]
 
 Benchmarking Base64_Performances/Decode/Std/1048576
-  time: [892.17 µs 904.03 µs 915.76 µs]
-  thrpt: [1.4219 GiB/s 1.4403 GiB/s 1.4595 GiB/s]
+  time: [880.37 µs 880.80 µs 881.28 µs]
+  thrpt: [1.4775 GiB/s 1.4783 GiB/s 1.4790 GiB/s]
 
 Benchmarking Base64_Performances/Encode/Turbo/10485760
-  time: [6.0375 ms 6.1181 ms 6.2039 ms]
-  thrpt: [1.5741 GiB/s 1.5962 GiB/s 1.6175 GiB/s]
+  time: [5.9272 ms 5.9320 ms 5.9375 ms]
+  thrpt: [1.6447 GiB/s 1.6463 GiB/s 1.6476 GiB/s]
+
+Benchmarking Base64_Performances/Encode/TurboBuff/10485760
+  time: [5.7147 ms 5.7182 ms 5.7221 ms]
+  thrpt: [1.7067 GiB/s 1.7078 GiB/s 1.7089 GiB/s]
 
 Benchmarking Base64_Performances/Encode/Std/10485760
-  time: [6.8635 ms 6.9665 ms 7.0795 ms]
-  thrpt: [1.3794 GiB/s 1.4018 GiB/s 1.4228 GiB/s]
+  time: [6.2200 ms 6.2237 ms 6.2281 ms]
+  thrpt: [1.5680 GiB/s 1.5691 GiB/s 1.5700 GiB/s]
 
 Benchmarking Base64_Performances/Decode/Turbo/10485760
-  time: [6.6172 ms 6.6679 ms 6.7199 ms]
-  thrpt: [1.9377 GiB/s 1.9528 GiB/s 1.9677 GiB/s]
+  time: [5.5785 ms 5.5992 ms 5.6379 ms]
+  thrpt: [2.3095 GiB/s 2.3255 GiB/s 2.3341 GiB/s]
+
+Benchmarking Base64_Performances/Decode/TurboBuff/10485760
+  time: [5.5787 ms 5.5872 ms 5.5961 ms]
+  thrpt: [2.3268 GiB/s 2.3305 GiB/s 2.3340 GiB/s]
 
 Benchmarking Base64_Performances/Decode/Std/10485760
-  time: [8.6481 ms 8.7669 ms 8.9077 ms]
-  thrpt: [1.4618 GiB/s 1.4852 GiB/s 1.5056 GiB/s]
+  time: [9.0807 ms 9.0951 ms 9.1126 ms]
+  thrpt: [1.4289 GiB/s 1.4316 GiB/s 1.4339 GiB/s]
 
 Model name: Intel(R) Core(TM) i7-8750H CPU @ 2.20GHz
 ```
