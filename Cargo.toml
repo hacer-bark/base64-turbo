@@ -20,7 +20,7 @@ exclude = [
 ]
 
 [features]
-default = ["std"]
+default = ["std", "simd"]
 std = []
 simd = ["std"]
 avx512 = ["std", "simd"]
