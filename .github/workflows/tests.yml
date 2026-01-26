@@ -44,7 +44,7 @@ jobs:
           (
             export CARGO_TARGET_DIR="target_logic_scalar"
             echo "[Scalar] Running..."
-            cargo test--no-default-features --features "std" > scalar.log 2>&1
+            cargo test --no-default-features --features "std" > scalar.log 2>&1
           ) &
           PID_SCALAR=$!
 
@@ -52,7 +52,7 @@ jobs:
           (
             export CARGO_TARGET_DIR="target_logic_simd"
             echo "[SIMD] Running..."
-            cargo test--no-default-features --features "std,simd" > simd.log 2>&1
+            cargo test --no-default-features --features "std,simd" > simd.log 2>&1
           ) &
           PID_SIMD=$!
 
@@ -68,7 +68,7 @@ jobs:
           (
             export CARGO_TARGET_DIR="target_logic_full"
             echo "[Full] Running..."
-            cargo test--no-default-features --features "std,simd,parallel" > full.log 2>&1
+            cargo test --no-default-features --features "std,simd,parallel" > full.log 2>&1
           ) &
           PID_FULL=$!
 
