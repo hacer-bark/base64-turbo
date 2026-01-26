@@ -70,10 +70,11 @@ We run our test suite under [MIRI](https://github.com/rust-lang/miri), an interp
 Security is not just about code; it is about process. This repository adheres to strict **Supply Chain Security** protocols to prevent malicious code injection.
 
 1.  **No Direct Commits:** Not even the repo owner can commit to `main`. All changes must go through a Pull Request (PR).
-2.  **Required Checks:** A PR cannot be merged unless it passes 3 mandatory gates:
+2.  **Required Checks:** A PR cannot be merged unless it passes 4 mandatory gates:
     *   ✅ **Kani Verification**
+    *   ✅ **MSan Audit**
     *   ✅ **MIRI Audit**
-    *   ✅ **Logic/Unit Tests + MSan Audit**
+    *   ✅ **Logic/Unit Tests**
 3.  **GPG Signing:** All commits in `main` and PRs are cryptographically signed with GPG keys. You can verify the signature of every line of code in this crate.
 
 ## Threat Model & Guarantees
