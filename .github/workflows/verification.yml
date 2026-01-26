@@ -28,7 +28,7 @@ jobs:
       - name: Run Kani
         uses: model-checking/kani-github-action@v1.1
         with:
-          args: '--jobs 4 --output-format=terse'
+          args: '--jobs 4 --output-format=terse --unstable stubbing'
 
       # Cleanup
       - name: Cleanup Artifacts
