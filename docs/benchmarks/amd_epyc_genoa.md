@@ -19,7 +19,7 @@
 
 ### 1. Small Payloads (32 Bytes)
 **Focus:** Latency & Branch Prediction.
-*Crucial for:* HFT Messaging, Authentication Headers.
+**Crucial for:** HFT Messaging, Authentication Headers.
 
 | Crate | Mode | Encode Latency | Encode Speed | Decode Latency | Decode Speed |
 | :--- | :--- | :--- | :--- | :--- | :--- |

@@ -13,7 +13,7 @@ High-performance environments where AVX512 and AVX2 are typically available.
     *   **Context:** Modern HFT/Cloud standard.
 
 *   **[AMD EPYC Genoa](./amd_epyc_genoa.md)**
-    *   **Environment:** Vultr VPS
+    *   **Environment:** Vultr `voc-c-1c-2gb-25s`
     *   **Features:** AVX512, AVX2
     *   **Context:** Modern AMD Cloud.
 
@@ -26,7 +26,7 @@ To demonstrate our **Runtime Dispatch** system, we ran benchmarks on the *same* 
 
 *   **[Intel Core i7-8750H (SSE4.1 Mode)](./intel_i7_sse41.md)**
     *   **WARNING:** THESE BENCHES NOT YET READY!
-    *   **Mode:** AVX2 disabled`.
+    *   **Mode:** AVX2 disabled.
     *   **Context:** Simulates older hardware (e.g., circa 2010-2012) or lower-end CPUs.
 
 *   **[Intel Core i7-8750H (Scalar Mode)](./intel_i7_scalar.md)**
