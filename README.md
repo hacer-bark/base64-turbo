@@ -46,7 +46,7 @@ fn main() {
 | **Encode Throughput** | **~12.5 GiB/s** | ~10.5 GiB/s | **+20%** |
 | **Latency (32B)** | **~10ns** | ~18 ns | **1.8x Lower** |
 
-**[See More Benchmark Reports](docs/benchmarks)**: Includes methodology, hardware specs, and reproduction scripts.
+**[See More Benchmark Reports](docs/benchmarks)**: Includes methodology, hardware specs, and reproduction notes.
 
 ## Safety & Verification
 
