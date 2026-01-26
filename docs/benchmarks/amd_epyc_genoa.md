@@ -19,7 +19,7 @@
 
 ### 1. Small Payloads (32 Bytes)
 **Focus:** Latency & Branch Prediction.
-*Crucial for:** HFT Messaging, Authentication Headers.*
+*Crucial for:* HFT Messaging, Authentication Headers.
 
 | Crate | Mode | Encode Latency | Encode Speed | Decode Latency | Decode Speed |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -53,8 +53,6 @@
 | `base64` (std) | 2.00 GiB/s | 2.45 GiB/s |
 
 > **Analysis:** Results scale linearly from 64KB, indicating no thermal throttling or cache-thrashing issues. `base64-turbo` remains the clear choice for read-heavy workloads (Decoding), while being effectively tied for write-heavy workloads.
-
----
 
 ## 📝 Raw Data Log
 <details>

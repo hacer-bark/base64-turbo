@@ -25,6 +25,7 @@ To demonstrate our **Runtime Dispatch** system, we ran benchmarks on the *same* 
     *   **Result:** Maximum throughput for this chip.
 
 *   **[Intel Core i7-8750H (SSE4.1 Mode)](./intel_i7_sse41.md)**
+    *   **WARNING:** THESE BENCHES NOT YET READY!
     *   **Mode:** AVX2 disabled`.
     *   **Context:** Simulates older hardware (e.g., circa 2010-2012) or lower-end CPUs.
 
