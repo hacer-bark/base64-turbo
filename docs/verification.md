@@ -10,19 +10,19 @@ We have rigorously audited the codebase to the point where "unsafe code" effecti
 
 ## Verification Status Matrix
 
-Not all architectures support the same verification tooling. We rely on a "Swiss Cheese" model where multiple layers of verification (MIRI + Kani + Fuzzing) cover each other's blind spots.
+Not all architectures support the same verification tooling. We rely on a "Swiss Cheese" model where multiple layers of verification (MIRI + MSan + Kani + Fuzzing) cover each other's blind spots.
 
-| Architecture | MIRI (UB Check) | Kani (Math Proof) | Fuzzing (2.5B+) | Status |
-| :--- | :---: | :---: | :---: | :--- |
-| **Scalar** | ✅ Passed | ✅ Passed | ✅ Passed | **100% Formally Verified** |
-| **AVX2** | ✅ Passed | ✅ Passed | ✅ Passed | **100% Formally Verified** |
-| **SSE4.1** | ✅ Passed | 🚧 In Progress | ✅ Passed | **Memory Safe (MIRI Verified)** |
-| **AVX512** | ❌ Not Supported | 🚧 In Progress | ✅ Passed | **Empirically Safe** (Fuzz-Tested) |
+| Architecture | MIRI (UB Check) | MSan (Uninit Check) | Kani (Math Proof) | Fuzzing (2.5B+) | Status |
+| :--- | :---: | :---: | :---: | :---: | :--- |
+| **Scalar** | ✅ Passed | ✅ Passed | ✅ Passed | ✅ Passed | **100% Formally Verified** |
+| **AVX2** | ✅ Passed | ✅ Passed | ✅ Passed | ✅ Passed | **100% Formally Verified** |
+| **SSE4.1** | ✅ Passed | ✅ Passed | 🚧 In Progress | ✅ Passed | **Memory Safe (Deep Audit)** |
+| **AVX512** | ❌ Not Supported | ❌ Not Supported | 🚧 In Progress | ✅ Passed | **Empirically Safe** (Fuzz-Tested) |
 
-> **Note on AVX512:** Since MIRI does not support AVX512 intrinsics, and Kani support is in progress, the `avx512` feature flag is **disabled by default**. We do not enable code by default unless it has passed MIRI or Kani analysis.
+> **Note on AVX512:** Since MIRI and MSan lack full support for AVX512 intrinsics, and Kani support is in progress, the `avx512` feature flag is **disabled by default**. We do not enable code by default unless it has passed rigorous formal or dynamic analysis.
 
 > **The "Stub Integrity" Guarantee**
-> Our verification stubs are **not** approximations. They are **transpiled** implementations of the Intel hardware description language.
+> Our Kani verification stubs are **not** approximations. They are **transpiled** implementations of the Intel hardware description language.
 > *   **Optimizations:** None.
 > *   **Shortcuts:** None.
 > *   **Logic Deviation:** 0%.
@@ -53,18 +53,26 @@ We minimize translation error by mapping variable names and logic flow 1:1.
 | `a[i+7:i] - b[i+7:i]` | `a[i].wrapping_sub(b[i]);` |
 | `ENDFOR` | `}` |
 
-### 2. MIRI (Undefined Behavior Analysis)
+### 2. MemorySanitizer (MSan)
+While MIRI checks for validity, **MemorySanitizer (MSan)** checks for **Initialization**.
+
+*   **The Threat:** In high-performance code, reading uninitialized memory (padding bytes) is a common source of non-deterministic bugs and security leaks (Information Disclosure).
+*   **The Check:** We recompile the **entire Rust Standard Library** from source with MSan instrumentation (`-Z build-std -Z sanitizer=memory`). This allows us to track the "definedness" of every single bit of memory, ensuring our SIMD algorithms never perform logic on garbage data derived from uninitialized buffers.
+*   **Coverage:** Covers Scalar, SSE4.1, and AVX2 paths on Linux targets.
+
+### 3. MIRI (Undefined Behavior Analysis)
 We run our test suite under [MIRI](https://github.com/rust-lang/miri), an interpreter that checks for Undefined Behavior according to the Rust memory model.
 
 *   **Checks Performed:** Strict provenance tracking, alignment checks, out-of-bounds pointer arithmetic, and data races.
 *   **Coverage:** Covers Scalar, SSE4.1, and AVX2 paths.
 
-### 3. Supply Chain Security (GitHub Policy)
+### 4. Supply Chain Security (GitHub Policy)
 Security is not just about code; it is about process. This repository adheres to strict **Supply Chain Security** protocols to prevent malicious code injection.
 
 1.  **No Direct Commits:** Not even the repo owner can commit to `main`. All changes must go through a Pull Request (PR).
-2.  **Required Checks:** A PR cannot be merged unless it passes 3 mandatory gates:
+2.  **Required Checks:** A PR cannot be merged unless it passes 4 mandatory gates:
     *   ✅ **Kani Verification**
+    *   ✅ **MSan Audit**
     *   ✅ **MIRI Audit**
     *   ✅ **Logic/Unit Tests**
 3.  **GPG Signing:** All commits in `main` and PRs are cryptographically signed with GPG keys. You can verify the signature of every line of code in this crate.
@@ -75,7 +83,7 @@ Security is not just about code; it is about process. This repository adheres to
 We guarantee that for any usage of the **Public Safe API** (`encode`, `decode`, `encode_into`, etc.):
 *   **Input Resilience:** You can pass **ANY** slice of bytes (`&[u8]`) of **ANY** length.
 *   **Content Agnostic:** You can pass valid Base64, garbage binary data, random noise, or malicious payloads.
-*   **Result:** The program will **NEVER** Segfault, Panic, or trigger Undefined Behavior (UB).
+*   **Result:** The program will **NEVER** Segfault, Panic, Read Uninitialized Memory, or trigger Undefined Behavior (UB).
 
 ### What is Out of Scope (Contract Violations)
 The library exposes internal `unsafe` functions for users who need to bypass bounds checks for performance.
@@ -88,10 +96,10 @@ The library exposes internal `unsafe` functions for users who need to bypass bou
 **A:** Yes, extensively. We use pointers and SIMD intrinsics to achieve speed. However, all `unsafe` blocks are encapsulated behind a Safe API and have been formally audited.
 
 **Q: Is it safe to use?**
-**A:** Yes. It is **mathematically proven** to be safe for the verified architectures (Scalar/AVX2). "Safe" here isn't an opinion; it's a result of symbolic execution analysis.
+**A:** Yes. It is **mathematically proven** to be safe for the verified architectures (Scalar/AVX2). "Safe" here isn't an opinion; it's a result of symbolic execution and sanitizer analysis.
 
 **Q: Can I trust you?**
-**A:** **No, you should not.** Do not trust the author's words. Trust the cryptographic proofs and the CI logs. You are encouraged to visit the [GitHub Actions](https://github.com/hacer-bark/base64-turbo/actions) tab and inspect the Kani and MIRI logs yourself.
+**A:** **No, you should not.** Do not trust the author's words. Trust the cryptographic proofs and the CI logs. You are encouraged to visit the [GitHub Actions](https://github.com/hacer-bark/base64-turbo/actions) tab and inspect the Kani, MSan, and MIRI logs yourself.
 
 **Q: How do I know your SIMD stubs are correct? If the stubs are wrong, the proof is worthless.**
 **A:** This is the most critical part of our audit. We mitigate this risk through **"Literal Translation."**
