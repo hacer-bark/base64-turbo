@@ -7,23 +7,24 @@
 
 ## Design Philosophy: Logic > Memory
 
-Traditional Base64 implementations rely heavily on memory lookup tables (arrays of 256 bytes). This creates two problems for modern CPUs:
-1.  **Cache Pressure:** Random input data causes random memory access patterns, polluting the L1 cache.
-2.  **Branch Misprediction:** If the CPU cannot predict the data flow, the pipeline stalls.
+Traditional Base64 implementations rely heavily on byte-by-byte memory lookup tables. This creates two problems for modern CPUs:
+1.  **Pipeline Stalls:** Processing one byte at a time creates a tight dependency chain, preventing the CPU from using its superscalar capabilities.
+2.  **Branch Misprediction:** Naive loops often incur penalties when handling padding or invalid characters.
 
 **The Turbo Approach:**
-We replace memory lookups with **Vectorized Arithmetic**.
-*   Instead of asking memory *"What is the character for index X?"*, we use CPU logic to calculate the character directly in registers.
-*   **Benefit:** This eliminates branch misprediction penalties caused by high-entropy (random) data. The CPU pipeline remains full regardless of the input.
+We replace byte-level processing with **Vectorized Data Movement**.
+*   Instead of asking memory *"What is the character for this byte?"* one by one, we load machine-word sized chunks (64-bit or 256-bit) and process them in parallel.
+*   **Benefit:** This maximizes "Instructions Per Cycle" (IPC). The CPU pipeline remains full, processing 8 to 32 bytes simultaneously.
 
-## Scalar Implementation (SWAR)
+## Scalar Implementation (Wide-LUT)
 
-Even without SIMD, our Scalar fallback is ~1.5x faster than the standard Rust implementation.
+Even without SIMD, our Scalar fallback is significantly faster than standard implementations.
 
-We utilize a technique known as **SWAR (SIMD Within A Register)**.
-*   Instead of processing bytes one-by-one (`u8`), we cast data to `u64` (machine word size).
-*   We use bitwise operations to perform "SIMD-like" parallel processing on 8 bytes at a time using standard 64-bit registers.
-*   **Safety:** This relies on `unsafe` pointer casting, but is rigorously bounded and verified by Kani to never read beyond the allocated slice.
+We utilize a technique known as **Wide-Scalar Processing**.
+*   **Data Size:** Instead of processing bytes (`u8`), we cast data to `u32` or `u64` to move 4-8 bytes at a time.
+*   **Loop Unrolling:** We manually unroll loops to reduce branch prediction overhead.
+*   **Table-Based Lookups:** We utilize 64-bit registers to construct 8 output bytes from 6 input bytes in a single logical block, leveraging the CPU's L1 cache efficiently.
+*   **Safety:** This relies on `unsafe` pointer arithmetic and `read_unaligned` calls, but is rigorously bounded and verified by Kani and MSan to never read beyond the allocated slice or leak uninitialized memory.
 
 ## AVX2 Implementation
 
@@ -34,7 +35,7 @@ Modern Intel CPUs have multiple "Ports" to execute instructions.
 *   **Multiplication:** Runs on Ports 0 & 1 (Cost: ~5 cycles).
 *   **Shuffle:** Runs on Port 5 (Cost: ~1 cycle).
 
-We explicitly designed the algorithm to balance the load across these ports. Where other libraries might use complex arithmetic (bottlenecking Ports 0/1), we use **Register-based Look-Up Tables (LUTs)** via `vpshufb` to offload work to Port 5. This prevents any single execution port from becoming a bottleneck, maximizing Superscalar throughput.
+We explicitly designed the algorithm to balance the load across these ports. We utilize **Register-based Look-Up Tables (LUTs)** via `vpshufb` to offload work to Port 5. This prevents any single execution port from becoming a bottleneck, maximizing Superscalar throughput.
 
 ### 2. The "Lane Stitching" Problem
 Standard AVX2 instructions (`vpshufb`) are restricted to 128-bit "lanes." You cannot easily move a byte from the lower 128-bits of a register to the upper 128-bits. This breaks Base64, which requires a sliding bit-window.
@@ -49,7 +50,7 @@ We utilize "Double-Load" and permutation intrinsics to bridge this gap. By caref
 This is not an auto-generated port of the AVX2 code. It is hand-written to exploit specific AVX512 features present in Zen 4 and Ice Lake CPUs.
 
 *   **Zero-Cost Masking:** We utilize Mask Registers (`k`) to handle partial data chunks without the overhead of prologue/epilogue code.
-*   **Note on Verification:** While the AVX2/Scalar paths are MIRI verified, the AVX512 path is currently verified via Fuzzing and Kani only, as MIRI does not support these intrinsics. See [Safety & Verification](./verification.md) for details.
+*   **Note on Verification:** While the AVX2/Scalar paths are MIRI and MSan verified, the AVX512 path is currently verified via Fuzzing and Kani only, as standard tooling does not yet support these intrinsics. See [Safety & Verification](./verification.md) for details.
 
 ## Runtime Dispatch & Fallback
 

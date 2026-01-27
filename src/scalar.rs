@@ -7,6 +7,8 @@ use crate::{
     URL_SAFE_DECODE_TABLE,
 };
 
+// TODO: Test SWAR approach.
+
 /// Encodes a byte slice into Base64 using a highly optimized scalar algorithm.
 /// 
 /// # Safety
