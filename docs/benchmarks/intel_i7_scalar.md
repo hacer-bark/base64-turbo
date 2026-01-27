@@ -1,6 +1,6 @@
 # 💻 Benchmark: Intel i7-8750H (Scalar / No-SIMD)
 
-**Context:** This test forcibly disables all SIMD instructions (AVX2, SSE4.1). It measures the raw efficiency of our SWAR (SIMD Within A Register) fallback algorithm against the standard `base64` crate.
+**Context:** This test forcibly disables all SIMD instructions (AVX2, SSE4.1). It measures the raw efficiency of our custom fallback algorithm against the standard `base64` crate.
 
 *   **Processor:** Intel(R) Core(TM) i7-8750H CPU @ 2.20GHz
 *   **Mode:** **Scalar Only** (All SIMD flags disabled via `RUSTFLAGS`)
@@ -11,9 +11,8 @@
 ![Benchmark Graph](https://github.com/hacer-bark/base64-turbo/blob/main/benches/img/base64_i7_scalar.png?raw=true)
 
 **Key Findings:**
-1.  **SWAR Dominance in Decoding:** Even without SIMD, `base64-turbo` provides massive gains in decoding, consistently running **50-60% faster** (~2.4 GiB/s vs 1.5 GiB/s) than the standard crate.
-2.  **Latency King (No-Alloc):** The `TurboBuff` (no-allocation) implementation obliterates overhead for small payloads (32B), achieving **~20ns** latency vs **~45ns** for Std (>2x faster).
-3.  **Sustained Throughput:** While encoding speeds are competitive in the medium range, `base64-turbo` pulls ahead significantly in decoding for large files, proving the effectiveness of 64-bit register processing.
+1.  **Latency King (No-Alloc):** The `TurboBuff` (no-allocation) implementation obliterates overhead for small payloads (32B), achieving **~20ns** latency vs **~45ns** for Std (>2x faster).
+2.  **Sustained Throughput:** While encoding speeds are competitive in the medium range, `base64-turbo` pulls ahead significantly in decoding for large files, proving the effectiveness of 64-bit register processing.
 
 ## 🏎️ Detailed Results
 
@@ -36,7 +35,7 @@
 | `base64` (std) | **1.81 GiB/s** | - | 1.50 GiB/s | - |
 
 > **Analysis:**
-> *   **Decoding:** The SWAR algorithm shines brilliantly here, delivering a massive **~63% speedup**. By reading `u64` chunks, we minimize memory access overhead.
+> *   **Decoding:** Custom algorithm shines brilliantly here, delivering a massive **~63% speedup**. By reading `u64` chunks, we minimize memory access overhead.
 > *   **Encoding:** The standard library edges out `base64-turbo` slightly (~2%) in this specific cache window, likely due to compiler optimizations favoring the standard loop structure in L1 cache, though the difference is negligible.
 
 ### 3. Large Payloads (10 MB)
@@ -47,7 +46,7 @@
 | **base64-turbo** | **1.71 GiB/s** | **2.33 GiB/s** |
 | `base64` (std) | 1.57 GiB/s | 1.43 GiB/s |
 
-> **Analysis:** On large files, `base64-turbo` reasserts its dominance. It maintains a **~9% lead in encoding** and a massive **~63% lead in decoding**. This suggests that as data exceeds L1 cache sizes, our loop unrolling and SWAR strategies handle memory bandwidth much more efficiently than the standard implementation.
+> **Analysis:** On large files, `base64-turbo` reasserts its dominance. It maintains a **~9% lead in encoding** and a massive **~63% lead in decoding**. This suggests that as data exceeds L1 cache sizes, our loop unrolling and custom strategies handle memory bandwidth much more efficiently than the standard implementation.
 
 ## 📝 Raw Data Log
 <details>

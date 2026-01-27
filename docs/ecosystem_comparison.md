@@ -6,7 +6,7 @@ This project references and benchmarks against several external Base64 libraries
 
 | Library | Language | SIMD | Verified Safety | Est. Throughput (AVX2) |
 | :--- | :---: | :---: | :---: | :--- |
-| **base64-turbo** | Rust | ✅ | ✅ (Kani/MIRI) | **~12.1 GiB/s** |
+| **base64-turbo** | Rust | ✅ | ✅ (Kani/MIRI/MSan) | **~12.1 GiB/s** |
 | [base64-simd](https://crates.io/crates/base64-simd) | Rust | ✅ | ❌ | ~8.0 GiB/s |
 | [base64 (std)](https://crates.io/crates/base64) | Rust | ❌ | ✅ (Compiler) | ~1.6 GiB/s |
 | [Turbo-Base64](https://github.com/powturbo/Turbo-Base64) | C | ✅ | ❌ | **~29.0 GiB/s** |

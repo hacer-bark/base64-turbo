@@ -28,7 +28,7 @@
 | `base64-simd` | `Standard` | 18.42 ns | 1.62 GiB/s | 15.14 ns | 2.71 GiB/s |
 | `base64` (std) | `Standard` | 36.96 ns | 0.82 GiB/s | 31.90 ns | 1.28 GiB/s |
 
-> **Analysis:** `base64-turbo` (TurboBuff) is **1.75x faster** than `base64-simd` regarding encoding latency. This confirms that our SWAR (SIMD Within A Register) and scalar fallback logic is highly optimized for Zen 4's pipeline.
+> **Analysis:** `base64-turbo` (TurboBuff) is **1.75x faster** than `base64-simd` regarding encoding latency. This confirms that our scalar fallback logic is highly optimized for Zen 4's pipeline.
 
 ### 2. Medium Payloads (64 KB)
 **Focus:** L1 Cache Saturation & AVX512 Implementation.

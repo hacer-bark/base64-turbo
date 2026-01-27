@@ -40,7 +40,7 @@ Enable `parallel` only if you are processing massive files (>1MB) and can tolera
 **A:** **Not-yet.**
 The library uses **Runtime Feature Detection**.
 *   On **x86_64:** It detects AVX512/AVX2/SSE4.1.
-*   On **ARM:** It would detect NEON when we will add support, for now it falls back to our optimized SWAR Scalar implementation.
+*   On **ARM:** It would detect NEON when we will add support, for now it falls back to our optimized Scalar implementation.
 The binary is portable; you can move it between CPUs of the same architecture family without crashing.
 
 ### Q: Why is this faster than standard look-up tables?
