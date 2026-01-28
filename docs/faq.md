@@ -10,7 +10,7 @@ While we use `unsafe` pointers and intrinsics for speed, we have established a *
 
 ### Q: Can I crash the library by passing garbage data?
 **A:** **No.**
-The decoder is resilient. If you pass invalid Base64 strings, random binary noise, or malicious payloads, the library will return a standard `Result::Err`. It will **never** panic or cause Undefined Behavior (UB).
+The decoder is resilient. If you pass invalid Base64 strings, random binary noise, or malicious payloads, the library will return `base64_turbo::Error`. It will **never** panic or cause Undefined Behavior (UB) as long as you use safe API.
 
 ### Q: What happens if I violate safety contracts in the internal `unsafe` API?
 **A:** If you bypass the public API (`encode`/`decode`) and call internal `unsafe` functions directly, **you are responsible for the invariants.**
@@ -40,12 +40,8 @@ Enable `parallel` only if you are processing massive files (>1MB) and can tolera
 **A:** **Not-yet.**
 The library uses **Runtime Feature Detection**.
 *   On **x86_64:** It detects AVX512/AVX2/SSE4.1.
-*   On **ARM:** It would detect NEON when we will add support, for now it falls back to our optimized Scalar implementation.
+*   On **ARM:** It would detect NEON when we will add support for it, for now it falls back to our optimized Scalar implementation.
 The binary is portable; you can move it between CPUs of the same architecture family without crashing.
-
-### Q: Why is this faster than standard look-up tables?
-**A:** **Logic > Memory.**
-Modern CPUs hate random memory access (which causes cache misses) and random data (which causes branch mispredictions). We replace memory lookups with **Vectorized Arithmetic**. We calculate the Base64 indices using CPU logic gates rather than fetching them from RAM. This keeps the CPU pipeline saturated regardless of the input data entropy.
 
 ## 📦 Comparisons & Ecosystem
 

@@ -3,7 +3,7 @@
 //! [![Crates.io](https://img.shields.io/crates/v/base64-turbo.svg)](https://crates.io/crates/base64-turbo)
 //! [![Documentation](https://docs.rs/base64-turbo/badge.svg)](https://docs.rs/base64-turbo)
 //! [![License](https://img.shields.io/github/license/hacer-bark/base64-turbo)](https://github.com/hacer-bark/base64-turbo/blob/main/LICENSE)
-//! [![Formal Verification](https://img.shields.io/badge/Formal%20Verification-Kani%20Verified-success)](https://github.com/model-checking/kani)
+//! [![Kani Verified](https://img.shields.io/github/actions/workflow/status/hacer-bark/base64-turbo/verification.yml?label=Kani%20Verified)](https://github.com/hacer-bark/base64-turbo/actions/workflows/verification.yml)
 //! [![MIRI Verified](https://img.shields.io/github/actions/workflow/status/hacer-bark/base64-turbo/miri.yml?label=MIRI%20Verified)](https://github.com/hacer-bark/base64-turbo/actions/workflows/miri.yml)
 //! [![Logic Tests](https://img.shields.io/github/actions/workflow/status/hacer-bark/base64-turbo/tests.yml?label=Logic%20Tests)](https://github.com/hacer-bark/base64-turbo/actions/workflows/tests.yml)
 //!
@@ -44,7 +44,7 @@
 //!
 //! ### Zero-Allocation API (Slice-based)
 //!
-//! For low-latency/HFT scenarios or `no_std` environments where heap allocation is undesirable.
+//! For low-latency scenarios or `no_std` environments where heap allocation is undesirable.
 //! These methods write directly into a user-provided mutable slice.
 //!
 //! ```rust
@@ -78,6 +78,8 @@
 //! *   **MIRI Tests:** Core SIMD logic and scalar fallbacks are verified with **MIRI** (Undefined Behavior checker) in CI.
 //! *   **Fuzzing:** The codebase is fuzz-tested via `cargo-fuzz`.
 //! *   **Fallback:** Invalid or unsupported hardware instruction sets are detected at runtime, ensuring safe fallback to scalar code.
+//! 
+//! **[Learn More](https://github.com/hacer-bark/base64-turbo/blob/main/docs/verification.md)**: Details on our threat model and formal verification strategy.
 
 #![cfg_attr(not(any(feature = "std", test)), no_std)]
 
@@ -236,7 +238,7 @@ pub(crate) struct Config {
 /// let encoded = STANDARD.encode(data);
 /// assert_eq!(encoded, "SGVsbG8gd29ybGQ=");
 ///
-/// // Decode to Vec<u8>
+/// // Decode to Result<Vec<u8>, Error>
 /// let decoded = STANDARD.decode(&encoded).unwrap();
 /// assert_eq!(decoded, data);
 /// # }

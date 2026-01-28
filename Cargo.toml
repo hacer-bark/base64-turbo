@@ -5,7 +5,6 @@ edition = "2024"
 description = "The fastest memory-safe Base64 engine. Formally verified (Kani/MIRI). Features runtime AVX2/AVX512 detection, zero-allocation API, and robust no_std support."
 license = "MIT"
 repository = "https://github.com/hacer-bark/base64-turbo"
-homepage = "https://github.com/hacer-bark/base64-turbo"
 documentation = "https://docs.rs/base64-turbo"
 readme = "README.md"
 authors = ["Hacer"]
