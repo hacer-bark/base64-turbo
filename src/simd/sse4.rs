@@ -1,6 +1,10 @@
 use crate::{Error, Config, scalar};
 use super::{PACK_L1, PACK_L2, PACK_SHUFFLE};
-use core::arch::x86_64::*;
+
+#[cfg(target_arch = "x86")]
+use std::arch::x86::*;
+#[cfg(target_arch = "x86_64")]
+use std::arch::x86_64::*;
 
 #[target_feature(enable = "sse4.1")]
 pub unsafe fn encode_slice_simd(config: &Config, input: &[u8], mut dst: *mut u8) {

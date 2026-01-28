@@ -46,7 +46,7 @@ fn main() {
 | **Encode Throughput** | **~12.5 GiB/s** | ~10.5 GiB/s | **+20%** |
 | **Latency (32B)** | **~10ns** | ~18 ns | **1.8x Lower** |
 
-**[See More Benchmark Reports](docs/benchmarks)**: Includes methodology, hardware specs, and reproduction notes.
+**[See More Benchmark Reports](https://github.com/hacer-bark/base64-turbo/tree/main/docs/benchmarks)**: Includes methodology, hardware specs, and reproduction notes.
 
 ## Safety & Verification
 
@@ -56,7 +56,7 @@ Achieving maximum throughput must not cost memory safety. While we leverage `uns
 *   ✅ **MIRI Verified:** Validates that no Undefined Behavior (UB) occurs during execution.
 *   ✅ **Fuzz Tested:** Over 2.5 billion iterations with zero failures.
 
-**[See Verification Proofs](docs/verification.md)**: Details on our threat model and formal verification strategy.
+**[See Verification Proofs](https://github.com/hacer-bark/base64-turbo/blob/main/docs/verification.md)**: Details on our threat model and formal verification strategy.
 
 ## Ecosystem Comparison
 
@@ -79,11 +79,11 @@ The C library `turbo-base64` is the current "speed of light." However, it relies
 
 For detailed implementation data, please refer to our internal docs:
 
-*   [**Safety & Verification**](docs/verification.md) - MIRI/Kani proofs.
-*   [**Benchmarks & Methodology**](docs/benchmarks) - Detailed benchmark and how they collected.
-*   [**Architecture & Design**](docs/design.md) - Internal data flow and SIMD selection logic.
-*   [**Ecosystem Comparison**](docs/ecosystem_comparison.md) - Compression of top Rust and C libs.
-*   [**FAQ**](docs/faq.md) - Common questions about `no_std` and embedded support.
+*   [**Safety & Verification**](https://github.com/hacer-bark/base64-turbo/blob/main/docs/verification.md) - MIRI/Kani proofs.
+*   [**Benchmarks & Methodology**](https://github.com/hacer-bark/base64-turbo/tree/main/docs/benchmarks) - Detailed benchmark and how they collected.
+*   [**Architecture & Design**](https://github.com/hacer-bark/base64-turbo/blob/main/docs/design.md) - Internal data flow and SIMD selection logic.
+*   [**Ecosystem Comparison**](https://github.com/hacer-bark/base64-turbo/blob/main/docs/ecosystem_comparison.md) - Compression of top Rust and C libs.
+*   [**FAQ**](https://github.com/hacer-bark/base64-turbo/blob/main/docs/faq.md) - Common questions about `no_std` and embedded support.
 
 ## License
 

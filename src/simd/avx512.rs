@@ -2,7 +2,10 @@ use crate::{Error, Config, scalar};
 use super::{PACK_L1, PACK_L2, PACK_SHUFFLE};
 
 // TODO: Consider add special AVX-512VBMI support
-use core::arch::x86_64::*;
+#[cfg(target_arch = "x86")]
+use std::arch::x86::*;
+#[cfg(target_arch = "x86_64")]
+use std::arch::x86_64::*;
 
 #[target_feature(enable = "avx512f,avx512bw")]
 pub unsafe fn encode_slice_avx512(config: &Config, input: &[u8], mut dst: *mut u8) {
