@@ -82,23 +82,22 @@
 //! **[Learn More](https://github.com/hacer-bark/base64-turbo/blob/main/docs/verification.md)**: Details on our threat model and formal verification strategy.
 
 #![cfg_attr(not(any(feature = "std", test)), no_std)]
-
 #![doc(issue_tracker_base_url = "https://github.com/hacer-bark/base64-turbo/issues/")]
-
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(missing_docs)]
 #![warn(rust_2018_idioms)]
 #![warn(unused_qualifications)]
-
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
+// Scalar implementation
+mod scalar;
+// SIMD implementation (x86/x86_64 only)
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[cfg(feature = "simd")]
 mod simd;
-mod scalar;
 
 // ======================================================================
 // ERROR DEFINITION
@@ -403,7 +402,7 @@ impl Engine {
         // --- Serial Path ---
         // Pass the raw pointer to the dispatcher. 
         // SAFETY: We checked output.len() >= req_len above.
-        Self::encode_dispatch(self, input, output[..req_len].as_mut_ptr());
+        unsafe { Self::encode_dispatch(self, input, output[..req_len].as_mut_ptr()) };
 
         Ok(req_len)
     }
@@ -467,7 +466,8 @@ impl Engine {
         }
 
         // --- Serial Path ---
-        let real_len = Self::decode_dispatch(self, input, output[..req_len].as_mut_ptr())?;
+        // SAFETY: We pass only verified data.
+        let real_len = unsafe { Self::decode_dispatch(self, input, output[..req_len].as_mut_ptr())? };
 
         Ok(real_len)
     }
@@ -570,7 +570,7 @@ impl Engine {
     // ========================================================================
 
     #[inline(always)]
-    fn encode_dispatch(&self, input: &[u8], dst: *mut u8) {
+    unsafe fn encode_dispatch(&self, input: &[u8], dst: *mut u8) {
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         #[cfg(feature = "simd")]
         {
@@ -605,7 +605,7 @@ impl Engine {
     }
 
     #[inline(always)]
-    fn decode_dispatch(&self, input: &[u8], dst: *mut u8) -> Result<usize, Error> {
+    unsafe fn decode_dispatch(&self, input: &[u8], dst: *mut u8) -> Result<usize, Error> {
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         #[cfg(feature = "simd")]
         {
@@ -633,6 +633,190 @@ impl Engine {
 
         // Fallback: Scalar / Non-x86 / Short inputs
         // Safety: Pointers verified by caller
+        unsafe { scalar::decode_slice_unsafe(&self.config, input, dst) }
+    }
+
+    // ========================================================================
+    // Raw unsafe access (unstable feature)
+    // ========================================================================
+
+    /// Encodes a byte slice into Base64 using a highly optimized AVX2 SIMD implementation.
+    /// 
+    /// This provides raw access to the direct AVX2 encoding logic.
+    /// 
+    /// # Safety
+    /// 
+    /// This function is **unsafe** and requires the caller to uphold strict memory contracts.
+    /// Failure to do so will result in **undefined behavior** (e.g., buffer overflow).
+    /// 
+    /// - The destination pointer `dst` must be valid and point to a mutable memory region with
+    ///   sufficient capacity. The required size depends on `config.padding`:
+    ///   - With padding: `input.len().div_ceil(3) * 4`
+    ///   - Without padding: `(input.len() * 4).div_ceil(3)`
+    ///   - Highly recommended: use `Engine::encoded_len` to compute length.
+    /// 
+    /// - The caller **must** ensure the target CPU supports AVX2 instructions at runtime.
+    ///   Executing this function on a CPU without AVX2 support will cause crashes or incorrect
+    ///   behavior.
+    /// 
+    /// # Warning
+    /// 
+    /// This is a low-level, unsafe primitive. Misuse can lead to undefined behavior regardless
+    /// of other crate guarantees. For better memory safety, use the safe higher-level APIs
+    /// (e.g., `Engine::encode`).
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    #[cfg(feature = "simd")]
+    #[cfg(feature = "unstable")]
+    pub unsafe fn encode_avx2(&self, input: &[u8], dst: *mut u8) {
+        // Safety: Caller must uphold the contracts documented on this function.
+        unsafe { simd::encode_slice_avx2(&self.config, input, dst) }
+    }
+
+    /// Encodes a byte slice into Base64 using a highly optimized AVX2 SIMD implementation.
+    /// 
+    /// This provides raw access to the direct AVX2 encoding logic.
+    /// 
+    /// # Safety
+    /// 
+    /// This function is **unsafe** and requires the caller to uphold strict memory contracts.
+    /// Failure to do so will result in **undefined behavior** (e.g., buffer overflow).
+    /// 
+    /// - The destination pointer `dst` must be valid and point to a mutable memory region with
+    ///   sufficient capacity. The required size depends on `config.padding`:
+    ///   - With padding: `input.len().div_ceil(3) * 4`
+    ///   - Without padding: `(input.len() * 4).div_ceil(3)`
+    /// 
+    /// - Highly recommended: use `Engine::estimate_decoded_len` to compute length.
+    /// 
+    /// - The caller **must** ensure the target CPU supports AVX2 instructions at runtime.
+    ///   Executing this function on a CPU without AVX2 support will cause an illegal instruction
+    ///   crash.
+    /// 
+    /// # Warning
+    /// 
+    /// This is a low-level, unsafe primitive. Misuse can lead to undefined behavior regardless
+    /// of other crate guarantees. For better memory safety, use the safe higher-level APIs
+    /// (e.g., `Engine::encode`).
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    #[cfg(feature = "simd")]
+    #[cfg(feature = "unstable")]
+    pub unsafe fn decode_avx2(&self, input: &[u8], dst: *mut u8) -> Result<usize, Error> {
+        // Safety: Caller must uphold the contracts documented on this function.
+        unsafe { simd::decode_slice_avx2(&self.config, input, dst) }
+    }
+
+    /// Encodes a byte slice into Base64 using a highly optimized SSE4.1 SIMD implementation.
+    /// 
+    /// This provides raw access to the direct SSE4.1 encoding logic.
+    /// 
+    /// # Safety
+    /// 
+    /// This function is **unsafe** and requires the caller to uphold strict memory contracts.
+    /// Failure to do so will result in **undefined behavior** (e.g., buffer overflow).
+    /// 
+    /// - The destination pointer `dst` must be valid and point to a mutable memory region with
+    ///   sufficient capacity. The required size depends on `config.padding`:
+    ///   - With padding: `input.len().div_ceil(3) * 4`
+    ///   - Without padding: `(input.len() * 4).div_ceil(3)`
+    ///   - Highly recommended: use `Engine::encoded_len` to compute length.
+    /// 
+    /// - The caller **must** ensure the target CPU supports SSE4.1 instructions at runtime.
+    ///   Executing this function on a CPU without SSE4.1 support will cause crashes or incorrect
+    ///   behavior.
+    /// 
+    /// # Warning
+    /// 
+    /// This is a low-level, unsafe primitive. Misuse can lead to undefined behavior regardless
+    /// of other crate guarantees. For better memory safety, use the safe higher-level APIs
+    /// (e.g., `Engine::encode`).
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    #[cfg(feature = "simd")]
+    #[cfg(feature = "unstable")]
+    pub unsafe fn encode_sse4(&self, input: &[u8], dst: *mut u8) {
+        // Safety: Caller must uphold the contracts documented on this function.
+        unsafe { simd::encode_slice_simd(&self.config, input, dst) }
+    }
+
+    /// Decodes a Base64 byte slice using a highly optimized SSE4.1 SIMD implementation.
+    /// 
+    /// This provides raw access to the direct SSE4.1 decoding logic.
+    /// 
+    /// # Safety
+    /// 
+    /// This function is **unsafe** and requires the caller to uphold strict memory contracts.
+    /// Failure to do so will result in **undefined behavior** (e.g., buffer overflow).
+    ///
+    /// - The destination pointer `dst` must be valid and point to a mutable memory region with
+    ///   at least `(input.len() / 4 + 1) * 3` bytes of capacity. The extra space is required due
+    ///   to the implementation performing overlapping writes.
+    /// 
+    /// - Highly recommended: use `Engine::estimate_decoded_len` to compute length.
+    /// 
+    /// - The caller **must** ensure the target CPU supports SSE4.1 instructions at runtime.
+    ///   Executing this function on a CPU without SSE4.1 support may cause crashes or incorrect
+    ///   behavior.
+    /// 
+    /// # Warning
+    /// 
+    /// This is a low-level, unsafe primitive. Misuse can lead to undefined behavior regardless
+    /// of other crate guarantees. For better memory safety, use the safe higher-level APIs
+    /// (e.g., `Engine::decode`).
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    #[cfg(feature = "simd")]
+    #[cfg(feature = "unstable")]
+    pub unsafe fn decode_sse4(&self, input: &[u8], dst: *mut u8) -> Result<usize, Error> {
+        // Safety: Caller must uphold the contracts documented on this function.
+        unsafe { simd::decode_slice_simd(&self.config, input, dst) }
+    }
+
+    /// Encodes a byte slice into Base64 using a highly optimized scalar (non-SIMD) algorithm.
+    /// 
+    /// This provides raw access to the direct scalar encoding logic.
+    /// 
+    /// # Safety
+    /// 
+    /// This function is **unsafe** and requires the caller to uphold strict memory contracts.
+    /// Failure to do so will result in **undefined behavior** (e.g., buffer overflow).
+    ///
+    /// - The destination pointer `dst` must be valid and point to a mutable memory region with
+    ///   sufficient capacity. The required size depends on `config.padding`:
+    ///   - With padding: `input.len().div_ceil(3) * 4`
+    ///   - Without padding: `(input.len() * 4).div_ceil(3)`
+    ///   - Highly recommended: use `Engine::encoded_len` to compute length.
+    /// 
+    /// # Warning
+    /// 
+    /// This is a low-level, unsafe primitive. Misuse can lead to undefined behavior regardless
+    /// of other crate guarantees. For better memory safety, use the safe higher-level APIs
+    /// (e.g., `Engine::encode`).
+    #[cfg(feature = "unstable")]
+    pub unsafe fn encode_scalar(&self, input: &[u8], dst: *mut u8) {
+        // Safety: Caller must uphold the contracts documented on this function.
+        unsafe { scalar::encode_slice_unsafe(&self.config, input, dst) }
+    }
+
+    /// Decodes a Base64 byte slice using a highly optimized scalar (non-SIMD) algorithm.
+    /// 
+    /// This provides raw access to the direct scalar decoding logic.
+    /// 
+    /// # Safety
+    /// 
+    /// This function is **unsafe** and requires the caller to uphold strict memory contracts.
+    /// Failure to do so will result in **undefined behavior** (e.g., buffer overflow).
+    /// 
+    /// - The destination pointer `dst` must be valid and point to a mutable memory region with
+    ///   at least `(input.len() / 4 + 1) * 3` bytes of capacity. The extra space is required due
+    ///   to the implementation performing overlapping writes.
+    ///  - Highly recommended: use `Engine::estimate_decoded_len` to compute length.
+    /// 
+    /// # Warning
+    /// 
+    /// This is a low-level, unsafe primitive. Misuse can lead to undefined behavior regardless
+    /// of other crate guarantees. For better memory safety, use the safe higher-level APIs
+    /// (e.g., `Engine::decode`).
+    #[cfg(feature = "unstable")]
+    pub unsafe fn decode_scalar(&self, input: &[u8], dst: *mut u8) -> Result<usize, Error> {
+        // Safety: Caller must uphold the contracts documented on this function.
         unsafe { scalar::decode_slice_unsafe(&self.config, input, dst) }
     }
 }
