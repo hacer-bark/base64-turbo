@@ -69,6 +69,7 @@
 //! | **`simd`** | **Yes** | Enables runtime detection for AVX2 and SSE4.1 intrinsics. If disabled or unsupported by hardware, the crate falls back to scalar logic automatic. |
 //! | **`parallel`** | **No** | Enables [Rayon](https://crates.io/crates/rayon) support. Automatically parallelizes processing for payloads larger than 512KB. Recommended only for massive data ingestion tasks. |
 //! | **`avx512`** | **No** | Enables AVX512 intrinsics. |
+//! | **`unstable`** | **No** | Enables access to the raw, unsafe functions. |
 //!
 //! ## Safety & Verification
 //!

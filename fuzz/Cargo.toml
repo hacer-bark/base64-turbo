@@ -10,7 +10,7 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 base64 = "0.22" 
-base64-turbo = { path = "..", features = ["unstable"]} 
+base64-turbo = { path = "..", features = ["unstable"] } 
 
 [[bin]]
 name = "fuzz_all_modes"
