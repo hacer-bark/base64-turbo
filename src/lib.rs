@@ -393,7 +393,7 @@ impl Engine {
                     .zip(input.par_chunks(ENCODE_CHUNK_SIZE))
                     .for_each(|(out_chunk, in_chunk)| {
                         // Safe: We know the chunk sizes match the expansion ratio logic
-                        Self::encode_dispatch(self, in_chunk, out_chunk.as_mut_ptr());
+                        unsafe { Self::encode_dispatch(self, in_chunk, out_chunk.as_mut_ptr()); }
                     });
                 
                 return Ok(req_len);
@@ -453,7 +453,7 @@ impl Engine {
                     .try_fold(
                         || 0usize,
                         |acc, (out_chunk, in_chunk)| {
-                            let written = Self::decode_dispatch(self, in_chunk, out_chunk.as_mut_ptr())?;
+                            let written = unsafe { Self::decode_dispatch(self, in_chunk, out_chunk.as_mut_ptr())? };
                             Ok(acc + written)
                         },
                     )
