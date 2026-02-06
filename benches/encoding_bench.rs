@@ -29,7 +29,7 @@ fn should_run(target_name: &str) -> bool {
     if var == "all" {
         return true;
     }
-    var.to_lowercase().contains(&target_name.to_lowercase())
+    var.to_lowercase().eq(&target_name.to_lowercase())
 }
 
 fn bench_comparison(c: &mut Criterion) {

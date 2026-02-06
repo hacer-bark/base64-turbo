@@ -6,7 +6,7 @@
 **A:** We distinguish between "Safe Rust" (the compiler checks it) and "Memory Safe" (mathematically proven to be correct).
 While we use `unsafe` pointers and intrinsics for speed, we have established a **Formal Verification Pipeline** using Kani and MIRI. We have mathematically proven that for the verified paths (Scalar, AVX2), there is **no possible input** (from empty strings to infinite streams) that can trigger a buffer overflow, segfault, or panic via the public API.
 
-**[Read the Verification Report](safety/verification.md)**
+**[Read the Verification Report](/verification.md)**
 
 ### Q: Can I crash the library by passing garbage data?
 **A:** **No.**
