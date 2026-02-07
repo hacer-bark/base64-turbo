@@ -720,7 +720,7 @@ mod miri_avx2_coverage {
     // ----------------------------------------------------------------------
 
     #[test]
-    fn miri_encode_scalar_fallback() {
+    fn miri_avx2_encode_scalar_fallback() {
         let config = Config { url_safe: false, padding: true };
         // Test < 24 bytes (Hits scalar fallback immediately)
         verify_encode_avx2(&config, &STANDARD, 1);
@@ -728,7 +728,7 @@ mod miri_avx2_coverage {
     }
 
     #[test]
-    fn miri_encode_single_vector_loop() {
+    fn miri_avx2_encode_single_vector_loop() {
         let config = Config { url_safe: false, padding: true };
         // Your code uses 24-byte chunks (32-byte registers reading 24 bytes).
         // Test exactly 24 (1 loop)
@@ -754,7 +754,7 @@ mod miri_avx2_coverage {
     }
 
     #[test]
-    fn miri_encode_url_safe() {
+    fn miri_avx2_encode_url_safe() {
         // Verify the lookup table switching logic
         let config = Config { url_safe: true, padding: true };
         verify_encode_avx2(&config, &URL_SAFE, 50);
@@ -765,7 +765,7 @@ mod miri_avx2_coverage {
     // ----------------------------------------------------------------------
 
     #[test]
-    fn miri_decode_scalar_fallback() {
+    fn miri_avx2_decode_scalar_fallback() {
         let config = Config { url_safe: false, padding: true };
         // Your code falls back for < 32 bytes
         // Note: Base64 expands 3 bytes -> 4 chars.
@@ -775,7 +775,7 @@ mod miri_avx2_coverage {
     }
 
     #[test]
-    fn miri_decode_single_vector_loop() {
+    fn miri_avx2_decode_single_vector_loop() {
         let config = Config { url_safe: false, padding: true };
         // Your code processes 32-byte chunks.
         // 32 bytes of Base64 = 24 bytes of decoded data.
@@ -785,7 +785,7 @@ mod miri_avx2_coverage {
     }
 
     #[test]
-    fn miri_decode_quad_vector_loop() {
+    fn miri_avx2_decode_quad_vector_loop() {
         let config = Config { url_safe: false, padding: true };
         // Your code processes 128-byte chunks (4 * 32).
         // 128 bytes input = 96 bytes decoded.
@@ -795,7 +795,7 @@ mod miri_avx2_coverage {
     }
 
     #[test]
-    fn miri_decode_url_safe() {
+    fn miri_avx2_decode_url_safe() {
         // Verify '-' and '_' handling in the SIMD path
         let config = Config { url_safe: true, padding: false };
 
@@ -813,7 +813,7 @@ mod miri_avx2_coverage {
     // ----------------------------------------------------------------------
 
     #[test]
-    fn miri_decode_error_detection() {
+    fn miri_avx2_decode_error_detection() {
         let config = Config { url_safe: false, padding: true };
         let mut dst = [0u8; 256];
 
