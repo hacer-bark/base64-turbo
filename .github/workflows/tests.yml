@@ -52,7 +52,7 @@ jobs:
           (
             export CARGO_TARGET_DIR="target_logic_simd"
             echo "[SIMD] Running..."
-            cargo test --no-default-features --features "std,simd" > simd.log 2>&1
+            cargo test --no-default-features --features "std,simd,unstable" > simd.log 2>&1
           ) &
           PID_SIMD=$!
 
