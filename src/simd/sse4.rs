@@ -344,8 +344,6 @@ mod miri_sse4_coverage {
 
     /// Helper to verify SSE4.1 encoding against the 'base64' crate oracle
     fn verify_encode_sse4(config: &Config, oracle: &impl Engine, input_len: usize) {
-        if !is_x86_feature_detected!("sse4.1") { return; }
-
         let input = random_bytes(input_len);
         let expected = oracle.encode(&input);
 
@@ -359,8 +357,6 @@ mod miri_sse4_coverage {
 
     /// Helper to verify SSE4.1 decoding against the 'base64' crate oracle
     fn verify_decode_sse4(config: &Config, oracle: &impl Engine, original_len: usize) {
-        if !is_x86_feature_detected!("sse4.1") { return; }
-
         let input_bytes = random_bytes(original_len);
         let encoded = oracle.encode(&input_bytes);
         let encoded_bytes = encoded.as_bytes();
@@ -474,8 +470,6 @@ mod miri_sse4_coverage {
 
     #[test]
     fn miri_sse4_decode_error_detection() {
-        if !is_x86_feature_detected!("sse4.1") { return; }
-
         let config = Config { url_safe: false, padding: true };
         let mut dst = [0u8; 256];
 

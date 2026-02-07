@@ -684,10 +684,6 @@ mod miri_avx2_coverage {
 
     /// Helper to verify AVX2 encoding against the 'base64' crate oracle
     fn verify_encode_avx2(config: &Config, oracle: &impl Engine, input_len: usize) {
-        if !is_x86_feature_detected!("avx2") {
-            return; // Skip on machines without AVX2 support (or Miri without flags)
-        }
-
         let input = random_bytes(input_len);
         let expected = oracle.encode(&input);
 
@@ -703,8 +699,6 @@ mod miri_avx2_coverage {
 
     /// Helper to verify AVX2 decoding against the 'base64' crate oracle
     fn verify_decode_avx2(config: &Config, oracle: &impl Engine, original_len: usize) {
-        if !is_x86_feature_detected!("avx2") { return; }
-
         // 1. Generate valid Base64 via oracle
         let input_bytes = random_bytes(original_len);
         let encoded = oracle.encode(&input_bytes);
@@ -804,13 +798,13 @@ mod miri_avx2_coverage {
     fn miri_decode_url_safe() {
         // Verify '-' and '_' handling in the SIMD path
         let config = Config { url_safe: true, padding: false };
-        
+
         // Construct specific input with URL safe chars
         // 0x3F (?) is usually '/', in URL safe it is '_'
         // 0x3E (>) is usually '+', in URL safe it is '-'
         let input = b"-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_"; // 32 bytes
         let mut dst = [0u8; 32];
-        
+
         unsafe { decode_slice_avx2(&config, input, dst.as_mut_ptr()).unwrap(); }
     }
 
@@ -820,8 +814,6 @@ mod miri_avx2_coverage {
 
     #[test]
     fn miri_decode_error_detection() {
-        if !is_x86_feature_detected!("avx2") { return; }
-        
         let config = Config { url_safe: false, padding: true };
         let mut dst = [0u8; 256];
 

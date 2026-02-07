@@ -19,11 +19,10 @@ exclude = [
 ]
 
 [features]
-default = ["std", "simd", "unstable"]
+default = ["std", "simd"]
 unstable = []
 std = []
 simd = ["std"]
-avx512 = ["std", "simd"]
 parallel = ["std", "dep:rayon"]
 
 [dependencies]
