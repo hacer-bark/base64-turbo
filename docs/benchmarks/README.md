@@ -67,11 +67,11 @@ Our benchmark suite is controlled via the `BENCH_TARGET` environment variable. T
 
 | Target | Description |
 | :--- | :--- |
-| `turbo` | The standard `base64-turbo` API (allocating). |
+| `turbo` | **(Default)** The standard `base64-turbo` API (allocating). |
 | `turbo-buff` | The `base64-turbo` zero-allocation API (writing to pre-allocated buffer). |
 | `simd` | The `base64-simd` crate (Current Rust standard). |
 | `std` | The classic `base64` crate (referred to as "std" or "base64" in reports). |
-| `all` | **(Default)** Runs all of the above. |
+| `all` | Runs all of the above. |
 
 ### 4. Reproduction
 You can reproduce these results locally using the following commands:

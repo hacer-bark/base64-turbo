@@ -54,7 +54,6 @@ dependencies = [
  "base64-turbo",
  "criterion",
  "rand",
- "rayon",
 ]
 
 [[package]]

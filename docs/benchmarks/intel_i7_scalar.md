@@ -3,7 +3,7 @@
 **Context:** This test forcibly disables all SIMD instructions (AVX2, SSE4.1). It measures the raw efficiency of our custom fallback algorithm against the standard `base64` crate.
 
 *   **Processor:** Intel(R) Core(TM) i7-8750H CPU @ 2.20GHz
-*   **Mode:** **Scalar Only** (All SIMD flags disabled via `RUSTFLAGS`)
+*   **Mode:** **Scalar Only**
 *   **Competitor:** `base64` (Standard crate, referred to as "Std")
 
 ## 📈 Performance Snapshot

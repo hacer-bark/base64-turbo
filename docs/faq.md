@@ -30,14 +30,8 @@ Disable the default `std` feature in your `Cargo.toml`.
 base64-turbo = { version = "0.1", default-features = false }
 ```
 
-### Q: Why is `parallel` (Rayon) disabled by default?
-**A:** To prevent **Jitter** and **Bloat**.
-1.  **Bloat:** We strive to be dependency-free. Enabling parallel pulls in `rayon`.
-2.  **Jitter:** In HFT or real-time web servers, creating thread pools can cause non-deterministic latency spikes.
-Enable `parallel` only if you are processing massive files (>1MB) and can tolerate the context-switching overhead.
-
 ### Q: Does this work on ARM (Apple Silicon / Raspberry Pi)?
-**A:** **Not-yet.**
+**A:** **Yes, but with Scalar.**
 The library uses **Runtime Feature Detection**.
 *   On **x86_64:** It detects AVX512/AVX2/SSE4.1.
 *   On **ARM:** It would detect NEON when we will add support for it, for now it falls back to our optimized Scalar implementation.

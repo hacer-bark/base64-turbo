@@ -69,19 +69,6 @@ This detection prevents `SIGILL` (Illegal Instruction) crashes. If you try to ru
 
 > **Trade-off:** This adds a small increase to binary size (as code for all architectures is included) but ensures universal portability and safety.
 
-## Parallel Execution (Rayon)
-
-The library supports multi-threaded processing via the `parallel` feature flag. When enabled, payloads larger than **512KB** are automatically split into chunks and processed in parallel using `rayon`.
-
-**Why is `parallel` disabled by default?**
-We prioritize **Determinism** over raw throughput for the default configuration.
-
-1.  **Jitter & Latency:** In High-Frequency Trading (HFT), consistent latency is critical. Thread pools (like Rayon) introduce non-deterministic context switching and "Work Stealing," which can cause unpredictable latency spikes (Jitter).
-2.  **Zero Dependencies:** We strive to keep the core library dependency-free. Enabling parallel requires pulling in `rayon`, which is a heavy dependency.
-3.  **Resource Contention:** Spawning worker threads can "steal" CPU cycles from other critical parts of your application.
-
-**Recommendation:** Enable `parallel` **only** if you are processing massive datasets (MBs/GBs) and your application architecture tolerates thread pooling.
-
 ## 🏆 Summary of Claims
 
 Due to these architectural decisions and rigorous verification strategies, `base64-turbo` asserts the following positions in the ecosystem:

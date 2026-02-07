@@ -67,7 +67,6 @@
 //! |---------|---------|-------------|
 //! | **`std`** | **Yes** | Enables `String` and `Vec` support. Disable this for `no_std` environments. |
 //! | **`simd`** | **Yes** | Enables runtime detection for AVX2 and SSE4.1 intrinsics. If disabled or unsupported by hardware, the crate falls back to scalar logic automatic. |
-//! | **`parallel`** | **No** | Enables [Rayon](https://crates.io/crates/rayon) support. Automatically parallelizes processing for payloads larger than 512KB. Recommended only for massive data ingestion tasks. |
 //! | **`avx512`** | **No** | Enables AVX512 intrinsics. |
 //! | **`unstable`** | **No** | Enables access to the raw, unsafe functions. |
 //!
@@ -89,9 +88,6 @@
 #![warn(rust_2018_idioms)]
 #![warn(unused_qualifications)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
-
-#[cfg(feature = "parallel")]
-use rayon::prelude::*;
 
 // Scalar implementation
 mod scalar;
@@ -142,31 +138,6 @@ impl core::fmt::Display for Error {
 // Enable std::error::Error trait when the 'std' feature is active
 #[cfg(feature = "std")]
 impl std::error::Error for Error {}
-
-// ======================================================================
-// Internal
-// Tuning Constants (Parallelism)
-// ======================================================================
-
-/// Input chunk size for parallel processing (24 KB).
-///
-/// This size is chosen to fit comfortably within the L1/L2 cache of most modern
-/// CPUs, ensuring that hot loops inside the encoder stay cache-resident.
-#[cfg(feature = "parallel")]
-const ENCODE_CHUNK_SIZE: usize = 24 * 1024;
-
-/// Output chunk size corresponding to `ENCODE_CHUNK_SIZE`.
-///
-/// Base64 encoding expands data by 4/3. For a 24KB input, the output is 32KB.
-#[cfg(feature = "parallel")]
-const DECODE_CHUNK_SIZE: usize = (ENCODE_CHUNK_SIZE / 3) * 4;
-
-/// Threshold to enable Rayon parallelism (512 KB).
-///
-/// For payloads smaller than this, the overhead of context switching and
-/// thread synchronization outweighs the throughput gains of multi-threading.
-#[cfg(feature = "parallel")]
-const PARALLEL_THRESHOLD: usize = 512 * 1024;
 
 // ======================================================================
 // Internal Lookup Tables
@@ -347,11 +318,6 @@ impl Engine {
     /// This is a "Zero-Allocation" API designed for hot paths. It writes directly
     /// into the destination slice without creating intermediate `Vec`.
     ///
-    /// # Parallelism
-    /// If the `parallel` feature is enabled and the input size exceeds the
-    /// internal threshold (default: 512KB), this method automatically uses
-    /// Rayon to process chunks in parallel, saturating memory bandwidth.
-    ///
     /// # Arguments
     ///
     /// * `input`: The binary data to encode.
@@ -379,28 +345,7 @@ impl Engine {
             return Err(Error::BufferTooSmall);
         }
 
-        // --- Parallel Path ---
-        #[cfg(feature = "parallel")]
-        {
-            if len >= PARALLEL_THRESHOLD {
-                // Split input and output into corresponding chunks
-                let out_slice = &mut output[..req_len];
-
-                // Base64 expands 3 bytes -> 4 chars. 
-                // We chunk based on ENCODE_CHUNK_SIZE (24KB) to stay cache-friendly.
-                out_slice
-                    .par_chunks_mut((ENCODE_CHUNK_SIZE / 3) * 4)
-                    .zip(input.par_chunks(ENCODE_CHUNK_SIZE))
-                    .for_each(|(out_chunk, in_chunk)| {
-                        // Safe: We know the chunk sizes match the expansion ratio logic
-                        unsafe { Self::encode_dispatch(self, in_chunk, out_chunk.as_mut_ptr()); }
-                    });
-                
-                return Ok(req_len);
-            }
-        }
-
-        // --- Serial Path ---
+        // --- Normal Path ---
         // Pass the raw pointer to the dispatcher. 
         // SAFETY: We checked output.len() >= req_len above.
         unsafe { Self::encode_dispatch(self, input, output[..req_len].as_mut_ptr()) };
@@ -409,10 +354,6 @@ impl Engine {
     }
 
     /// Decodes `input` into the provided `output` buffer.
-    ///
-    /// # Performance
-    /// Like encoding, this method supports automatic parallelization for large payloads.
-    /// It verifies the validity of the Base64 input while decoding.
     ///
     /// # Returns
     ///
@@ -436,37 +377,7 @@ impl Engine {
             return Err(Error::BufferTooSmall);
         }
 
-        // --- Parallel Path ---
-        #[cfg(feature = "parallel")]
-        {
-            if len >= PARALLEL_THRESHOLD {
-                let out_slice = &mut output[..req_len];
-
-                // Parallel Reduce:
-                // 1. Split input/output into chunks.
-                // 2. Decode chunks independently.
-                // 3. Sum the number of bytes written by each chunk.
-                // 4. Return error if any chunk fails.
-                let real_len = out_slice
-                    .par_chunks_mut((DECODE_CHUNK_SIZE / 4) * 3)
-                    .zip(input.par_chunks(DECODE_CHUNK_SIZE))
-                    .try_fold(
-                        || 0usize,
-                        |acc, (out_chunk, in_chunk)| {
-                            let written = unsafe { Self::decode_dispatch(self, in_chunk, out_chunk.as_mut_ptr())? };
-                            Ok(acc + written)
-                        },
-                    )
-                    .try_reduce(
-                        || 0usize,
-                        |a, b| Ok(a + b),
-                    )?;
-
-                return Ok(real_len);
-            }
-        }
-
-        // --- Serial Path ---
+        // --- Normal Path ---
         // SAFETY: We pass only verified data.
         let real_len = unsafe { Self::decode_dispatch(self, input, output[..req_len].as_mut_ptr())? };
 

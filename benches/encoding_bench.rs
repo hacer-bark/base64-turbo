@@ -25,11 +25,12 @@ fn generate_random_data(size: usize) -> Vec<u8> {
 /// Helper to check if a specific engine should be benchmarked based on ENV vars.
 /// Usage: `BENCH_TARGET=turbo cargo bench` or `BENCH_TARGET=all cargo bench`
 fn should_run(target_name: &str) -> bool {
-    let var = env::var("BENCH_TARGET").unwrap_or_else(|_| "all".to_string());
-    if var == "all" {
+    let var = env::var("BENCH_TARGET").unwrap_or_else(|_| "turbo".to_string());
+    let targets: Vec<String> = var.split(',').map(|s| s.trim().to_lowercase()).collect();
+    if targets.contains(&"all".to_string()) {
         return true;
     }
-    var.to_lowercase().eq(&target_name.to_lowercase())
+    targets.contains(&target_name.to_lowercase())
 }
 
 fn bench_comparison(c: &mut Criterion) {
