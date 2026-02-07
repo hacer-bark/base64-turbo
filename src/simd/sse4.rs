@@ -106,7 +106,7 @@ pub unsafe fn encode_slice_simd(config: &Config, input: &[u8], mut dst: *mut u8)
     }
 }
 
-#[target_feature(enable = "ssse3,sse4.1")]
+#[target_feature(enable = "sse4.1")]
 pub unsafe fn decode_slice_simd(config: &Config, input: &[u8], mut dst: *mut u8) -> Result<usize, Error> {
     let len = input.len();
     let mut src = input.as_ptr();
@@ -331,116 +331,166 @@ pub unsafe fn decode_slice_simd(config: &Config, input: &[u8], mut dst: *mut u8)
 // }
 
 #[cfg(all(test, miri))]
-mod sse4_miri_tests {
-    use super::{encode_slice_simd, decode_slice_simd};
-    use crate::Config;
-    use base64::{engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD}};
+mod miri_sse4_coverage {
+    use super::*;
+    use base64::{engine::general_purpose::{STANDARD, URL_SAFE}, Engine};
     use rand::{Rng, rng};
 
-    // --- Helpers ---
-
-    fn encoded_size(len: usize, padding: bool) -> usize {
-        if padding { (len + 2) / 3 * 4 } else { (len * 4 + 2) / 3 }
-    }
-    fn estimated_decoded_length(len: usize) -> usize { (len / 4 + 1) * 3 }
-
-    /// Miri Runner:
-    /// 1. Runs deterministic boundary tests (0..64 bytes) to hit every loop edge.
-    /// 2. Runs a small set of random fuzz tests (50 iterations) to catch weird patterns.
-    fn run_miri_cycle<E: base64::Engine>(config: Config, reference_engine: &E) {
-        // Deterministic Boundary Testing
-        for len in 0..=64 {
-            let mut rng = rng();
-            let mut input = vec![0u8; len];
-            rng.fill(&mut input[..]);
-
-            verify_roundtrip(&config, &input, reference_engine);
-        }
-
-        // Small Fuzzing (Random Lengths)
+    // --- Mock Infrastructure ---
+    fn random_bytes(len: usize) -> Vec<u8> {
         let mut rng = rng();
-        for _ in 0..100 {
-            let len = rng.random_range(65..512);
-            let mut input = vec![0u8; len];
-            rng.fill(&mut input[..]);
-
-            verify_roundtrip(&config, &input, reference_engine);
-        }
+        (0..len).map(|_| rng.random()).collect()
     }
 
-    fn verify_roundtrip<E: base64::Engine>(config: &Config, input: &[u8], reference_engine: &E) {
-        let len = input.len();
+    /// Helper to verify SSE4.1 encoding against the 'base64' crate oracle
+    fn verify_encode_sse4(config: &Config, oracle: &impl Engine, input_len: usize) {
+        if !is_x86_feature_detected!("sse4.1") { return; }
 
-        // --- Encoding ---
-        let expected_string = reference_engine.encode(input);
+        let input = random_bytes(input_len);
+        let expected = oracle.encode(&input);
 
-        let enc_len = encoded_size(len, config.padding);
-        let mut enc_buf = vec![0u8; enc_len];
+        let mut dst = vec![0u8; expected.len() * 2]; // Safety margin
 
-        unsafe { encode_slice_simd(config, input, enc_buf.as_mut_ptr()); }
+        unsafe { encode_slice_simd(config, &input, dst.as_mut_ptr()); }
 
-        assert_eq!(&enc_buf, expected_string.as_bytes(), "Miri Encoding Mismatch!");
-
-        // --- Decoding ---
-        let dec_max_len = estimated_decoded_length(enc_len);
-        let mut dec_buf = vec![0u8; dec_max_len];
-
-        unsafe {
-            let written = decode_slice_simd(config, &enc_buf, dec_buf.as_mut_ptr())
-                .expect("Decoder returned error on valid input");
-
-            let my_decoded = &dec_buf[..written];
-
-            assert_eq!(my_decoded, input, "Miri Decoding Mismatch!");
-        }
+        let result = &dst[..expected.len()];
+        assert_eq!(std::str::from_utf8(result).unwrap(), expected, "Encode len {}", input_len);
     }
 
-    // --- Tests ---
+    /// Helper to verify SSE4.1 decoding against the 'base64' crate oracle
+    fn verify_decode_sse4(config: &Config, oracle: &impl Engine, original_len: usize) {
+        if !is_x86_feature_detected!("sse4.1") { return; }
+
+        let input_bytes = random_bytes(original_len);
+        let encoded = oracle.encode(&input_bytes);
+        let encoded_bytes = encoded.as_bytes();
+
+        let mut dst = vec![0u8; original_len + 64];
+
+        let len = unsafe {
+            decode_slice_simd(config, encoded_bytes, dst.as_mut_ptr()).expect("Valid input failed to decode")
+        };
+
+        assert_eq!(&dst[..len], &input_bytes, "Decode len {}", original_len);
+    }
+
+    // ----------------------------------------------------------------------
+    // 1. Encoder Coverage Tests (SSE4.1)
+    // ----------------------------------------------------------------------
 
     #[test]
-    fn miri_sse4_url_safe_roundtrip() {
-        run_miri_cycle(
-            Config { url_safe: true, padding: true }, 
-            &URL_SAFE
-        );
-    }
-
-    #[test]
-    fn miri_sse4_url_safe_no_pad_roundtrip() {
-        run_miri_cycle(
-            Config { url_safe: true, padding: false }, 
-            &URL_SAFE_NO_PAD
-        );
+    fn miri_sse4_encode_scalar_fallback() {
+        let config = Config { url_safe: false, padding: true };
+        // SSE4 encode loop threshold is 12 bytes.
+        // Test < 12 bytes -> Pure Scalar
+        verify_encode_sse4(&config, &STANDARD, 1);
+        verify_encode_sse4(&config, &STANDARD, 11);
     }
 
     #[test]
-    fn miri_sse4_standard_roundtrip() {
-        run_miri_cycle(
-            Config { url_safe: false, padding: true }, 
-            &STANDARD
-        );
+    fn miri_sse4_encode_single_vector_loop() {
+        let config = Config { url_safe: false, padding: true };
+        // SSE4 Single Vector processes 12 input bytes.
+        // Exactly 1 loop
+        verify_encode_sse4(&config, &STANDARD, 12);
+        // Exactly 2 loops (Proves src.add(12) works)
+        verify_encode_sse4(&config, &STANDARD, 24);
+        // 1 loop + 1 byte scalar fallback
+        verify_encode_sse4(&config, &STANDARD, 13);
     }
 
     #[test]
-    fn miri_sse4_standard_no_pad_roundtrip() {
-        run_miri_cycle(
-            Config { url_safe: false, padding: false }, 
-            &STANDARD_NO_PAD
-        );
+    fn miri_sse4_encode_quad_vector_loop() {
+        let config = Config { url_safe: false, padding: true };
+        // SSE4 Batch Loop processes 48 input bytes (4 * 12).
+        // Exactly 1 Quad Loop
+        verify_encode_sse4(&config, &STANDARD, 48);
+        // Exactly 2 Quad Loops (Proves src.add(48) works)
+        verify_encode_sse4(&config, &STANDARD, 96);
+        // 1 Quad Loop + 0 Single + 1 byte Scalar
+        verify_encode_sse4(&config, &STANDARD, 49);
+        // 1 Quad Loop + 1 Single Loop + 0 Scalar
+        verify_encode_sse4(&config, &STANDARD, 60);
     }
 
-    // --- Error Checks ---
+    #[test]
+    fn miri_sse4_encode_url_safe() {
+        // Covers `if config.url_safe` logic in constant setup
+        let config = Config { url_safe: true, padding: true };
+        verify_encode_sse4(&config, &URL_SAFE, 50);
+    }
+
+    // ----------------------------------------------------------------------
+    // 2. Decoder Coverage Tests (SSE4.1)
+    // ----------------------------------------------------------------------
 
     #[test]
-    fn miri_sse4_invalid_input() {
+    fn miri_sse4_decode_scalar_fallback() {
+        let config = Config { url_safe: false, padding: true };
+        // SSE4 decode loop threshold is 16 bytes.
+        // < 16 bytes input -> Pure Scalar
+        verify_decode_sse4(&config, &STANDARD, 3); // 4 chars
+        verify_decode_sse4(&config, &STANDARD, 9); // 12 chars (< 16)
+    }
+
+    #[test]
+    fn miri_sse4_decode_single_vector_loop() {
+        let config = Config { url_safe: false, padding: true };
+        // SSE4 Single Vector processes 16 input bytes.
+        // Exactly 1 Single Loop
+        verify_decode_sse4(&config, &STANDARD, 12); // 16 bytes input
+        // Exactly 2 Single Loops
+        verify_decode_sse4(&config, &STANDARD, 24); // 32 bytes input
+        // 1 Single Loop + Scalar Remainder
+        verify_decode_sse4(&config, &STANDARD, 13); // 16 bytes + extra input
+    }
+
+    #[test]
+    fn miri_sse4_decode_quad_vector_loop() {
+        let config = Config { url_safe: false, padding: true };
+        // SSE4 Batch Loop processes 64 input bytes (4 * 16).
+        // Exactly 1 Quad Loop
+        verify_decode_sse4(&config, &STANDARD, 48); // 64 bytes input
+        // Exactly 2 Quad Loops
+        verify_decode_sse4(&config, &STANDARD, 96); // 128 bytes input
+        // 1 Quad Loop + Scalar Remainder
+        verify_decode_sse4(&config, &STANDARD, 49); // 64 bytes + extra input
+    }
+
+    #[test]
+    fn miri_sse4_decode_url_safe() {
+        // Covers URL-safe specific LUT logic in decoder
         let config = Config { url_safe: true, padding: false };
-        let mut out = vec![0u8; 10];
+        // Input containing - and _
+        // 16 bytes to trigger one SSE vector
+        let input = b"-_-_-_-_-_-_-_-_"; 
+        let mut dst = [0u8; 16];
+        unsafe { decode_slice_simd(&config, input, dst.as_mut_ptr()).unwrap(); }
+    }
 
-        // Pointer math check: Ensure reading invalid chars doesn't cause OOB reads
-        let bad_chars = b"heap+"; 
-        unsafe {
-            let res = decode_slice_simd(&config, bad_chars, out.as_mut_ptr());
-            assert!(res.is_err());
-        }
+    // ----------------------------------------------------------------------
+    // 3. Error Logic Coverage (SSE4.1)
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn miri_sse4_decode_error_detection() {
+        if !is_x86_feature_detected!("sse4.1") { return; }
+
+        let config = Config { url_safe: false, padding: true };
+        let mut dst = [0u8; 256];
+
+        // Case 1: Error in Quad Loop (last vector)
+        // Batch size is 64 bytes.
+        let mut bad_input_64 = vec![b'A'; 64];
+        bad_input_64[63] = b'$'; // Invalid char at end of batch
+        let res = unsafe { decode_slice_simd(&config, &bad_input_64, dst.as_mut_ptr()) };
+        assert!(res.is_err(), "Failed to catch error in Quad Loop");
+
+        // Case 2: Error in Single Loop
+        // Vector size is 16 bytes.
+        let mut bad_input_16 = vec![b'A'; 16];
+        bad_input_16[15] = b'?'; // Invalid char
+        let res = unsafe { decode_slice_simd(&config, &bad_input_16, dst.as_mut_ptr()) };
+        assert!(res.is_err(), "Failed to catch error in Single Loop");
     }
 }

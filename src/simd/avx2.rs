@@ -673,10 +673,10 @@ mod kani_verification_avx2 {
 #[cfg(all(test, miri))]
 mod miri_avx2_coverage {
     use super::*;
-    use rand::{Rng, rng};
     use base64::{engine::general_purpose::{STANDARD, URL_SAFE}, Engine};
+    use rand::{Rng, rng};
 
-    // --- Mock Infrastructure for Miri ---
+    // --- Mock Infrastructure ---
     fn random_bytes(len: usize) -> Vec<u8> {
         let mut rng = rng();
         (0..len).map(|_| rng.random()).collect()

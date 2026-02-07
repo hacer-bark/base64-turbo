@@ -19,7 +19,7 @@ exclude = [
 ]
 
 [features]
-default = ["std", "simd"]
+default = ["std", "simd", "unstable"]
 unstable = []
 std = []
 simd = ["std"]

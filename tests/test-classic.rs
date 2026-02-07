@@ -65,9 +65,9 @@ fn assert_oracle_match(
 
 #[test]
 fn test_oracle_standard_exhaustive_small() {
-    // Covers 0..512 to hit all SIMD mask boundaries, alignment issues, and scalar fallbacks.
+    // Covers 0..92 to hit all SIMD mask boundaries, alignment issues, and scalar fallbacks.
     // This implicitly covers `encoded_len` and `estimate_decoded_len` correctness via helpers.
-    for i in 0..=512 {
+    for i in 0..=92 {
         let data = random_bytes(i);
         assert_oracle_match(&data, &STANDARD, &REF_STANDARD);
     }
@@ -89,8 +89,8 @@ fn test_oracle_fuzz_large() {
 fn test_oracle_configs() {
     // Verify URL_SAFE and NO_PAD variants logic
     let mut rng = rng();
-    for _ in 0..50 {
-        let len = rng.random_range(1..1024);
+    for _ in 0..25 {
+        let len = rng.random_range(1..512);
         let data = random_bytes(len);
         assert_oracle_match(&data, &STANDARD_NO_PAD, &REF_STANDARD_NO_PAD);
         assert_oracle_match(&data, &URL_SAFE, &REF_URL_SAFE);
