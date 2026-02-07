@@ -24,10 +24,6 @@ unstable = []
 std = []
 simd = ["std"]
 avx512 = ["std", "simd"]
-parallel = ["std", "dep:rayon"]
-
-[dependencies]
-rayon = { version = "1.8", optional = true }
 
 [dev-dependencies]
 rand = "0.9"

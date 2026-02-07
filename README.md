@@ -26,7 +26,7 @@ use base64_turbo::STANDARD;
 fn main() {
     let data = b"Speed and Safety";
     
-    // Auto-selects AVX2 / SSE4.1 / Scalar based on hardware
+    // Auto-selects AVX512 / AVX2 / SSE4.1 / Scalar based on hardware
     let encoded = STANDARD.encode(data); 
     assert_eq!(encoded, "U3BlZWQgYW5kIFNhZmV0eQ==");
 }
