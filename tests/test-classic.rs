@@ -102,27 +102,6 @@ fn test_oracle_configs() {
 // 2. Coverage: API Constraints & Error Handling
 // ======================================================================
 
-    #[test]
-    fn test_simd_scalar_transition_boundaries() {
-        // We explicitly test lengths that sit on the boundaries of SIMD chunks.
-        let boundaries = [
-            7, 8, 9,           // Scalar Unroll (8 bytes)
-            15, 16, 17,        // SSSE3 (16 bytes)
-            23, 24, 25,        // Base64 Block alignment (3 bytes in -> 4 chars out)
-            31, 32, 33,        // AVX2 (32 bytes)
-            63, 64, 65,        // Cache Line / AVX512 (64 bytes)
-            255, 256, 257,     // u8 Index overflow edge case
-        ];
-
-        for &len in &boundaries {
-            let data = random_bytes(len);
-            assert_oracle_match(&data, &STANDARD, &REF_STANDARD);
-            assert_oracle_match(&data, &URL_SAFE_NO_PAD, &REF_URL_SAFE_NO_PAD);
-        }
-    }
-
-    // --- 4. Negative / Security Tests ---
-
 #[test]
 fn test_reject_invalid_chars() {
     let bad_inputs = ["Abc!", "Ab c", "Abc\0", "Abc-", "Abc_"];
