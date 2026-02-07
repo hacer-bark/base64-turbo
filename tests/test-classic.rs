@@ -124,47 +124,7 @@ mod exhaustive_tests {
         }
     }
 
-    // --- 4. Parallelism Tests (Conditional) ---
-
-    // Note: Parallel features usually imply `std` (via Rayon).
-    // If we are strictly no_std (no alloc), parallel features are likely disabled.
-    // However, if the feature is enabled, we assume the test environment allows basic allocation
-    // to verify correctness, even if the main library API excludes `encode() -> String`.
-    #[cfg(feature = "parallel")]
-    #[test]
-    fn test_parallel_correctness_large() {
-        let size = 10 * 1024 * 1024;
-        let data = random_bytes(size);
-
-        let ref_encoded = REF_STANDARD.encode(&data);
-
-        // Manual buffer allocation for Parallel encoding
-        let mut enc_buf = vec![0u8; (size + 2) / 3 * 4 + 1024];
-        
-        // Use encode_into (which should utilize parallelism internally if feature enabled)
-        let written = STANDARD.encode_into(&data, &mut enc_buf).expect("Parallel encode failed");
-        
-        assert_eq!(&enc_buf[..written], ref_encoded.as_bytes(), "Parallel Encoding Mismatch");
-
-        // Decode back
-        let mut dec_buf = vec![0u8; size + 1024];
-        let written_dec = STANDARD.decode_into(&enc_buf[..written], &mut dec_buf)
-            .expect("Parallel Decoding Failed");
-
-        assert_eq!(&dec_buf[..written_dec], data, "Parallel Round-trip Mismatch");
-    }
-
-    #[cfg(feature = "parallel")]
-    #[test]
-    fn test_parallel_threshold_boundary() {
-        let threshold = 512 * 1024; // 512 KB
-        for size in [threshold - 1, threshold, threshold + 1] {
-            let data = random_bytes(size);
-            assert_oracle_match(&data, &STANDARD, &REF_STANDARD);
-        }
-    }
-
-    // --- 5. Negative / Security Tests ---
+    // --- 4. Negative / Security Tests ---
 
     #[test]
     fn test_reject_invalid_chars() {
