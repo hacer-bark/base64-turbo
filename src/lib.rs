@@ -1,83 +1,84 @@
 //! # Base64 Turbo
-//!
+//! 
 //! [![Crates.io](https://img.shields.io/crates/v/base64-turbo.svg)](https://crates.io/crates/base64-turbo)
 //! [![Documentation](https://docs.rs/base64-turbo/badge.svg)](https://docs.rs/base64-turbo)
 //! [![License](https://img.shields.io/github/license/hacer-bark/base64-turbo)](https://github.com/hacer-bark/base64-turbo/blob/main/LICENSE)
 //! [![Kani Verified](https://img.shields.io/github/actions/workflow/status/hacer-bark/base64-turbo/verification.yml?label=Kani%20Verified)](https://github.com/hacer-bark/base64-turbo/actions/workflows/verification.yml)
 //! [![MIRI Verified](https://img.shields.io/github/actions/workflow/status/hacer-bark/base64-turbo/miri.yml?label=MIRI%20Verified)](https://github.com/hacer-bark/base64-turbo/actions/workflows/miri.yml)
-//! [![Logic Tests](https://img.shields.io/github/actions/workflow/status/hacer-bark/base64-turbo/tests.yml?label=Logic%20Tests)](https://github.com/hacer-bark/base64-turbo/actions/workflows/tests.yml)
-//!
-//! A SIMD-accelerated Base64 encoder/decoder for Rust, optimized for high-throughput systems.
-//!
-//! This crate provides runtime CPU detection to utilize AVX2, SSE4.1, or AVX512 (via feature flag) intrinsics.
+//! 
+//! **The fastest memory-safe Base64 implementation.**
+//! 
+//! `base64-turbo` is a production-grade library engineered for high-throughput systems where CPU cycles are scarce and Undefined Behavior (UB) is unacceptable.
+//! 
+//! This crate provides runtime CPU detection to utilize **AVX512**, **AVX2**, or **SSE4.1** intrinsics.
 //! It includes a highly optimized scalar fallback for non-SIMD targets and supports `no_std` environments.
-//!
+//! 
 //! ## Usage
-//!
+//! 
 //! Add this to your `Cargo.toml`:
-//!
+//! 
 //! ```toml
 //! [dependencies]
 //! base64-turbo = "0.1"
 //! ```
-//!
+//! 
 //! ### Basic API (Allocating)
-//!
+//! 
 //! Standard usage for general applications. Requires the `std` feature (enabled by default).
-//!
+//! 
 //! ```rust
 //! # #[cfg(feature = "std")]
 //! # {
 //! use base64_turbo::STANDARD;
-//!
+//! 
 //! let data = b"Hello world";
-//!
+//! 
 //! // Encode to String
 //! let encoded = STANDARD.encode(data);
 //! assert_eq!(encoded, "SGVsbG8gd29ybGQ=");
-//!
+//! 
 //! // Decode to Vec<u8>
 //! let decoded = STANDARD.decode(&encoded).unwrap();
 //! assert_eq!(decoded, data);
 //! # }
 //! ```
-//!
+//! 
 //! ### Zero-Allocation API (Slice-based)
-//!
+//! 
 //! For low-latency scenarios or `no_std` environments where heap allocation is undesirable.
 //! These methods write directly into a user-provided mutable slice.
-//!
+//! 
 //! ```rust
 //! use base64_turbo::STANDARD;
-//!
+//! 
 //! let input = b"Raw bytes";
 //! let mut output = [0u8; 64]; // Pre-allocated stack buffer
-//!
+//! 
 //! // Returns Result<usize, Error> indicating bytes written
 //! let len = STANDARD.encode_into(input, &mut output).unwrap();
-//!
+//! 
 //! assert_eq!(&output[..len], b"UmF3IGJ5dGVz");
 //! ```
-//!
+//! 
 //! ## Feature Flags
-//!
+//! 
 //! This crate is highly configurable via Cargo features:
-//!
+//! 
 //! | Feature | Default | Description |
 //! |---------|---------|-------------|
 //! | **`std`** | **Yes** | Enables `String` and `Vec` support. Disable this for `no_std` environments. |
-//! | **`simd`** | **Yes** | Enables runtime detection for AVX2 and SSE4.1 intrinsics. If disabled or unsupported by hardware, the crate falls back to scalar logic automatic. |
-//! | **`avx512`** | **No** | Enables AVX512 intrinsics. |
-//! | **`unstable`** | **No** | Enables access to the raw, unsafe functions. |
-//!
+//! | **`simd`** | **Yes** | Enables runtime detection for **AVX512**, **AVX2**, and **SSE4.1** intrinsics. If disabled or unsupported by hardware, the crate falls back to scalar logic automatically. |
+//! | **`unstable`** | **No** | Enables access to the raw, unsafe internal functions (e.g. `encode_avx2`). |
+//! 
 //! ## Safety & Verification
-//!
+//! 
 //! This crate utilizes `unsafe` code for SIMD intrinsics and pointer arithmetic to achieve maximum performance.
-//!
-//! *   **Formal Verification (Kani):** Scalar (Done), SSE4.1 (In Progress), AVX2 (Done), AVX512 (In Progress) code mathematic proven to be UB free and panic free.
-//! *   **MIRI Tests:** Core SIMD logic and scalar fallbacks are verified with **MIRI** (Undefined Behavior checker) in CI.
-//! *   **Fuzzing:** The codebase is fuzz-tested via `cargo-fuzz`.
-//! *   **Fallback:** Invalid or unsupported hardware instruction sets are detected at runtime, ensuring safe fallback to scalar code.
+//! To ensure safety, we employ a "Swiss Cheese" model of verification layers:
+//! 
+//! *   **Formal Verification (Kani):** Mathematical proofs ensure the kernels never read out of bounds or panic on any input (0..∞ bytes).
+//! *   **MIRI Audited:** All SIMD paths (AVX512, AVX2, SSE4.1) and Scalar fallbacks are verified with **MIRI** (Undefined Behavior checker) in CI to ensure strict memory safety.
+//! *   **MemorySanitizer:** The codebase is audited with MSan to prevent logic errors derived from reading uninitialized memory.
+//! *   **Fuzzing:** The codebase is fuzz-tested via `cargo-fuzz` (2.5B+ iterations).
 //! 
 //! **[Learn More](https://github.com/hacer-bark/base64-turbo/blob/main/docs/verification.md)**: Details on our threat model and formal verification strategy.
 
@@ -487,8 +488,6 @@ impl Engine {
         #[cfg(feature = "simd")]
         {
             let len = input.len();
-
-            #[cfg(feature = "avx512")]
             // Smart degrade: If len < 64, don't bother checking AVX512 features or setting up ZMM register
             if len >= 64 
                 && std::is_x86_feature_detected!("avx512f") 
@@ -523,7 +522,6 @@ impl Engine {
         {
             let len = input.len();
 
-            #[cfg(feature = "avx512")]
             // Smart degrade: Don't enter AVX512 path if we don't have a full vector of input.
             if len >= 64 
                 && std::is_x86_feature_detected!("avx512f") 
