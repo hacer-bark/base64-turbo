@@ -124,4 +124,4 @@ The C library `turbo-base64` is the current theoretical "speed of light." Howeve
 
 ## License
 
-This project is open source software, licensed under either the [MIT License](LICENSE-MIT) or the [Apache License, Version 2.0](LICENSE-APACHE) at your option.
+This project licensed under either the [MIT License](LICENSE-MIT) or the [Apache License, Version 2.0](LICENSE-APACHE) at your option.
