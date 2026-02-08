@@ -102,7 +102,7 @@ The C library `turbo-base64` is the current theoretical "speed of light." Howeve
 | **Memory Safety** | ✅ **Guaranteed** (MIRI Audited) | ❌ Unsafe (Raw C Pointers) |
 | **Formal Verification** | ✅ **Kani Verified** (Math Proofs) | ❌ None (No audits) |
 | **Reliability** | ✅ **2.5 Billion Fuzz Iterations** | ❌ Unknown / Not Stated |
-| **License** | ✅ **MIT** (Permissive) | ❌ GPLv3 / Commercial |
+| **License** | ✅ **MIT or Apache-2.0** | ❌ GPLv3 / Commercial |
 
 **Verdict:** Choose `base64-turbo` if you need to saturate RAM bandwidth **safely** with a permissive license. Choose the C library only if you require absolute theoretical max speed and can tolerate segfault risks.
 
