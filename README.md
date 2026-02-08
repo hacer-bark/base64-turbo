@@ -110,9 +110,9 @@ The C library `turbo-base64` is the current theoretical "speed of light." Howeve
 
 | Feature | Default | Description |
 | :--- | :---: | :--- |
-| `std` | ✅ | Enables `String` and `Vec` support. Disable for `no_std`. |
-| `simd` | ✅ | Enables runtime detection for AVX512, AVX2, and SSE4.1. |
-| `unstable` | ❌ | Exposes raw `unsafe` internal functions (e.g., `encode_avx2`). |
+| `std` | ✅ | Enables `String` and `Vec` support. Disable for `no_std` |
+| `simd` | ✅ | Enables runtime detection for AVX512, AVX2, and SSE4.1 |
+| `unstable` | ❌ | Exposes raw `unsafe` internal functions (e.g., `encode_avx2`) |
 
 ## Documentation
 
@@ -122,11 +122,11 @@ The C library `turbo-base64` is the current theoretical "speed of light." Howeve
 *   [**Ecosystem Comparison**](https://github.com/hacer-bark/base64-turbo/blob/main/docs/ecosystem_comparison.md) - Compression of top Rust and C libs.
 *   [**FAQ**](https://github.com/hacer-bark/base64-turbo/blob/main/docs/faq.md) - Common questions about `no_std` and embedded support.
 
-## License
+## 📄 License
 
-Licensed under either of:
+This project is dual-licensed under either of the following licenses, at your option:
 
-- Apache License, Version 2.0 ([LICENSE-APACHE](https://github.com/hacer-bark/base64-turbo/blob/main/LICENCE-APACHE))
-- MIT License ([LICENSE-MIT](https://github.com/hacer-bark/base64-turbo/blob/main/LICENSE-MIT))
+*   **[Apache License, Version 2.0](https://github.com/hacer-bark/base64-turbo/blob/main/LICENCE-APACHE)**
+*   **[MIT License](https://github.com/hacer-bark/base64-turbo/blob/main/LICENSE-MIT)**
 
-at your option.
+You may select the license that best fits your project's requirements.
