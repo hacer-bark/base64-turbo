@@ -124,12 +124,4 @@ The C library `turbo-base64` is the current theoretical "speed of light." Howeve
 
 ## License
 
-`base64-turbo` is dual-licensed under the terms of either the **MIT License** or the **Apache License (Version 2.0)**.
-
-*   [LICENSE-MIT](LICENSE-MIT)
-*   [LICENSE-APACHE](LICENSE-APACHE)
-
-Choose whichever license suits your project's needs.
-
-**Contribution**
-Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in the work by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any additional terms or conditions.
+This project is open source software, licensed under either the [MIT License](LICENSE-MIT) or the [Apache License, Version 2.0](LICENSE-APACHE) at your option.
