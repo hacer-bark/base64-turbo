@@ -584,13 +584,14 @@ mod kani_verification_avx2 {
     #[kani::stub(_mm256_testz_si256, mm256_testz_si256_stub)]
     #[kani::stub(_mm256_maddubs_epi16, mm256_maddubs_epi16_stub)]
     #[kani::stub(_mm256_madd_epi16, mm256_madd_epi16_stub)]
+    #[kani::stub(_mm256_sub_epi8, mm256_sub_epi8_stub)]
     fn check_avx2_roundtrip_correctness() {
         let config = Config { url_safe: kani::any(), padding: true };
         let input: [u8; ENC_INDUCTION_LEN] = kani::any();
 
         // Buffers
-        let mut enc_buf = [0u8; 64];
-        let mut dec_buf = [0u8; 64];
+        let mut enc_buf = [0u8; 128];
+        let mut dec_buf = [0u8; 128];
 
         unsafe {
             // 1. Encode
@@ -626,6 +627,7 @@ mod kani_verification_avx2 {
     #[kani::stub(_mm256_testz_si256, mm256_testz_si256_stub)]
     #[kani::stub(_mm256_maddubs_epi16, mm256_maddubs_epi16_stub)]
     #[kani::stub(_mm256_madd_epi16, mm256_madd_epi16_stub)]
+    #[kani::stub(_mm256_sub_epi8, mm256_sub_epi8_stub)]
     fn check_avx2_decode_robustness() {
         let config = Config { url_safe: kani::any(), padding: true };
 
@@ -633,7 +635,7 @@ mod kani_verification_avx2 {
         let input: [u8; DEC_INDUCTION_LEN] = kani::any();
         
         // Output Buffer: Max estimated size
-        let mut output = [0u8; 64];
+        let mut output = [0u8; 128];
 
         unsafe {
             // We ignore the Result. We only care that this function call 
