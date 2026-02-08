@@ -23,7 +23,6 @@ default = ["std", "simd"]
 unstable = []
 std = []
 simd = ["std"]
-avx512 = ["std", "simd"]
 
 [dev-dependencies]
 rand = "0.9"

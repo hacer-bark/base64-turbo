@@ -52,7 +52,7 @@ jobs:
           (
             export CARGO_TARGET_DIR="target_logic_simd"
             echo "[SIMD] Running..."
-            cargo test --no-default-features --features "std,simd" > simd.log 2>&1
+            cargo test --no-default-features --features "std,simd,unstable" > simd.log 2>&1
           ) &
           PID_SIMD=$!
 
@@ -92,6 +92,6 @@ jobs:
         run: |
           RUSTFLAGS="-Z sanitizer=memory" cargo test -Z build-std \
             --target x86_64-unknown-linux-gnu \
-            --features "std,simd" \
+            --features "std,simd,unstable" \
             --lib \
             --tests

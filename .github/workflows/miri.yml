@@ -17,7 +17,7 @@ env:
   CARGO_BUILD_JOBS: 2 
 
 jobs:
-  miri-parallel:
+  miri-check:
     name: MIRI Safety Checks
     runs-on: self-hosted
     steps:
@@ -30,85 +30,10 @@ jobs:
           components: miri
 
       - name: Run MIRI
+        env:
+          MIRIFLAGS: "-Zmiri-symbolic-alignment-check"
+          RUSTFLAGS: "-C target-feature=+avx512f,+avx512bw"
         run: |
-          # 1. Disable "Exit on Error"
-          set +e
-
-          echo "Starting Parallel MIRI Suite..."
-
-          # --- JOB 1: AVX2 ---
-          (
-            export RUSTFLAGS="-C target-feature=+avx2"
-            export MIRIFLAGS="-Zmiri-symbolic-alignment-check"
-            # Isolate build artifacts so it doesn't clash with others
-            export CARGO_TARGET_DIR="target_avx2" 
-            echo "[AVX2] Compiling and Testing..."
-            cargo +nightly miri test avx2_miri_tests > avx2.log 2>&1
-          ) & 
-          PID_AVX2=$!
-
-          # --- JOB 2: SSE4.1 ---
-          (
-            export RUSTFLAGS="-C target-feature=+sse4.1"
-            export MIRIFLAGS="-Zmiri-symbolic-alignment-check"
-            export CARGO_TARGET_DIR="target_sse4"
-            echo "[SSE4.1] Compiling and Testing..."
-            cargo +nightly miri test sse4_miri_tests > sse4.log 2>&1
-          ) &
-          PID_SSE4=$!
-
-          # --- JOB 3: SCALAR ---
-          (
-            export RUSTFLAGS=""
-            export MIRIFLAGS="-Zmiri-symbolic-alignment-check"
-            export CARGO_TARGET_DIR="target_scalar"
-            echo "[Scalar] Compiling and Testing..."
-            cargo +nightly miri test scalar_miri_tests > scalar.log 2>&1
-          ) &
-          PID_SCALAR=$!
-
-          # --- WAIT FOR ALL ---
-          # We wait for each specific PID and capture exit codes
-          
-          FAILED=0
-
-          wait $PID_AVX2
-          if [ $? -ne 0 ]; then
-            echo "[AVX2] FAILED. Logs:"
-            cat avx2.log
-            FAILED=1
-          else
-            echo "[AVX2] PASSED"
-          fi
-
-          wait $PID_SSE4
-          if [ $? -ne 0 ]; then
-            echo "[SSE4.1] FAILED. Logs:"
-            cat ssse3.log
-            FAILED=1
-          else
-            echo "[SSE4.1] PASSED"
-          fi
-
-          wait $PID_SCALAR
-          if [ $? -ne 0 ]; then
-            echo "[Scalar] FAILED. Logs:"
-            cat scalar.log
-            FAILED=1
-          else
-            echo "[Scalar] PASSED"
-          fi
-
-          if [ $FAILED -ne 0 ]; then
-            exit 1
-          fi
-
-          # 2. Re-enable Strict Mode
-          set -e
-          
-          echo "All MIRI tests passed!"
-
-      - name: Cleanup Artifacts
-        if: always()
-        run: |
-          rm -rf target_avx2 target_sse4 target_scalar *.log
+          echo "Running MIRI with AVX512 enabled..."
+          # Runs Unit Tests, Integration Tests, Binaries, and Examples in one pass
+          cargo miri test --lib --bins --tests --examples

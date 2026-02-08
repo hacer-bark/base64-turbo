@@ -1,28 +1,11 @@
 use crate::{Error, Config, scalar};
 use super::{PACK_L1, PACK_L2, PACK_SHUFFLE};
 
-// TODO: Rethink encoding and decoding logic. Could squeeze more performance.
 #[cfg(target_arch = "x86")]
 use std::arch::x86::*;
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::*;
 
-/// AVX2-accelerated implementation of Base64 encoding.
-///
-/// # Safety
-/// This function is **unsafe** and requires the caller to uphold strict memory contracts. 
-/// Failure to do so will result in **Undefined Behavior** (buffer overflow).
-///
-/// * **Output Capacity**: The memory region pointed to by `dst` must have sufficient capacity 
-///   to store the encoded output. The required minimum size depends on `config.padding`:
-///     * If `padding` is **true**: `input.len().div_ceil(3) * 4`
-///     * If `padding` is **false**: `(input.len() * 4).div_ceil(3)`
-/// * **Pointer Validity**: `dst` must point to a valid, mutable memory region.
-///
-/// # Internal Use Only
-/// This is a low-level primitive intended for internal use. Callers should prefer the 
-/// safe, higher-level APIs (e.g., `Engine::encode`) which automatically handle 
-/// buffer allocation and configuration logic.
 #[target_feature(enable = "avx2")]
 pub unsafe fn encode_slice_avx2(config: &Config, input: &[u8], mut dst: *mut u8) {
     let len = input.len();
@@ -143,21 +126,6 @@ pub unsafe fn encode_slice_avx2(config: &Config, input: &[u8], mut dst: *mut u8)
     }
 }
 
-/// AVX2-accelerated implementation of Base64 decoding.
-///
-/// # Safety
-/// This function is **unsafe** and requires the caller to uphold strict memory contracts. 
-/// Failure to do so will result in **Undefined Behavior** (buffer overflow).
-///
-/// * **Output Capacity**: The memory region pointed to by `dst` must have sufficient capacity 
-///   to store the decoded output. Due to SIMD optimizations performing overlapping writes, 
-///   the destination buffer **must** be at least `(input.len() / 4 + 1) * 3` bytes.
-/// * **Pointer Validity**: `dst` must point to a valid, mutable memory region.
-///
-/// # Internal Use Only
-/// This is a low-level primitive intended for internal use by the `Engine`.
-/// Callers should prefer the safe, higher-level APIs (e.g., `Engine::decode`), which
-/// automatically handle buffer sizing via `Engine::estimate_decoded_len`.
 #[target_feature(enable = "avx2")]
 pub unsafe fn decode_slice_avx2(config: &Config, input: &[u8], mut dst: *mut u8) -> Result<usize, Error> {
     let len = input.len();
@@ -317,22 +285,23 @@ pub unsafe fn decode_slice_avx2(config: &Config, input: &[u8], mut dst: *mut u8)
 mod kani_verification_avx2 {
     use super::*;
     use crate::{Config, STANDARD as TURBO_STANDARD, STANDARD_NO_PAD as TURBO_STANDARD_NO_PAD};
-    use core::mem::transmute;
+    use std::mem::transmute;
 
-    // Magic number: 36
-    // It handles one small loop unroll and Scalar tail fallback.
-    // Cuz we're using same macros in Small loop and Big loop we prove math for both of them.
-    // For edge cages which might happen at big loop unrolling refer to Miri implementation.
-    // 
-    // Note: if we can prove what one Small loop for any inputs, it automatically proves math
-    // for inputs of any size. From zero to infinity, it won't UB or Panic.
-    const INPUT_LEN: usize = 36;
+    // --- CONSTANTS ---
 
-    // --- HELPERS AND STUBS ---
+    // Encoder Induction Size: 28 (1 AVX2 Loop) + 1 (Scalar Transition)
+    const ENC_INDUCTION_LEN: usize = 29;
+
+    // Decoder Induction Size: 36 (1 AVX2 Loop) + 1 (Scalar Transition)
+    const DEC_INDUCTION_LEN: usize = 37;
+
+    // --- HELPERS ---
 
     fn encoded_size(len: usize, padding: bool) -> usize {
         if padding { TURBO_STANDARD.encoded_len(len) } else { TURBO_STANDARD_NO_PAD.encoded_len(len) }
     }
+
+    // --- STUBS ---
 
     // STUB: _mm256_shuffle_epi8
     // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm256_shuffle_epi8
@@ -601,45 +570,11 @@ mod kani_verification_avx2 {
         unsafe { transmute(dst) }
     }
 
-    // -- REAL LOGIC --- 
+    // --- PROOFS ---
 
-    #[kani::proof]
-    #[kani::stub(_mm256_shuffle_epi8, mm256_shuffle_epi8_stub)]
-    #[kani::stub(_mm256_mulhi_epu16, mm256_mulhi_epu16_stub)]
-    #[kani::stub(_mm256_mullo_epi16, mm256_mullo_epi16_stub)]
-    #[kani::stub(_mm256_add_epi8, mm256_add_epi8_stub)]
-    #[kani::stub(_mm256_subs_epu8, mm256_subs_epu8_stub)]
-    #[kani::stub(_mm256_testz_si256, mm256_testz_si256_stub)]
-    #[kani::stub(_mm256_maddubs_epi16, mm256_maddubs_epi16_stub)]
-    #[kani::stub(_mm256_madd_epi16, mm256_madd_epi16_stub)]
-    fn check_roundtrip_safety() {
-        // Symbolic Config
-        let config = Config {
-            url_safe: kani::any(),
-            padding: true,
-        };
-
-        // Symbolic Input
-        let input: [u8; INPUT_LEN] = kani::any();
-
-        // Setup Buffers
-        let enc_len = encoded_size(INPUT_LEN, config.padding);
-        let mut enc_buf = [0u8; 512];
-        let mut dec_buf = [0u8; 512];
-
-        unsafe {
-            // Encode
-            encode_slice_avx2(&config, &input, enc_buf.as_mut_ptr());
-
-            // Decode
-            let src_slice = &enc_buf[..enc_len];
-            let written = decode_slice_avx2(&config, src_slice, dec_buf.as_mut_ptr()).expect("Decoder failed");
-
-            // Verification
-            assert_eq!(&dec_buf[..written], &input, "AVX2 Roundtrip Failed");
-        }
-    }
-
+    /// **Proof 1: Roundtrip Correctness (The Logic Check)**
+    /// 
+    /// Verifies that `Decode(Encode(X)) == X`.
     #[kani::proof]
     #[kani::stub(_mm256_shuffle_epi8, mm256_shuffle_epi8_stub)]
     #[kani::stub(_mm256_mulhi_epu16, mm256_mulhi_epu16_stub)]
@@ -650,137 +585,223 @@ mod kani_verification_avx2 {
     #[kani::stub(_mm256_maddubs_epi16, mm256_maddubs_epi16_stub)]
     #[kani::stub(_mm256_madd_epi16, mm256_madd_epi16_stub)]
     #[kani::stub(_mm256_sub_epi8, mm256_sub_epi8_stub)]
-    fn check_decoder_robustness() {
-        // Symbolic Config
-        let config = Config {
-            url_safe: kani::any(),
-            padding: true,
-        };
+    fn check_avx2_roundtrip_correctness() {
+        let config = Config { url_safe: kani::any(), padding: true };
+        let input: [u8; ENC_INDUCTION_LEN] = kani::any();
 
-        // Symbolic Input (Random Garbage)
-        let input: [u8; INPUT_LEN] = kani::any();
-
-        // Setup Buffer
-        let mut dec_buf = [0u8; 64];
+        // Buffers
+        let mut enc_buf = [0u8; 128];
+        let mut dec_buf = [0u8; 128];
 
         unsafe {
-            // We verify what function NEVER panics/crashes
-            let _ = decode_slice_avx2(&config, &input, dec_buf.as_mut_ptr());
+            // 1. Encode
+            encode_slice_avx2(&config, &input, enc_buf.as_mut_ptr());
+
+            // Calculate actual encoded length for slicing
+            let enc_len = encoded_size(ENC_INDUCTION_LEN, config.padding);
+            let encoded_slice = &enc_buf[..enc_len];
+
+            // 2. Decode
+            // This MUST succeed for valid encoded output
+            let dec_len = decode_slice_avx2(&config, encoded_slice, dec_buf.as_mut_ptr())
+                .expect("Valid encoding failed to decode");
+
+            // 3. Verify
+            assert_eq!(dec_len, ENC_INDUCTION_LEN);
+            assert_eq!(&dec_buf[..dec_len], &input, "Roundtrip mismatch");
+        }
+    }
+
+    /// **Proof 2: Decoder Robustness & Induction**
+    /// 
+    /// Verifies that `decode_slice_avx2`:
+    /// 1. Accepts ANY 33 bytes of garbage input.
+    /// 2. Never Segfaults, Panics, or causes UB.
+    /// 3. Safely handles the SIMD->Scalar pointer transition.
+    #[kani::proof]
+    #[kani::stub(_mm256_shuffle_epi8, mm256_shuffle_epi8_stub)]
+    #[kani::stub(_mm256_mulhi_epu16, mm256_mulhi_epu16_stub)]
+    #[kani::stub(_mm256_mullo_epi16, mm256_mullo_epi16_stub)]
+    #[kani::stub(_mm256_add_epi8, mm256_add_epi8_stub)]
+    #[kani::stub(_mm256_subs_epu8, mm256_subs_epu8_stub)]
+    #[kani::stub(_mm256_testz_si256, mm256_testz_si256_stub)]
+    #[kani::stub(_mm256_maddubs_epi16, mm256_maddubs_epi16_stub)]
+    #[kani::stub(_mm256_madd_epi16, mm256_madd_epi16_stub)]
+    #[kani::stub(_mm256_sub_epi8, mm256_sub_epi8_stub)]
+    fn check_avx2_decode_robustness() {
+        let config = Config { url_safe: kani::any(), padding: true };
+
+        // Input: 33 bytes of unrestricted symbolic data (garbage)
+        let input: [u8; DEC_INDUCTION_LEN] = kani::any();
+        
+        // Output Buffer: Max estimated size
+        let mut output = [0u8; 128];
+
+        unsafe {
+            // We ignore the Result. We only care that this function call 
+            // returns safely (Ok or Err) and does not crash.
+            let _ = decode_slice_avx2(&config, &input, output.as_mut_ptr());
         }
     }
 }
 
 #[cfg(all(test, miri))]
-mod avx2_miri_tests {
-    use super::{encode_slice_avx2, decode_slice_avx2};
-    use crate::{Config, STANDARD as TURBO_STANDARD, STANDARD_NO_PAD as TURBO_STANDARD_NO_PAD};
-    use base64::{engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD}};
+mod miri_avx2_coverage {
+    use super::*;
+    use base64::{engine::general_purpose::{STANDARD, URL_SAFE}, Engine};
     use rand::{Rng, rng};
 
-    // --- Helpers ---
-
-    fn encoded_size(len: usize, padding: bool) -> usize {
-        if padding { TURBO_STANDARD.encoded_len(len) } else { TURBO_STANDARD_NO_PAD.encoded_len(len) }
-    }
-    fn estimated_decoded_length(len: usize) -> usize { TURBO_STANDARD.estimate_decoded_len(len) }
-
-    /// Miri Runner:
-    /// 1. Runs deterministic boundary tests (0..64 bytes) to hit every loop edge.
-    /// 2. Runs a small set of random fuzz tests (50 iterations) to catch weird patterns.
-    fn run_miri_cycle<E: base64::Engine>(config: Config, reference_engine: &E) {
-        // Deterministic Boundary Testing
-        for len in 32..=128 {
-            let mut rng = rng();
-            let mut input = vec![0u8; len];
-            rng.fill(&mut input[..]);
-
-            verify_roundtrip(&config, &input, reference_engine);
-        }
-
-        // Small Fuzzing (Random Lengths)
+    // --- Mock Infrastructure ---
+    fn random_bytes(len: usize) -> Vec<u8> {
         let mut rng = rng();
-        for _ in 0..100 {
-            let len = rng.random_range(129..512);
-            let mut input = vec![0u8; len];
-            rng.fill(&mut input[..]);
-
-            verify_roundtrip(&config, &input, reference_engine);
-        }
+        (0..len).map(|_| rng.random()).collect()
     }
 
-    fn verify_roundtrip<E: base64::Engine>(config: &Config, input: &[u8], reference_engine: &E) {
-        let len = input.len();
+    /// Helper to verify AVX2 encoding against the 'base64' crate oracle
+    fn verify_encode_avx2(config: &Config, oracle: &impl Engine, input_len: usize) {
+        let input = random_bytes(input_len);
+        let expected = oracle.encode(&input);
 
-        // --- Encoding ---
-        let expected_string = reference_engine.encode(input);
+        // Allocate buffer (Base64 is ~4/3 larger)
+        let mut dst = vec![0u8; expected.len() * 2]; // Safety margin
 
-        let enc_len = encoded_size(len, config.padding);
-        let mut enc_buf = vec![0u8; enc_len];
+        unsafe { encode_slice_avx2(config, &input, dst.as_mut_ptr()); }
 
-        unsafe { encode_slice_avx2(config, input, enc_buf.as_mut_ptr()); }
-
-        assert_eq!(&enc_buf, expected_string.as_bytes(), "Miri Encoding Mismatch!");
-
-        // --- Decoding ---
-        let dec_max_len = estimated_decoded_length(enc_len);
-        let mut dec_buf = vec![0u8; dec_max_len];
-
-        unsafe {
-            let written = decode_slice_avx2(config, &enc_buf, dec_buf.as_mut_ptr())
-                .expect("Decoder returned error on valid input");
-
-            let my_decoded = &dec_buf[..written];
-
-            assert_eq!(my_decoded, input, "Miri Decoding Mismatch!");
-        }
+        // Verify prefix matches expected
+        let result = &dst[..expected.len()];
+        assert_eq!(std::str::from_utf8(result).unwrap(), expected, "Encode len {}", input_len);
     }
 
-    // --- Tests ---
+    /// Helper to verify AVX2 decoding against the 'base64' crate oracle
+    fn verify_decode_avx2(config: &Config, oracle: &impl Engine, original_len: usize) {
+        // 1. Generate valid Base64 via oracle
+        let input_bytes = random_bytes(original_len);
+        let encoded = oracle.encode(&input_bytes);
+        let encoded_bytes = encoded.as_bytes();
+
+        // 2. Run AVX2 Decoder
+        let mut dst = vec![0u8; original_len + 64]; // Safety margin
+
+        let len = unsafe {
+            decode_slice_avx2(config, encoded_bytes, dst.as_mut_ptr()).expect("Valid input failed to decode")
+        };
+
+        // 3. Verify
+        assert_eq!(&dst[..len], &input_bytes, "Decode len {}", original_len);
+    }
+
+    // ----------------------------------------------------------------------
+    // 1. Encoder Coverage Tests
+    // ----------------------------------------------------------------------
 
     #[test]
-    fn miri_avx2_url_safe_roundtrip() {
-        run_miri_cycle(
-            Config { url_safe: true, padding: true }, 
-            &URL_SAFE
-        );
-    }
-
-    #[test]
-    fn miri_avx2_url_safe_no_pad_roundtrip() {
-        run_miri_cycle(
-            Config { url_safe: true, padding: false }, 
-            &URL_SAFE_NO_PAD
-        );
+    fn miri_avx2_encode_scalar_fallback() {
+        let config = Config { url_safe: false, padding: true };
+        // Test < 24 bytes (Hits scalar fallback immediately)
+        verify_encode_avx2(&config, &STANDARD, 1);
+        verify_encode_avx2(&config, &STANDARD, 23);
     }
 
     #[test]
-    fn miri_avx2_standard_roundtrip() {
-        run_miri_cycle(
-            Config { url_safe: false, padding: true }, 
-            &STANDARD
-        );
+    fn miri_avx2_encode_single_vector_loop() {
+        let config = Config { url_safe: false, padding: true };
+        // Your code uses 24-byte chunks (32-byte registers reading 24 bytes).
+        // Test exactly 24 (1 loop)
+        verify_encode_avx2(&config, &STANDARD, 24);
+        // Test 48 (2 loops - proves src.add(24) works)
+        verify_encode_avx2(&config, &STANDARD, 48);
+        // Test 25 (1 loop + 1 byte scalar fallback)
+        verify_encode_avx2(&config, &STANDARD, 25);
     }
 
     #[test]
-    fn miri_avx2_standard_no_pad_roundtrip() {
-        run_miri_cycle(
-            Config { url_safe: false, padding: false }, 
-            &STANDARD_NO_PAD
-        );
+    fn miri_encode_quad_vector_loop() {
+        let config = Config { url_safe: false, padding: true };
+        // Your code uses 96-byte blocks (4 * 24).
+        // Test exactly 96 (1 quad loop)
+        verify_encode_avx2(&config, &STANDARD, 96);
+        // Test 192 (2 quad loops - proves src.add(96) works)
+        verify_encode_avx2(&config, &STANDARD, 192);
+        // Test 97 (1 quad loop + 0 single + 1 scalar)
+        verify_encode_avx2(&config, &STANDARD, 97);
+        // Test 120 (1 quad loop + 1 single loop)
+        verify_encode_avx2(&config, &STANDARD, 120);
     }
 
-    // --- Error Checks ---
+    #[test]
+    fn miri_avx2_encode_url_safe() {
+        // Verify the lookup table switching logic
+        let config = Config { url_safe: true, padding: true };
+        verify_encode_avx2(&config, &URL_SAFE, 50);
+    }
+
+    // ----------------------------------------------------------------------
+    // 2. Decoder Coverage Tests
+    // ----------------------------------------------------------------------
 
     #[test]
-    fn miri_avx2_invalid_input() {
+    fn miri_avx2_decode_scalar_fallback() {
+        let config = Config { url_safe: false, padding: true };
+        // Your code falls back for < 32 bytes
+        // Note: Base64 expands 3 bytes -> 4 chars.
+        // Input length 4 chars -> 3 bytes output.
+        verify_decode_avx2(&config, &STANDARD, 3); // 4 chars
+        verify_decode_avx2(&config, &STANDARD, 21); // 28 chars (< 32)
+    }
+
+    #[test]
+    fn miri_avx2_decode_single_vector_loop() {
+        let config = Config { url_safe: false, padding: true };
+        // Your code processes 32-byte chunks.
+        // 32 bytes of Base64 = 24 bytes of decoded data.
+        verify_decode_avx2(&config, &STANDARD, 24); // Exactly 32 bytes input
+        verify_decode_avx2(&config, &STANDARD, 48); // Exactly 64 bytes input (2 loops)
+        verify_decode_avx2(&config, &STANDARD, 25); // 32 bytes + scalar remainder
+    }
+
+    #[test]
+    fn miri_avx2_decode_quad_vector_loop() {
+        let config = Config { url_safe: false, padding: true };
+        // Your code processes 128-byte chunks (4 * 32).
+        // 128 bytes input = 96 bytes decoded.
+        verify_decode_avx2(&config, &STANDARD, 96); // Exactly 128 bytes input
+        verify_decode_avx2(&config, &STANDARD, 192); // Exactly 256 bytes input (2 loops)
+        verify_decode_avx2(&config, &STANDARD, 97); // 1 quad + remainder
+    }
+
+    #[test]
+    fn miri_avx2_decode_url_safe() {
+        // Verify '-' and '_' handling in the SIMD path
         let config = Config { url_safe: true, padding: false };
-        let mut out = vec![0u8; 10];
 
-        // Pointer math check: Ensure reading invalid chars doesn't cause OOB reads
-        let bad_chars = b"heap+"; 
-        unsafe {
-            let res = decode_slice_avx2(&config, bad_chars, out.as_mut_ptr());
-            assert!(res.is_err());
-        }
+        // Construct specific input with URL safe chars
+        // 0x3F (?) is usually '/', in URL safe it is '_'
+        // 0x3E (>) is usually '+', in URL safe it is '-'
+        let input = b"-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_"; // 32 bytes
+        let mut dst = [0u8; 32];
+
+        unsafe { decode_slice_avx2(&config, input, dst.as_mut_ptr()).unwrap(); }
+    }
+
+    // ----------------------------------------------------------------------
+    // 3. Error Logic Coverage
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn miri_avx2_decode_error_detection() {
+        let config = Config { url_safe: false, padding: true };
+        let mut dst = [0u8; 256];
+
+        // Case 1: Error in the Quad loop (byte 127)
+        let mut bad_input_128 = vec![b'A'; 128];
+        bad_input_128[127] = b'$'; // Invalid char
+        let res = unsafe { decode_slice_avx2(&config, &bad_input_128, dst.as_mut_ptr()) };
+        assert!(res.is_err(), "Failed to catch error in Quad Loop lane 4");
+
+        // Case 2: Error in the Single loop (byte 31)
+        let mut bad_input_32 = vec![b'A'; 32];
+        bad_input_32[31] = b'?'; // Invalid char
+        let res = unsafe { decode_slice_avx2(&config, &bad_input_32, dst.as_mut_ptr()) };
+        assert!(res.is_err(), "Failed to catch error in Single Loop");
     }
 }

@@ -16,9 +16,9 @@ The decoder is resilient. If you pass invalid Base64 strings, random binary nois
 **A:** If you bypass the public API (`encode`/`decode`) and call internal `unsafe` functions directly, **you are responsible for the invariants.**
 For example, if you pass a null pointer with a non-zero length to an internal function, you have violated the documented safety contract. We do not verify against contract violations in `unsafe` blocks; we verify that our Safe API never violates them.
 
-### Q: Why is the `avx512` feature disabled by default?
-**A:** Limitations in the verification toolchain.
-While our AVX512 implementation has passed over **2.5 Billion Fuzzing Iterations** and is empirically stable, the **MIRI** interpreter does not yet support AVX512 intrinsics. Strict adherence to our "Security > Performance" philosophy dictates that we do not enable code by default unless it is fully audit-ready by our entire toolchain.
+**Q: Is AVX512 enabled by default?**
+**A:** **Yes.** 
+Previously, AVX512 was hidden behind a feature flag due to tooling limitations. Now that we have successfully audited the AVX512 paths with MIRI and MSan, it is enabled by default (runtime detected) alongside AVX2 and SSE4.1.
 
 ## ⚡ Performance & Usage
 

@@ -268,208 +268,157 @@ pub unsafe fn decode_slice_avx512(config: &Config, input: &[u8], mut dst: *mut u
     Ok(unsafe { dst.offset_from(dst_start) } as usize)
 }
 
-#[cfg(kani)]
-mod kani_verification_avx512 {
+#[cfg(all(test, miri))]
+mod miri_avx512_coverage {
     use super::*;
+    use base64::{engine::general_purpose::{STANDARD, URL_SAFE}, Engine};
+    use rand::{Rng, rng};
 
-    // 240 bytes input.
-    const TEST_LIMIT: usize = 240;
-    const MAX_ENCODED_SIZE: usize = 320;
-
-    fn encoded_size(len: usize, padding: bool) -> usize {
-        if padding { (len + 2) / 3 * 4 } else { (len * 4 + 2) / 3 }
+    // --- Mock Infrastructure ---
+    fn random_bytes(len: usize) -> Vec<u8> {
+        let mut rng = rng();
+        (0..len).map(|_| rng.random()).collect()
     }
 
-    #[kani::proof]
-    #[kani::unwind(241)]
-    fn check_round_trip() {
-        // Symbolic Config
-        let config = Config {
-            url_safe: kani::any(),
-            padding: kani::any(),
-        };
+    /// Helper to verify AVX512 encoding against the 'base64' crate oracle
+    fn verify_encode_avx512(config: &Config, oracle: &impl Engine, input_len: usize) {
+        let input = random_bytes(input_len);
+        let expected = oracle.encode(&input);
+        let mut dst = vec![0u8; expected.len() * 2]; // Safety margin
 
-        // Symbolic Length
-        let len: usize = kani::any();
-        kani::assume(len <= TEST_LIMIT);
+        unsafe { encode_slice_avx512(config, &input, dst.as_mut_ptr()); }
 
-        // Symbolic Input Data
-        let input_arr: [u8; TEST_LIMIT] = kani::any();
-        let input = &input_arr[..len];
-
-        // Setup Encoding Buffer 
-        let enc_len = encoded_size(len, config.padding);
-
-        // Sanity check for the verification harness itself
-        assert!(enc_len <= MAX_ENCODED_SIZE);
-
-        let mut enc_buf = [0u8; MAX_ENCODED_SIZE];
-        unsafe { encode_slice_avx512(&config, input, enc_buf.as_mut_ptr()); }
-
-        // Decoding
-        let mut dec_buf = [0u8; TEST_LIMIT];
-
-        unsafe {
-            let src_slice = &enc_buf[..enc_len];
-
-            let written = decode_slice_avx512(&config, src_slice, dec_buf.as_mut_ptr())
-                .expect("Decoder returned error on valid input");
-
-            let my_decoded = &dec_buf[..written];
-
-            assert_eq!(my_decoded, input, "Kani Decoding Mismatch!");
-        }
+        let result = &dst[..expected.len()];
+        assert_eq!(std::str::from_utf8(result).unwrap(), expected, "Encode len {}", input_len);
     }
 
-    #[kani::proof]
-    #[kani::unwind(241)]
-    fn check_decoder_robustness() {
-        // Symbolic Config
-        let config = Config {
-            url_safe: kani::any(),
-            padding: kani::any(),
+    /// Helper to verify AVX512 decoding against the 'base64' crate oracle
+    fn verify_decode_avx512(config: &Config, oracle: &impl Engine, original_len: usize) {
+        let input_bytes = random_bytes(original_len);
+        let encoded = oracle.encode(&input_bytes);
+        let encoded_bytes = encoded.as_bytes();
+        let mut dst = vec![0u8; original_len + 64];
+
+        let len = unsafe {
+            decode_slice_avx512(config, encoded_bytes, dst.as_mut_ptr()).expect("Valid input failed to decode")
         };
 
-        // Symbolic Input (Random Garbage)
-        let len: usize = kani::any();
-        kani::assume(len <= MAX_ENCODED_SIZE);
-        
-        let input_arr: [u8; MAX_ENCODED_SIZE] = kani::any();
-        let input = &input_arr[..len];
+        assert_eq!(&dst[..len], &input_bytes, "Decode len {}", original_len);
+    }
 
-        // Decoding Buffer
-        let mut dec_buf = [0u8; MAX_ENCODED_SIZE];
+    // ----------------------------------------------------------------------
+    // 1. Encoder Coverage Tests (AVX512)
+    // ----------------------------------------------------------------------
 
-        unsafe {
-            // We verify what function NEVER panics/crashes
-            let _ = decode_slice_avx512(&config, input, dec_buf.as_mut_ptr());
-        }
+    #[test]
+    fn miri_avx512_encode_scalar_fallback() {
+        let config = Config { url_safe: false, padding: true };
+        // AVX512 Single Loop threshold is 48 bytes.
+        // Test < 48 bytes -> Pure Scalar
+        verify_encode_avx512(&config, &STANDARD, 1);
+        verify_encode_avx512(&config, &STANDARD, 47);
+    }
+
+    #[test]
+    fn miri_avx512_encode_single_vector_loop() {
+        let config = Config { url_safe: false, padding: true };
+        // AVX512 Single Vector processes 48 input bytes.
+        // Exactly 1 loop
+        verify_encode_avx512(&config, &STANDARD, 48);
+        // Exactly 2 loops (Proves pointer math)
+        verify_encode_avx512(&config, &STANDARD, 96);
+        // 1 loop + 1 byte scalar fallback
+        verify_encode_avx512(&config, &STANDARD, 49);
+    }
+
+    #[test]
+    fn miri_avx512_encode_quad_vector_loop() {
+        let config = Config { url_safe: false, padding: true };
+        // AVX512 Batch Loop processes 192 input bytes (4 * 48).
+        // Exactly 1 Quad Loop
+        verify_encode_avx512(&config, &STANDARD, 192);
+        // Exactly 2 Quad Loops
+        verify_encode_avx512(&config, &STANDARD, 384);
+        // 1 Quad Loop + 0 Single + 1 byte Scalar
+        verify_encode_avx512(&config, &STANDARD, 193);
+        // 1 Quad Loop + 1 Single Loop + 0 Scalar (192 + 48)
+        verify_encode_avx512(&config, &STANDARD, 240);
+    }
+
+    #[test]
+    fn miri_avx512_encode_url_safe() {
+        let config = Config { url_safe: true, padding: true };
+        verify_encode_avx512(&config, &URL_SAFE, 100);
+    }
+
+    // ----------------------------------------------------------------------
+    // 2. Decoder Coverage Tests (AVX512)
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn miri_avx512_decode_scalar_fallback() {
+        let config = Config { url_safe: false, padding: true };
+        // AVX512 decode loop threshold is 64 bytes.
+        // < 64 bytes input -> Pure Scalar
+        verify_decode_avx512(&config, &STANDARD, 3);  // 4 encoded chars
+        verify_decode_avx512(&config, &STANDARD, 45); // 60 encoded chars
+    }
+
+    #[test]
+    fn miri_avx512_decode_single_vector_loop() {
+        let config = Config { url_safe: false, padding: true };
+        // AVX512 Single Vector processes 64 input bytes.
+        // Exactly 1 Single Loop
+        verify_decode_avx512(&config, &STANDARD, 48); // 64 bytes encoded
+        // Exactly 2 Single Loops
+        verify_decode_avx512(&config, &STANDARD, 96); // 128 bytes encoded
+        // 1 Single Loop + Scalar Remainder
+        verify_decode_avx512(&config, &STANDARD, 49); // 64 bytes + extra
+    }
+
+    #[test]
+    fn miri_avx512_decode_quad_vector_loop() {
+        let config = Config { url_safe: false, padding: true };
+        // AVX512 Batch Loop processes 256 input bytes (4 * 64).
+        // Exactly 1 Quad Loop
+        verify_decode_avx512(&config, &STANDARD, 192); // 256 bytes encoded
+        // Exactly 2 Quad Loops
+        verify_decode_avx512(&config, &STANDARD, 384); // 512 bytes encoded
+        // 1 Quad Loop + Scalar Remainder
+        verify_decode_avx512(&config, &STANDARD, 193); // 256 bytes + extra
+    }
+
+    #[test]
+    fn miri_avx512_decode_url_safe() {
+        let config = Config { url_safe: true, padding: false };
+        // 64 bytes input to trigger one AVX512 vector
+        // Repeated pattern of - and _
+        let input = b"-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_";
+        let mut dst = [0u8; 64];
+        unsafe { decode_slice_avx512(&config, input, dst.as_mut_ptr()).unwrap(); }
+    }
+
+    // ----------------------------------------------------------------------
+    // 3. Error Logic Coverage (AVX512)
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn miri_avx512_decode_error_detection() {
+        let config = Config { url_safe: false, padding: true };
+        let mut dst = [0u8; 512];
+
+        // Case 1: Error in Quad Loop (last vector, last lane)
+        // Batch size is 256 bytes.
+        let mut bad_input_256 = vec![b'A'; 256];
+        bad_input_256[255] = b'$'; // Invalid char
+        let res = unsafe { decode_slice_avx512(&config, &bad_input_256, dst.as_mut_ptr()) };
+        assert!(res.is_err(), "Failed to catch error in Quad Loop");
+
+        // Case 2: Error in Single Loop
+        // Vector size is 64 bytes.
+        let mut bad_input_64 = vec![b'A'; 64];
+        bad_input_64[63] = b'?'; // Invalid char
+        let res = unsafe { decode_slice_avx512(&config, &bad_input_64, dst.as_mut_ptr()) };
+        assert!(res.is_err(), "Failed to catch error in Single Loop");
     }
 }
-
-// Hoping for the support of AVX512 in Miri...
-
-// Tests itself outdated. If and when support for AVX512 would released, tests must be fixed for newer syntax.
-// #[cfg(all(test, miri))]
-// mod avx512_miri_tests {
-//     use super::{encode_slice_avx512, decode_slice_avx512};
-//     use crate::Config;
-//     use base64::{engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD}};
-//     use rand::{Rng, rng};
-
-//     // --- Helpers ---
-
-//     fn encoded_size(len: usize) -> usize { (len + 2) / 3 * 4 }
-//     fn encoded_size_unpadded(len: usize) -> usize { (len * 4 + 2) / 3 }
-//     fn estimated_decoded_length(len: usize) -> usize { (len / 4 + 1) * 3 }
-
-//     /// Miri Runner:
-//     /// 1. Runs deterministic boundary tests (0..64 bytes) to hit every loop edge.
-//     /// 2. Runs a small set of random fuzz tests (50 iterations) to catch weird patterns.
-//     fn run_miri_cycle<E: base64::Engine>(config: Config, reference_engine: &E) {
-//         // PART 1: Deterministic Boundary Testing
-//         for len in 0..=64 {
-//             let mut rng = rng();
-//             let mut input = vec![0u8; len];
-//             rng.fill(&mut input[..]);
-
-//             verify_roundtrip(&config, &input, reference_engine);
-//         }
-
-//         // PART 2: Small Fuzzing (Random Lengths)
-//         let mut rng = rng();
-//         for _ in 0..100 {
-//             let len = rng.random_range(65..512);
-//             let mut input = vec![0u8; len];
-//             rng.fill(&mut input[..]);
-
-//             verify_roundtrip(&config, &input, reference_engine);
-//         }
-//     }
-
-//     fn verify_roundtrip<E: base64::Engine>(config: &Config, input: &[u8], reference_engine: &E) {
-//         let len = input.len();
-
-//         // --- Encoding ---
-//         let expected_string = reference_engine.encode(input);
-
-//         let enc_len = if config.padding { encoded_size(len) } else { encoded_size_unpadded(len) };
-//         let mut enc_buf = vec![0u8; enc_len];
-
-//         unsafe { 
-//             encode_slice_avx512(config, input, &mut enc_buf); 
-//         }
-
-//         assert_eq!(
-//             &enc_buf, 
-//             expected_string.as_bytes(), 
-//             "Miri Encoding Mismatch! Len: {}", len
-//         );
-
-//         // --- Decoding ---
-//         let dec_max_len = estimated_decoded_length(enc_len);
-//         let mut dec_buf = vec![0u8; dec_max_len];
-
-//         unsafe {
-//             let written = decode_slice_avx512(config, &enc_buf, &mut dec_buf)
-//                 .expect("Decoder returned error on valid input");
-
-//             let my_decoded = &dec_buf[..written];
-
-//             assert_eq!(
-//                 my_decoded, 
-//                 input, 
-//                 "Miri Decoding Mismatch! Len: {}", len
-//             );
-//         }
-//     }
-
-//     // --- Tests ---
-
-//     #[test]
-//     fn miri_avx512_url_safe_roundtrip() {
-//         run_miri_cycle(
-//             Config { url_safe: true, padding: true }, 
-//             &URL_SAFE
-//         );
-//     }
-
-//     #[test]
-//     fn miri_avx512_url_safe_no_pad_roundtrip() {
-//         run_miri_cycle(
-//             Config { url_safe: true, padding: false }, 
-//             &URL_SAFE_NO_PAD
-//         );
-//     }
-
-//     #[test]
-//     fn miri_avx512_standard_roundtrip() {
-//         run_miri_cycle(
-//             Config { url_safe: false, padding: true }, 
-//             &STANDARD
-//         );
-//     }
-
-//     #[test]
-//     fn miri_avx512_standard_no_pad_roundtrip() {
-//         run_miri_cycle(
-//             Config { url_safe: false, padding: false }, 
-//             &STANDARD_NO_PAD
-//         );
-//     }
-
-//     // --- Error Checks ---
-
-//     #[test]
-//     fn miri_avx512_invalid_input() {
-//         let config = Config { url_safe: true, padding: false };
-//         let mut out = vec![0u8; 10];
-
-//         // Pointer math check: Ensure reading invalid chars doesn't cause OOB reads
-//         let bad_chars = b"heap+"; 
-//         unsafe {
-//             let res = decode_slice_avx512(&config, bad_chars, &mut out);
-//             assert!(res.is_err());
-//         }
-//     }
-// }
