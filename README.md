@@ -2,7 +2,7 @@
 
 [![Crates.io](https://img.shields.io/crates/v/base64-turbo.svg)](https://crates.io/crates/base64-turbo)
 [![Documentation](https://docs.rs/base64-turbo/badge.svg)](https://docs.rs/base64-turbo)
-[![License](https://img.shields.io/github/license/hacer-bark/base64-turbo)](https://github.com/hacer-bark/base64-turbo/blob/main/LICENSE)
+[![License](https://img.shields.io/crates/l/base64-turbo.svg)](https://crates.io/crates/base64-turbo)
 [![Kani Verified](https://img.shields.io/github/actions/workflow/status/hacer-bark/base64-turbo/verification.yml?label=Kani%20Verified)](https://github.com/hacer-bark/base64-turbo/actions/workflows/verification.yml)
 [![MIRI Verified](https://img.shields.io/github/actions/workflow/status/hacer-bark/base64-turbo/miri.yml?label=MIRI%20Verified)](https://github.com/hacer-bark/base64-turbo/actions/workflows/miri.yml)
 
@@ -102,7 +102,7 @@ The C library `turbo-base64` is the current theoretical "speed of light." Howeve
 | **Memory Safety** | ✅ **Guaranteed** (MIRI Audited) | ❌ Unsafe (Raw C Pointers) |
 | **Formal Verification** | ✅ **Kani Verified** (Math Proofs) | ❌ None (No audits) |
 | **Reliability** | ✅ **2.5 Billion Fuzz Iterations** | ❌ Unknown / Not Stated |
-| **License** | ✅ **MIT** (Permissive) | ❌ GPLv3 / Commercial |
+| **License** | ✅ **MIT or Apache-2.0** | ❌ GPLv3 / Commercial |
 
 **Verdict:** Choose `base64-turbo` if you need to saturate RAM bandwidth **safely** with a permissive license. Choose the C library only if you require absolute theoretical max speed and can tolerate segfault risks.
 
@@ -110,9 +110,9 @@ The C library `turbo-base64` is the current theoretical "speed of light." Howeve
 
 | Feature | Default | Description |
 | :--- | :---: | :--- |
-| `std` | ✅ | Enables `String` and `Vec` support. Disable for `no_std`. |
-| `simd` | ✅ | Enables runtime detection for AVX512, AVX2, and SSE4.1. |
-| `unstable` | ❌ | Exposes raw `unsafe` internal functions (e.g., `encode_avx2`). |
+| `std` | ✅ | Enables `String` and `Vec` support. Disable for `no_std` |
+| `simd` | ✅ | Enables runtime detection for AVX512, AVX2, and SSE4.1 |
+| `unstable` | ❌ | Exposes raw `unsafe` internal functions (e.g., `encode_avx2`) |
 
 ## Documentation
 
@@ -124,4 +124,4 @@ The C library `turbo-base64` is the current theoretical "speed of light." Howeve
 
 ## License
 
-MIT License. Copyright (c) 2026.
+This project licensed under either the [MIT License](LICENSE-MIT) or the [Apache License, Version 2.0](LICENSE-APACHE) at your option.
