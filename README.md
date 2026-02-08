@@ -122,11 +122,14 @@ The C library `turbo-base64` is the current theoretical "speed of light." Howeve
 *   [**Ecosystem Comparison**](https://github.com/hacer-bark/base64-turbo/blob/main/docs/ecosystem_comparison.md) - Compression of top Rust and C libs.
 *   [**FAQ**](https://github.com/hacer-bark/base64-turbo/blob/main/docs/faq.md) - Common questions about `no_std` and embedded support.
 
-## 📄 License
+## License
 
-This project is dual-licensed under either of the following licenses, at your option:
+`base64-turbo` is dual-licensed under the terms of either the **MIT License** or the **Apache License (Version 2.0)**.
 
-*   **[Apache License, Version 2.0](https://github.com/hacer-bark/base64-turbo/blob/main/LICENCE-APACHE)**
-*   **[MIT License](https://github.com/hacer-bark/base64-turbo/blob/main/LICENSE-MIT)**
+*   [LICENSE-MIT](LICENSE-MIT)
+*   [LICENSE-APACHE](LICENSE-APACHE)
 
-You may select the license that best fits your project's requirements.
+Choose whichever license suits your project's needs.
+
+**Contribution**
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in the work by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any additional terms or conditions.
