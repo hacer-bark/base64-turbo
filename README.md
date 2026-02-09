@@ -10,34 +10,51 @@
 
 `base64-turbo` is a production-grade library engineered for **High Frequency Trading (HFT)**, **Mission-Critical Servers**, and **Embedded Systems** where CPU cycles are scarce and Undefined Behavior (UB) is unacceptable.
 
-It aligns with **modern hardware reality** without sacrificing portability. Whether running on an embedded ARM microcontroller or a Zen 4 node, it automatically selects the fastest, safest SIMD algorithm (AVX512, AVX2, SSE4.1) or falls back to a highly optimized Scalar kernel.
+It aligns with **modern hardware reality** without sacrificing portability. It automatically detects the best algorithm at runtime:
+*   **x86_64:** Uses AVX512, AVX2, or SSE4.1.
+*   **ARM / Other:** Falls back to a highly optimized Scalar kernel.
 
 ## Quick Start
 
 ### Installation
+
+**Requires Rust 1.89+** (Due to stabilized AVX512 intrinsics).
 
 ```toml
 [dependencies]
 base64-turbo = "0.1"
 ```
 
-### Basic Usage (Allocating)
+### Encoding
 
 ```rust
 use base64_turbo::STANDARD;
 
 fn main() {
     let data = b"Speed and Safety";
-    
-    // Automatically selects AVX512 / AVX2 / SSE4.1 / Scalar based on hardware
-    let encoded = STANDARD.encode(data); 
+    let encoded = STANDARD.encode(data);
     assert_eq!(encoded, "U3BlZWQgYW5kIFNhZmV0eQ==");
 }
 ```
 
-### Zero-Allocation
+### Decoding
 
-For scenarios where heap allocation is too slow, write directly to stack buffers:
+```rust
+use base64_turbo::STANDARD;
+
+fn main() {
+    let encoded = "U3BlZWQgYW5kIFNhZmV0eQ==";
+    
+    // Returns Result<Vec<u8>, Error>
+    let decoded = STANDARD.decode(encoded).unwrap();
+    
+    assert_eq!(decoded, b"Speed and Safety");
+}
+```
+
+### Zero-Allocation (Stack)
+
+For scenarios where heap allocation is too slow (e.g., HFT hot paths), write directly to stack buffers:
 
 ```rust
 use base64_turbo::STANDARD;
@@ -48,10 +65,23 @@ fn main() {
 
     // Returns Result<usize, Error>
     let len = STANDARD.encode_into(input, &mut output).unwrap();
-    
+
     assert_eq!(&output[..len], b"TG93IExhdGVuY3kK");
 }
 ```
+
+## Compatibility & Stability
+
+### Minimum Supported Rust Version (MSRV)
+**This crate requires Rust 1.89.0 or newer.**
+We rely on recently stabilized AVX512 intrinsics in the standard library to guarantee safety without external dependencies.
+*   We **do not** plan to lower this requirement in the future.
+*   We **do not** plan to support older compilers via feature flags.
+
+### Public API Stability
+The public API (traits, structs, and error types) is considered **Stable**.
+*   We adhere to **Semantic Versioning**.
+*   The current API surface will remain valid and backward-compatible throughout the `0.1.x` lifecycle.
 
 ## Performance
 
@@ -119,9 +149,9 @@ The C library `turbo-base64` is the current theoretical "speed of light." Howeve
 *   [**Safety & Verification**](https://github.com/hacer-bark/base64-turbo/blob/main/docs/verification.md) - Proofs, MIRI logs, and audit strategy.
 *   [**Benchmarks & Methodology**](https://github.com/hacer-bark/base64-turbo/tree/main/docs/benchmarks) - Hardware specs and reproduction steps.
 *   [**Architecture & Design**](https://github.com/hacer-bark/base64-turbo/blob/main/docs/design.md) - Internal data flow and SIMD selection logic.
-*   [**Ecosystem Comparison**](https://github.com/hacer-bark/base64-turbo/blob/main/docs/ecosystem_comparison.md) - Compression of top Rust and C libs.
-*   [**FAQ**](https://github.com/hacer-bark/base64-turbo/blob/main/docs/faq.md) - Common questions about `no_std` and embedded support.
+*   [**Ecosystem Comparison**](https://github.com/hacer-bark/base64-turbo/blob/main/docs/ecosystem_comparison.md) - Comparison of top Rust and C libs.
+*   [**FAQ**](https://github.com/hacer-bark/base64-turbo/blob/main/docs/faq.md) - Common questions about `no_std`, NEON, and embedded support.
 
 ## License
 
-This project licensed under either the [MIT License](LICENSE-MIT) or the [Apache License, Version 2.0](LICENSE-APACHE) at your option.
+This project licensed under either the [MIT License](https://github.com/hacer-bark/base64-turbo/blob/main/LICENSE-MIT) or the [Apache License, Version 2.0](https://github.com/hacer-bark/base64-turbo/blob/main/LICENCE-APACHE) at your option.
