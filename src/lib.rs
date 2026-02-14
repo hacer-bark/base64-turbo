@@ -481,6 +481,8 @@ impl Engine {
     // Internal Dispatchers
     // ========================================================================
 
+    // TODO: Recalculate lengths for SIMDs paths.
+
     #[inline(always)]
     unsafe fn encode_dispatch(&self, input: &[u8], dst: *mut u8) {
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
