@@ -102,10 +102,10 @@ The public API (traits, structs, and error types) is considered **Stable**.
 
 Achieving maximum throughput must not cost memory safety. While we leverage `unsafe` intrinsics for SIMD, we have mathematically proven the absence of bugs using a "Swiss Cheese" model of verification layers.
 
-*   ✅ **Kani Verified:** Mathematical proofs ensure no input (0..∞ bytes) can cause panics or overflows.
-*   ✅ **MIRI Verified:** Validates that no Undefined Behavior (UB) occurs during execution across all architectures.
-*   ✅ **MSan Audited:** MemorySanitizer confirms no logic is ever performed on uninitialized memory.
-*   ✅ **Fuzz Tested:** Over 2.5 billion iterations with zero failures.
+*   **Kani Verified:** Mathematical proofs ensure no input (0..∞ bytes) can cause panics or overflows.
+*   **MIRI Verified:** Validates that no Undefined Behavior (UB) occurs during execution across all architectures.
+*   **MSan Audited:** MemorySanitizer confirms no logic is ever performed on uninitialized memory.
+*   **Fuzz Tested:** Over 2.5 billion iterations with zero failures.
 
 **Verified Architectures:**
 
