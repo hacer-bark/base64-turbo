@@ -137,6 +137,6 @@ fuzz_target!(|data: &[u8]| {
         }
     }
 
-    // Note: Dispatch logic (AVX2/SSE4/scalar selection, including AVX512 if feature enabled)
+    // Note: Dispatch logic (AVX512/AVX2/SSE4/scalar selection)
     // TODO: In feature will add explicit support for AVX512 instructions.
 });

@@ -141,11 +141,11 @@ fn test_unstable_apis() {
     // --- Scalar (Always Available) ---
     unsafe {
         let mut dst = vec![0u8; STANDARD.encoded_len(input.len())];
-        STANDARD.encode_scalar(&input, dst.as_mut_ptr());
+        STANDARD.encode_scalar(&input, &mut dst);
         assert_eq!(&dst, expected.as_bytes(), "Scalar Unsafe Encode");
 
         let mut dec = vec![0u8; STANDARD.estimate_decoded_len(dst.len())];
-        let len = STANDARD.decode_scalar(&dst, dec.as_mut_ptr()).unwrap();
+        let len = STANDARD.decode_scalar(&dst, &mut dec).unwrap();
         assert_eq!(&dec[..len], &input, "Scalar Unsafe Decode");
     }
 
@@ -154,11 +154,11 @@ fn test_unstable_apis() {
     if std::is_x86_feature_detected!("sse4.1") {
         unsafe {
             let mut dst = vec![0u8; STANDARD.encoded_len(input.len())];
-            STANDARD.encode_sse4(&input, dst.as_mut_ptr());
+            STANDARD.encode_sse4(&input, &mut dst);
             assert_eq!(&dst, expected.as_bytes(), "SSE4.1 Unsafe Encode");
 
             let mut dec = vec![0u8; STANDARD.estimate_decoded_len(dst.len())];
-            let len = STANDARD.decode_sse4(&dst, dec.as_mut_ptr()).unwrap();
+            let len = STANDARD.decode_sse4(&dst, &mut dec).unwrap();
             assert_eq!(&dec[..len], &input, "SSE4.1 Unsafe Decode");
         }
     } else {
@@ -170,11 +170,11 @@ fn test_unstable_apis() {
     if std::is_x86_feature_detected!("avx2") {
         unsafe {
             let mut dst = vec![0u8; STANDARD.encoded_len(input.len())];
-            STANDARD.encode_avx2(&input, dst.as_mut_ptr());
+            STANDARD.encode_avx2(&input, &mut dst);
             assert_eq!(&dst, expected.as_bytes(), "AVX2 Unsafe Encode");
 
             let mut dec = vec![0u8; STANDARD.estimate_decoded_len(dst.len())];
-            let len = STANDARD.decode_avx2(&dst, dec.as_mut_ptr()).unwrap();
+            let len = STANDARD.decode_avx2(&dst, &mut dec).unwrap();
             assert_eq!(&dec[..len], &input, "AVX2 Unsafe Decode");
         }
     } else {
