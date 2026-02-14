@@ -1,7 +1,6 @@
 //! # Base64 Turbo
 //! 
 //! [![Crates.io](https://img.shields.io/crates/v/base64-turbo.svg)](https://crates.io/crates/base64-turbo)
-//! [![Documentation](https://docs.rs/base64-turbo/badge.svg)](https://docs.rs/base64-turbo)
 //! [![License](https://img.shields.io/crates/l/base64-turbo.svg)](https://crates.io/crates/base64-turbo)
 //! [![Kani Verified](https://img.shields.io/github/actions/workflow/status/hacer-bark/base64-turbo/verification.yml?label=Kani%20Verified)](https://github.com/hacer-bark/base64-turbo/actions/workflows/verification.yml)
 //! [![MIRI Verified](https://img.shields.io/github/actions/workflow/status/hacer-bark/base64-turbo/miri.yml?label=MIRI%20Verified)](https://github.com/hacer-bark/base64-turbo/actions/workflows/miri.yml)
@@ -578,9 +577,9 @@ impl Engine {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     #[cfg(feature = "simd")]
     #[cfg(feature = "unstable")]
-    pub unsafe fn encode_avx2(&self, input: &[u8], dst: *mut u8) {
+    pub unsafe fn encode_avx2(&self, input: &[u8], dst: &mut [u8]) {
         // Safety: Caller must uphold the contracts documented on this function.
-        unsafe { simd::encode_slice_avx2(&self.config, input, dst) }
+        unsafe { simd::encode_slice_avx2(&self.config, input, dst.as_mut_ptr()) }
     }
 
     /// Encodes a byte slice into Base64 using a highly optimized AVX2 SIMD implementation.
@@ -611,9 +610,9 @@ impl Engine {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     #[cfg(feature = "simd")]
     #[cfg(feature = "unstable")]
-    pub unsafe fn decode_avx2(&self, input: &[u8], dst: *mut u8) -> Result<usize, Error> {
+    pub unsafe fn decode_avx2(&self, input: &[u8], dst: &mut [u8]) -> Result<usize, Error> {
         // Safety: Caller must uphold the contracts documented on this function.
-        unsafe { simd::decode_slice_avx2(&self.config, input, dst) }
+        unsafe { simd::decode_slice_avx2(&self.config, input, dst.as_mut_ptr()) }
     }
 
     /// Encodes a byte slice into Base64 using a highly optimized SSE4.1 SIMD implementation.
@@ -643,9 +642,9 @@ impl Engine {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     #[cfg(feature = "simd")]
     #[cfg(feature = "unstable")]
-    pub unsafe fn encode_sse4(&self, input: &[u8], dst: *mut u8) {
+    pub unsafe fn encode_sse4(&self, input: &[u8], dst: &mut [u8]) {
         // Safety: Caller must uphold the contracts documented on this function.
-        unsafe { simd::encode_slice_simd(&self.config, input, dst) }
+        unsafe { simd::encode_slice_simd(&self.config, input, dst.as_mut_ptr()) }
     }
 
     /// Decodes a Base64 byte slice using a highly optimized SSE4.1 SIMD implementation.
@@ -675,9 +674,9 @@ impl Engine {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     #[cfg(feature = "simd")]
     #[cfg(feature = "unstable")]
-    pub unsafe fn decode_sse4(&self, input: &[u8], dst: *mut u8) -> Result<usize, Error> {
+    pub unsafe fn decode_sse4(&self, input: &[u8], dst: &mut [u8]) -> Result<usize, Error> {
         // Safety: Caller must uphold the contracts documented on this function.
-        unsafe { simd::decode_slice_simd(&self.config, input, dst) }
+        unsafe { simd::decode_slice_simd(&self.config, input, dst.as_mut_ptr()) }
     }
 
     /// Encodes a byte slice into Base64 using a highly optimized scalar (non-SIMD) algorithm.
@@ -701,9 +700,9 @@ impl Engine {
     /// of other crate guarantees. For better memory safety, use the safe higher-level APIs
     /// (e.g., `Engine::encode`).
     #[cfg(feature = "unstable")]
-    pub unsafe fn encode_scalar(&self, input: &[u8], dst: *mut u8) {
+    pub unsafe fn encode_scalar(&self, input: &[u8], dst: &mut [u8]) {
         // Safety: Caller must uphold the contracts documented on this function.
-        unsafe { scalar::encode_slice_unsafe(&self.config, input, dst) }
+        unsafe { scalar::encode_slice_unsafe(&self.config, input, dst.as_mut_ptr()) }
     }
 
     /// Decodes a Base64 byte slice using a highly optimized scalar (non-SIMD) algorithm.
@@ -726,8 +725,8 @@ impl Engine {
     /// of other crate guarantees. For better memory safety, use the safe higher-level APIs
     /// (e.g., `Engine::decode`).
     #[cfg(feature = "unstable")]
-    pub unsafe fn decode_scalar(&self, input: &[u8], dst: *mut u8) -> Result<usize, Error> {
+    pub unsafe fn decode_scalar(&self, input: &[u8], dst: &mut [u8]) -> Result<usize, Error> {
         // Safety: Caller must uphold the contracts documented on this function.
-        unsafe { scalar::decode_slice_unsafe(&self.config, input, dst) }
+        unsafe { scalar::decode_slice_unsafe(&self.config, input, dst.as_mut_ptr()) }
     }
 }

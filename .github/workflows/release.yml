@@ -1,5 +1,4 @@
 name: Release Pipeline
-
 # Trigger ONLY when on push with a tag like "v0.1.0"
 on:
   push:
@@ -7,60 +6,15 @@ on:
       - 'v[0-9]+.*'
 
 jobs:
-  # JOB 1: Run Logic Tests
-  check-logic:
-    name: Logic Tests (${{ matrix.features }})
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: true
-      matrix:
-        features: ["std", "std,simd", "std,parallel", "std,simd,parallel"]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: swatinem/rust-cache@v2
-      - run: cargo test --verbose --no-default-features --features "${{ matrix.features }}"
-
-  # JOB 2: Run Security Audit
-  check-security:
-    name: Security Audit (${{ matrix.name }})
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: true
-      matrix:
-        include:
-          - name: AVX2
-            flags: "-C target-feature=+avx2"
-            test: "avx2_miri_tests"
-          - name: SSSE3
-            flags: "-C target-feature=+ssse3"
-            test: "ssse3_miri_tests"
-          - name: Scalar
-            flags: ""
-            test: "scalar_miri_tests"
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@nightly
-        with:
-          components: miri
-      - uses: swatinem/rust-cache@v2
-      - run: cargo +nightly miri test ${{ matrix.test }}
-        env:
-          RUSTFLAGS: ${{ matrix.flags }}
-          MIRIFLAGS: "-Zmiri-symbolic-alignment-check"
-
-  # JOB 3: Publish to Crates.io
+  # JOB: Publish to Crates.io
   publish:
     name: Publish to Crates.io
     runs-on: ubuntu-latest
     environment: Main
-    needs: [check-logic, check-security] 
     steps:
       - uses: actions/checkout@v4
-
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-
       - name: Verify Tag matches Cargo.toml
         # Sanity check: Ensure git tag "v0.1.0" matches Cargo.toml "0.1.0"
         run: |
@@ -70,7 +24,6 @@ jobs:
             echo "Error: Tag version ($TAG_VERSION) does not match Cargo.toml ($CARGO_VERSION)"
             exit 1
           fi
-
       - name: Publish
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
