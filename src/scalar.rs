@@ -399,7 +399,7 @@ mod kani_verification_scalar {
 mod scalar_miri_coverage {
     use super::*;
     use base64::{engine::general_purpose::{STANDARD, STANDARD_NO_PAD}, Engine};
-    use rand::{Rng, rng};
+    use rand::{RngExt, rng};
 
     // --- Mock Infrastructure ---
     fn random_bytes(len: usize) -> Vec<u8> {

@@ -272,7 +272,7 @@ pub unsafe fn decode_slice_avx512(config: &Config, input: &[u8], mut dst: *mut u
 mod miri_avx512_coverage {
     use super::*;
     use base64::{engine::general_purpose::{STANDARD, URL_SAFE}, Engine};
-    use rand::{Rng, rng};
+    use rand::{RngExt, rng};
 
     // --- Mock Infrastructure ---
     fn random_bytes(len: usize) -> Vec<u8> {

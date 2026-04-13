@@ -10,7 +10,7 @@ use base64::{
         URL_SAFE_NO_PAD as REF_URL_SAFE_NO_PAD,
     }
 };
-use rand::{Rng, rng};
+use rand::{RngExt, rng};
 
 // ======================================================================
 // Helpers

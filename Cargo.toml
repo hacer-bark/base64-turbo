@@ -26,8 +26,8 @@ std = []
 simd = ["std"]
 
 [dev-dependencies]
-rand = "0.9"
-criterion = { version = "0.7", features = ["html_reports"] }
+rand = "0.10"
+criterion = { version = "0.8", features = ["html_reports"] }
 base64 = "0.22"
 base64-simd = "0.8"
 base64-turbo = { path = "." }
