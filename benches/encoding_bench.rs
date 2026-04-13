@@ -3,7 +3,7 @@ use criterion::{
     PlotConfiguration, Throughput,
 };
 use std::hint::black_box;
-use rand::Rng;
+use rand::RngExt;
 use std::env;
 use std::time::Duration;
 
