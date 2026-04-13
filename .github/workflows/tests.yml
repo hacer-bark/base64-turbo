@@ -78,7 +78,7 @@ jobs:
 
   security-msan:
     name: MemorySanitizer (Nightly)
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
