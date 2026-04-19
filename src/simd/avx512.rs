@@ -1,7 +1,6 @@
 use super::{PACK_L1, PACK_L2, PACK_SHUFFLE};
 use crate::{Config, Error, scalar};
 
-// TODO: Consider add special AVX-512VBMI support
 #[cfg(target_arch = "x86")]
 use std::arch::x86::*;
 #[cfg(target_arch = "x86_64")]
@@ -299,7 +298,7 @@ mod miri_avx512_coverage {
     use super::*;
     use base64::{
         Engine,
-        engine::general_purpose::{STANDARD, URL_SAFE},
+        engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD},
     };
     use rand::{RngExt, rng};
 
@@ -486,5 +485,74 @@ mod miri_avx512_coverage {
         bad_input_64[63] = b'?'; // Invalid char
         let res = unsafe { decode_slice_avx512(&config, &bad_input_64, dst.as_mut_ptr()) };
         assert!(res.is_err(), "Failed to catch error in Single Loop");
+
+        // Case 3: Error in Quad Loop (first vector, first byte)
+        let mut bad_input_256_first = vec![b'A'; 256];
+        bad_input_256_first[0] = b'$';
+        let res = unsafe { decode_slice_avx512(&config, &bad_input_256_first, dst.as_mut_ptr()) };
+        assert!(res.is_err(), "Failed to catch error in Quad Loop first vector");
+
+        // Case 4: Error in Scalar Fallback (after SIMD processing)
+        let mut bad_input_65 = vec![b'A'; 65];
+        bad_input_65[64] = b'?'; // Invalid in scalar region
+        let res = unsafe { decode_slice_avx512(&config, &bad_input_65, dst.as_mut_ptr()) };
+        assert!(res.is_err(), "Failed to catch error in Scalar Fallback");
+    }
+
+    // ----------------------------------------------------------------------
+    // 4. Roundtrip & Config Coverage (AVX512)
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn miri_avx512_roundtrip_standard() {
+        let config = Config { url_safe: false, padding: true };
+        for &len in &[48, 96, 192, 193, 240, 384] {
+            let input = random_bytes(len);
+            let expected = STANDARD.encode(&input);
+            let mut enc = vec![0u8; expected.len() * 2];
+            unsafe { encode_slice_avx512(&config, &input, enc.as_mut_ptr()); }
+            let encoded = &enc[..expected.len()];
+            assert_eq!(std::str::from_utf8(encoded).unwrap(), expected);
+
+            let mut dec = vec![0u8; len + 64];
+            let dec_len = unsafe { decode_slice_avx512(&config, encoded, dec.as_mut_ptr()).unwrap() };
+            assert_eq!(&dec[..dec_len], &input, "Roundtrip len {}", len);
+        }
+    }
+
+    #[test]
+    fn miri_avx512_encode_no_padding() {
+        let config = Config { url_safe: false, padding: false };
+        for &len in &[1, 48, 49, 96, 192, 193] {
+            verify_encode_avx512(&config, &STANDARD_NO_PAD, len);
+        }
+    }
+
+    #[test]
+    fn miri_avx512_decode_no_padding() {
+        let config = Config { url_safe: false, padding: false };
+        for &len in &[3, 48, 49, 96, 192, 193] {
+            let input_bytes = random_bytes(len);
+            let encoded = STANDARD_NO_PAD.encode(&input_bytes);
+            let mut dst = vec![0u8; len + 64];
+            let dec_len = unsafe {
+                decode_slice_avx512(&config, encoded.as_bytes(), dst.as_mut_ptr()).unwrap()
+            };
+            assert_eq!(&dst[..dec_len], &input_bytes, "No-pad decode len {}", len);
+        }
+    }
+
+    #[test]
+    fn miri_avx512_encode_url_safe_no_pad() {
+        let config = Config { url_safe: true, padding: false };
+        for &len in &[48, 96, 192] {
+            verify_encode_avx512(&config, &URL_SAFE_NO_PAD, len);
+        }
+    }
+
+    #[test]
+    fn miri_avx512_decode_url_safe_roundtrip() {
+        let config = Config { url_safe: true, padding: true };
+        verify_decode_avx512(&config, &URL_SAFE, 100);
     }
 }

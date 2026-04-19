@@ -459,6 +459,12 @@ mod scalar_miri_coverage {
         verify_encode(&config, &STANDARD, 1);
         // 2 bytes -> Direct tail (Padding: "=")
         verify_encode(&config, &STANDARD, 2);
+        // 7 bytes -> 1 fast loop (6) + 1 byte tail
+        verify_encode(&config, &STANDARD, 7);
+        // 8 bytes -> 1 fast loop (6) + 2 byte tail
+        verify_encode(&config, &STANDARD, 8);
+        // 9 bytes -> 1 fast loop (6) + 3-byte block tail (no partial)
+        verify_encode(&config, &STANDARD, 9);
     }
 
     #[test]
@@ -469,6 +475,9 @@ mod scalar_miri_coverage {
         verify_encode(&config, &STANDARD_NO_PAD, 2);
         verify_encode(&config, &STANDARD_NO_PAD, 4);
         verify_encode(&config, &STANDARD_NO_PAD, 5);
+        // Fast loop + no-pad tail
+        verify_encode(&config, &STANDARD_NO_PAD, 7);
+        verify_encode(&config, &STANDARD_NO_PAD, 8);
     }
 
     #[test]
@@ -531,6 +540,10 @@ mod scalar_miri_coverage {
         // '-' (62) and '_' (63)
         let len = unsafe { decode_slice_unsafe(&config, b"-_", dst.as_mut_ptr()).unwrap() };
         assert_eq!(len, 1);
+        // URL-safe with padding
+        let config_pad = Config { url_safe: true, padding: true };
+        let len = unsafe { decode_slice_unsafe(&config_pad, b"-_8=", dst.as_mut_ptr()).unwrap() };
+        assert_eq!(len, 2);
     }
 
     // ----------------------------------------------------------------------
@@ -576,6 +589,61 @@ mod scalar_miri_coverage {
         let config_no_pad = Config { url_safe: false, padding: false };
         unsafe {
             assert_eq!(decode_slice_unsafe(&config_no_pad, single, dst.as_mut_ptr()), Err(Error::InvalidLength));
+        }
+    }
+
+    #[test]
+    fn miri_scalar_encode_empty() {
+        let config = Config { url_safe: false, padding: true };
+        let mut dst = [0u8; 4];
+        unsafe { encode_slice_unsafe(&config, &[], dst.as_mut_ptr()); }
+        assert_eq!(dst, [0u8; 4]);
+    }
+
+    #[test]
+    fn miri_scalar_decode_empty() {
+        let config = Config { url_safe: false, padding: true };
+        let mut dst = [0u8; 3];
+        let len = unsafe { decode_slice_unsafe(&config, b"", dst.as_mut_ptr()).unwrap() };
+        assert_eq!(len, 0);
+    }
+
+    #[test]
+    fn miri_scalar_decode_full_blocks_in_tail() {
+        let config = Config { url_safe: false, padding: true };
+        verify_decode(&config, &STANDARD, 6);
+        verify_decode(&config, &STANDARD, 9);
+    }
+
+    #[test]
+    fn miri_scalar_errors_padding_chars() {
+        let config = Config { url_safe: false, padding: true };
+        let mut dst = [0u8; 10];
+        // Invalid char in "XX==" path (d0 or d1 invalid)
+        unsafe {
+            assert_eq!(decode_slice_unsafe(&config, b"!Q==", dst.as_mut_ptr()), Err(Error::InvalidCharacter));
+            assert_eq!(decode_slice_unsafe(&config, b"Q!==", dst.as_mut_ptr()), Err(Error::InvalidCharacter));
+        }
+        // Invalid char in "XXX=" path (d0, d1, or d2 invalid)
+        unsafe {
+            assert_eq!(decode_slice_unsafe(&config, b"!QQ=", dst.as_mut_ptr()), Err(Error::InvalidCharacter));
+            assert_eq!(decode_slice_unsafe(&config, b"Q!Q=", dst.as_mut_ptr()), Err(Error::InvalidCharacter));
+            assert_eq!(decode_slice_unsafe(&config, b"QQ!=", dst.as_mut_ptr()), Err(Error::InvalidCharacter));
+        }
+    }
+
+    #[test]
+    fn miri_scalar_errors_no_pad_partial() {
+        let config_no_pad = Config { url_safe: false, padding: false };
+        let mut dst = [0u8; 10];
+        // Invalid char in 2-char no-pad partial
+        unsafe {
+            assert_eq!(decode_slice_unsafe(&config_no_pad, b"!Q", dst.as_mut_ptr()), Err(Error::InvalidCharacter));
+            assert_eq!(decode_slice_unsafe(&config_no_pad, b"Q!", dst.as_mut_ptr()), Err(Error::InvalidCharacter));
+        }
+        // Invalid char in 3-char no-pad partial (d2 invalid)
+        unsafe {
+            assert_eq!(decode_slice_unsafe(&config_no_pad, b"QQ!", dst.as_mut_ptr()), Err(Error::InvalidCharacter));
         }
     }
 }

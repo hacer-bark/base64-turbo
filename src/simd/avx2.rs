@@ -807,5 +807,68 @@ mod miri_avx2_coverage {
         bad_input_32[31] = b'?'; // Invalid char
         let res = unsafe { decode_slice_avx2(&config, &bad_input_32, dst.as_mut_ptr()) };
         assert!(res.is_err(), "Failed to catch error in Single Loop");
+
+        // Case 3: Error in Quad Loop (first vector, first byte)
+        let mut bad_input_128_first = vec![b'A'; 128];
+        bad_input_128_first[0] = b'$';
+        let res = unsafe { decode_slice_avx2(&config, &bad_input_128_first, dst.as_mut_ptr()) };
+        assert!(res.is_err(), "Failed to catch error in Quad Loop lane 1");
+
+        // Case 4: Error in Scalar Fallback (after SIMD processing)
+        let mut bad_input_33 = vec![b'A'; 33];
+        bad_input_33[32] = b'?'; // Invalid in scalar region
+        let res = unsafe { decode_slice_avx2(&config, &bad_input_33, dst.as_mut_ptr()) };
+        assert!(res.is_err(), "Failed to catch error in Scalar Fallback");
+    }
+
+    // ----------------------------------------------------------------------
+    // 4. Roundtrip & Config Coverage
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn miri_avx2_roundtrip_standard() {
+        let config = Config { url_safe: false, padding: true };
+        for &len in &[24, 48, 96, 97, 120, 192] {
+            let input = random_bytes(len);
+            let expected = STANDARD.encode(&input);
+            let mut enc = vec![0u8; expected.len() * 2];
+            unsafe { encode_slice_avx2(&config, &input, enc.as_mut_ptr()); }
+            let encoded = &enc[..expected.len()];
+            assert_eq!(std::str::from_utf8(encoded).unwrap(), expected);
+
+            let mut dec = vec![0u8; len + 64];
+            let dec_len = unsafe { decode_slice_avx2(&config, encoded, dec.as_mut_ptr()).unwrap() };
+            assert_eq!(&dec[..dec_len], &input, "Roundtrip len {}", len);
+        }
+    }
+
+    #[test]
+    fn miri_avx2_encode_no_padding() {
+        use base64::engine::general_purpose::STANDARD_NO_PAD;
+        let config = Config { url_safe: false, padding: false };
+        for &len in &[1, 24, 25, 48, 96, 97] {
+            verify_encode_avx2(&config, &STANDARD_NO_PAD, len);
+        }
+    }
+
+    #[test]
+    fn miri_avx2_decode_no_padding() {
+        use base64::engine::general_purpose::STANDARD_NO_PAD;
+        let config = Config { url_safe: false, padding: false };
+        for &len in &[3, 24, 25, 48, 96, 97] {
+            let input_bytes = random_bytes(len);
+            let encoded = STANDARD_NO_PAD.encode(&input_bytes);
+            let mut dst = vec![0u8; len + 64];
+            let dec_len = unsafe {
+                decode_slice_avx2(&config, encoded.as_bytes(), dst.as_mut_ptr()).unwrap()
+            };
+            assert_eq!(&dst[..dec_len], &input_bytes, "No-pad decode len {}", len);
+        }
+    }
+
+    #[test]
+    fn miri_avx2_decode_url_safe_padded() {
+        let config = Config { url_safe: true, padding: true };
+        verify_decode_avx2(&config, &URL_SAFE, 50);
     }
 }
