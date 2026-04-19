@@ -69,16 +69,21 @@ pub unsafe fn encode_slice_avx2(config: &Config, input: &[u8], mut dst: *mut u8)
         }};
     }
 
+    // Permutation index for 24-byte distribution into 128-bit lanes
+    let permute_idx = _mm256_setr_epi32(
+        0, 1, 2, 3, // Lane 0 gets elements 0, 1, 2 (bytes 0..11)
+        3, 4, 5, 6  // Lane 1 gets elements 3, 4, 5 (bytes 12..23)
+    );
+
     macro_rules! load_24_bytes {
         ($ptr:expr) => {{
-            let c_lo = unsafe { _mm_loadu_si128($ptr as *const __m128i) };
-            let c_hi = unsafe { _mm_loadu_si128($ptr.add(12) as *const __m128i) };
-            _mm256_inserti128_si256(_mm256_castsi128_si256(c_lo), c_hi, 1)
+            let v = unsafe { _mm256_loadu_si256($ptr as *const _) };
+            _mm256_permutevar8x32_epi32(v, permute_idx)
         }};
     }
 
     // Process 96 bytes (4 chunks) at a time
-    let safe_len_96 = len.saturating_sub(4);
+    let safe_len_96 = len.saturating_sub(8);
     let aligned_len_96 = safe_len_96 - (safe_len_96 % 96);
     let src_end_96 = unsafe { src.add(aligned_len_96) };
 
@@ -106,7 +111,7 @@ pub unsafe fn encode_slice_avx2(config: &Config, input: &[u8], mut dst: *mut u8)
     }
 
     // Process remaining 24-byte chunks
-    let safe_len_single = len.saturating_sub(4);
+    let safe_len_single = len.saturating_sub(8);
     let aligned_len_single = safe_len_single - (safe_len_single % 24);
     let src_end_single = unsafe { input.as_ptr().add(aligned_len_single) };
 
@@ -193,10 +198,9 @@ pub unsafe fn decode_slice_avx2(config: &Config, input: &[u8], mut dst: *mut u8)
             let sub_a = _mm256_subs_epu8(_mm256_sub_epi8($input, range_a), range_z_len);
             let sub_a_low = _mm256_subs_epu8(_mm256_sub_epi8($input, range_a_low), range_z_low_len);
 
-            let err = _mm256_andnot_si256(
-                is_sym,
-                _mm256_and_si256(sub_0, _mm256_and_si256(sub_a, sub_a_low)),
-            );
+            let is_char = _mm256_min_epu8(sub_0, _mm256_min_epu8(sub_a, sub_a_low));
+
+            let err = _mm256_andnot_si256(is_sym, is_char);
 
             (indices, err)
         }};

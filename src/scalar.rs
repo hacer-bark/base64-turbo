@@ -48,24 +48,16 @@ pub unsafe fn encode_slice_unsafe(config: &Config, input: &[u8], mut dst: *mut u
             // We read two 32-bit integers (4 bytes each) with overlap to avoid complex shifting logic.
             // Reading unaligned u32 is virtually free on x86/ARM64.
 
-            #[cfg(target_endian = "little")]
             let (n1, n2) = {
-                // Read bytes 0..4, convert to Big Endian to get correct byte order in register
+                // Read 4 bytes, ensure Big Endian byte order in register
                 let reg_a = (src as *const u32).read_unaligned().to_be();
-                // Read bytes 2..6 (Overlap bytes 2 and 3)
+                // Read next overlapping 4 bytes
                 let reg_b = (src.add(2) as *const u32).read_unaligned().to_be();
 
                 // Extract the specific 24 bits we need for each 4-char block
                 let n1 = (reg_a >> 8) as usize; // Bytes 0, 1, 2
                 let n2 = (reg_b & 0x00_FF_FF_FF) as usize; // Bytes 3, 4, 5
                 (n1, n2)
-            };
-
-            #[cfg(target_endian = "big")]
-            let (n1, n2) = {
-                let reg_a = (src as *const u32).read_unaligned();
-                let reg_b = (src.add(2) as *const u32).read_unaligned();
-                ( (reg_a >> 8) as usize, (reg_b & 0x00_FF_FF_FF) as usize )
             };
 
             // Map indices to Base64 characters and pack into a single 64-bit register.
@@ -80,7 +72,7 @@ pub unsafe fn encode_slice_unsafe(config: &Config, input: &[u8], mut dst: *mut u
                 ((*alphabet.get_unchecked((n2 >> 6) & 0x3F) as u64) << 48) |
                 ((*alphabet.get_unchecked(n2 & 0x3F) as u64) << 56);
 
-            (dst as *mut u64).write_unaligned(pack);
+            (dst as *mut u64).write_unaligned(pack.to_le());
 
             src = src.add(6);
             dst = dst.add(8);
@@ -103,7 +95,7 @@ pub unsafe fn encode_slice_unsafe(config: &Config, input: &[u8], mut dst: *mut u
                 ((*alphabet.get_unchecked((n >> 6) & 0x3F) as u32) << 16) |
                 ((*alphabet.get_unchecked(n & 0x3F) as u32) << 24);
 
-            (dst as *mut u32).write_unaligned(packed);
+            (dst as *mut u32).write_unaligned(packed.to_le());
             src = src.add(3);
             dst = dst.add(4);
         }
@@ -205,9 +197,9 @@ pub unsafe fn decode_slice_unsafe(config: &Config, input: &[u8], mut dst: *mut u
             // We write 4 bytes (u32) to output 3 valid bytes.
             // The 4th byte is "garbage" that will be overwritten by the next write.
             // Using write_unaligned(u32) is faster than 3 individual byte writes.
-            // We swap bytes to big-endian to lay them out correctly in memory: [Byte0, Byte1, Byte2, Garbage]
-            (dst as *mut u32).write_unaligned(n1.swap_bytes() >> 8);
-            (dst.add(3) as *mut u32).write_unaligned(n2.swap_bytes() >> 8);
+            // We convert to big-endian to lay them out correctly in memory: [Byte0, Byte1, Byte2, Garbage]
+            (dst as *mut u32).write_unaligned((n1 << 8).to_be());
+            (dst.add(3) as *mut u32).write_unaligned((n2 << 8).to_be());
 
             src = src.add(8);
             dst = dst.add(6);
