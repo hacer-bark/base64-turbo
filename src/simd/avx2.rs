@@ -1,5 +1,5 @@
-use crate::{Error, Config, scalar};
 use super::{PACK_L1, PACK_L2, PACK_SHUFFLE};
+use crate::{Config, Error, scalar};
 
 #[cfg(target_arch = "x86")]
 use std::arch::x86::*;
@@ -13,8 +13,8 @@ pub unsafe fn encode_slice_avx2(config: &Config, input: &[u8], mut dst: *mut u8)
 
     // Shuffle bytes for mul
     let shuffle = _mm256_setr_epi8(
-        1, 0, 2, 1, 4, 3, 5, 4, 7, 6, 8, 7, 10, 9, 11, 10,
-        1, 0, 2, 1, 4, 3, 5, 4, 7, 6, 8, 7, 10, 9, 11, 10,
+        1, 0, 2, 1, 4, 3, 5, 4, 7, 6, 8, 7, 10, 9, 11, 10, 1, 0, 2, 1, 4, 3, 5, 4, 7, 6, 8, 7, 10,
+        9, 11, 10,
     );
 
     // Masks for bit extraction
@@ -23,12 +23,12 @@ pub unsafe fn encode_slice_avx2(config: &Config, input: &[u8], mut dst: *mut u8)
 
     // Multiplier for shift of bytes.
     let mul_right_shift = _mm256_setr_epi16(
-        0x0040, 0x0400, 0x0040, 0x0400, 0x0040, 0x0400, 0x0040, 0x0400,
-        0x0040, 0x0400, 0x0040, 0x0400, 0x0040, 0x0400, 0x0040, 0x0400,
+        0x0040, 0x0400, 0x0040, 0x0400, 0x0040, 0x0400, 0x0040, 0x0400, 0x0040, 0x0400, 0x0040,
+        0x0400, 0x0040, 0x0400, 0x0040, 0x0400,
     );
     let mul_left_shift = _mm256_setr_epi16(
-        0x0010, 0x0100, 0x0010, 0x0100, 0x0010, 0x0100, 0x0010, 0x0100,
-        0x0010, 0x0100, 0x0010, 0x0100, 0x0010, 0x0100, 0x0010, 0x0100,
+        0x0010, 0x0100, 0x0010, 0x0100, 0x0010, 0x0100, 0x0010, 0x0100, 0x0010, 0x0100, 0x0010,
+        0x0100, 0x0010, 0x0100, 0x0010, 0x0100,
     );
 
     // Mapping logic for letters
@@ -38,10 +38,14 @@ pub unsafe fn encode_slice_avx2(config: &Config, input: &[u8], mut dst: *mut u8)
     let set_51 = _mm256_set1_epi8(51);
 
     // LUT Table for numbers and special chars
-    let (sym_plus, sym_slash) = if config.url_safe { (-88, -39) } else { (-90, -87) };
+    let (sym_plus, sym_slash) = if config.url_safe {
+        (-88, -39)
+    } else {
+        (-90, -87)
+    };
     let lut_offsets = _mm256_setr_epi8(
-        0, -75, -75, -75, -75, -75, -75, -75, -75, -75, -75, sym_plus, sym_slash, 0, 0, 0,
-        0, -75, -75, -75, -75, -75, -75, -75, -75, -75, -75, sym_plus, sym_slash, 0, 0, 0
+        0, -75, -75, -75, -75, -75, -75, -75, -75, -75, -75, sym_plus, sym_slash, 0, 0, 0, 0, -75,
+        -75, -75, -75, -75, -75, -75, -75, -75, -75, sym_plus, sym_slash, 0, 0, 0,
     );
 
     macro_rules! encode_vec {
@@ -62,23 +66,29 @@ pub unsafe fn encode_slice_avx2(config: &Config, input: &[u8], mut dst: *mut u8)
             char_val = _mm256_add_epi8(char_val, offset_lower);
 
             // Found numbers and special symbols offsets
-            let offset_special = _mm256_shuffle_epi8(lut_offsets, _mm256_subs_epu8(indices, set_51));
+            let offset_special =
+                _mm256_shuffle_epi8(lut_offsets, _mm256_subs_epu8(indices, set_51));
 
             // Final sum
             _mm256_add_epi8(char_val, offset_special)
         }};
     }
 
+    // Permutation index for 24-byte distribution into 128-bit lanes
+    let permute_idx = _mm256_setr_epi32(
+        0, 1, 2, 3, // Lane 0 gets elements 0, 1, 2 (bytes 0..11)
+        3, 4, 5, 6, // Lane 1 gets elements 3, 4, 5 (bytes 12..23)
+    );
+
     macro_rules! load_24_bytes {
         ($ptr:expr) => {{
-            let c_lo = unsafe { _mm_loadu_si128($ptr as *const __m128i) };
-            let c_hi = unsafe { _mm_loadu_si128($ptr.add(12) as *const __m128i) };
-            _mm256_inserti128_si256(_mm256_castsi128_si256(c_lo), c_hi, 1)
+            let v = unsafe { _mm256_loadu_si256($ptr as *const _) };
+            _mm256_permutevar8x32_epi32(v, permute_idx)
         }};
     }
 
     // Process 96 bytes (4 chunks) at a time
-    let safe_len_96 = len.saturating_sub(4);
+    let safe_len_96 = len.saturating_sub(8);
     let aligned_len_96 = safe_len_96 - (safe_len_96 % 96);
     let src_end_96 = unsafe { src.add(aligned_len_96) };
 
@@ -106,7 +116,7 @@ pub unsafe fn encode_slice_avx2(config: &Config, input: &[u8], mut dst: *mut u8)
     }
 
     // Process remaining 24-byte chunks
-    let safe_len_single = len.saturating_sub(4);
+    let safe_len_single = len.saturating_sub(8);
     let aligned_len_single = safe_len_single - (safe_len_single % 24);
     let src_end_single = unsafe { input.as_ptr().add(aligned_len_single) };
 
@@ -127,7 +137,11 @@ pub unsafe fn encode_slice_avx2(config: &Config, input: &[u8], mut dst: *mut u8)
 }
 
 #[target_feature(enable = "avx2")]
-pub unsafe fn decode_slice_avx2(config: &Config, input: &[u8], mut dst: *mut u8) -> Result<usize, Error> {
+pub unsafe fn decode_slice_avx2(
+    config: &Config,
+    input: &[u8],
+    mut dst: *mut u8,
+) -> Result<usize, Error> {
     let len = input.len();
     let mut src = input.as_ptr();
     let dst_start = dst;
@@ -140,12 +154,16 @@ pub unsafe fn decode_slice_avx2(config: &Config, input: &[u8], mut dst: *mut u8)
     // 0x6_: 'a'(97) -> 26 (diff -71).
     // 0x7_: 'p'(112)-> 41 (diff -71).
     let lut_hi_nibble = _mm256_setr_epi8(
-        0, 0, 19, 4, -65, -65, -71, -71, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 19, 4, -65, -65, -71, -71, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 19, 4, -65, -65, -71, -71, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 19, 4, -65, -65, -71, -71,
+        0, 0, 0, 0, 0, 0, 0, 0,
     );
 
     // Range and offsets of special chars
-    let (char_62, char_63) = if config.url_safe { (b'-', b'_') } else { (b'+', b'/') };
+    let (char_62, char_63) = if config.url_safe {
+        (b'-', b'_')
+    } else {
+        (b'+', b'/')
+    };
     let sym_62 = _mm256_set1_epi8(char_62 as i8);
     let sym_63 = _mm256_set1_epi8(char_63 as i8);
 
@@ -193,10 +211,9 @@ pub unsafe fn decode_slice_avx2(config: &Config, input: &[u8], mut dst: *mut u8)
             let sub_a = _mm256_subs_epu8(_mm256_sub_epi8($input, range_a), range_z_len);
             let sub_a_low = _mm256_subs_epu8(_mm256_sub_epi8($input, range_a_low), range_z_low_len);
 
-            let err = _mm256_andnot_si256(
-                is_sym,
-                _mm256_and_si256(sub_0, _mm256_and_si256(sub_a, sub_a_low)),
-            );
+            let is_char = _mm256_min_epu8(sub_0, _mm256_min_epu8(sub_a, sub_a_low));
+
+            let err = _mm256_andnot_si256(is_sym, is_char);
 
             (indices, err)
         }};
@@ -234,10 +251,7 @@ pub unsafe fn decode_slice_avx2(config: &Config, input: &[u8], mut dst: *mut u8)
         let (i3, e3) = decode_vec!(v3);
 
         // Check Errors
-        let err_any = _mm256_or_si256(
-            _mm256_or_si256(e0, e1), 
-            _mm256_or_si256(e2, e3)
-        );
+        let err_any = _mm256_or_si256(_mm256_or_si256(e0, e1), _mm256_or_si256(e2, e3));
 
         if _mm256_testz_si256(err_any, err_any) != 1 {
             return Err(Error::InvalidCharacter);
@@ -275,7 +289,13 @@ pub unsafe fn decode_slice_avx2(config: &Config, input: &[u8], mut dst: *mut u8)
     // Scalar Fallback
     let processed_len = unsafe { src.offset_from(input.as_ptr()) } as usize;
     if processed_len < len {
-        dst = unsafe { dst.add(scalar::decode_slice_unsafe(config, &input[processed_len..], dst)?) };
+        dst = unsafe {
+            dst.add(scalar::decode_slice_unsafe(
+                config,
+                &input[processed_len..],
+                dst,
+            )?)
+        };
     }
 
     Ok(unsafe { dst.offset_from(dst_start) } as usize)
@@ -298,7 +318,11 @@ mod kani_verification_avx2 {
     // --- HELPERS ---
 
     fn encoded_size(len: usize, padding: bool) -> usize {
-        if padding { TURBO_STANDARD.encoded_len(len) } else { TURBO_STANDARD_NO_PAD.encoded_len(len) }
+        if padding {
+            TURBO_STANDARD.encoded_len(len)
+        } else {
+            TURBO_STANDARD_NO_PAD.encoded_len(len)
+        }
     }
 
     // --- STUBS ---
@@ -306,7 +330,7 @@ mod kani_verification_avx2 {
     // STUB: _mm256_shuffle_epi8
     // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm256_shuffle_epi8
     #[allow(dead_code)]
-    unsafe fn mm256_shuffle_epi8_stub(a: __m256i, b: __m256i) -> __m256i {
+    unsafe fn _mm256_shuffle_epi8_stub(a: __m256i, b: __m256i) -> __m256i {
         let a: [u8; 32] = unsafe { transmute(a) };
         let b: [u8; 32] = unsafe { transmute(b) };
         let mut dst = [0u8; 32];
@@ -349,89 +373,10 @@ mod kani_verification_avx2 {
         unsafe { transmute(dst) }
     }
 
-    // STUB: _mm256_mulhi_epu16
-    // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm256_mulhi_epu16
-    #[allow(dead_code)]
-    unsafe fn mm256_mulhi_epu16_stub(a: __m256i, b: __m256i) -> __m256i {
-        let a: [u16; 16] = unsafe { transmute(a) };
-        let b: [u16; 16] = unsafe { transmute(b) };
-        let mut dst = [0u16; 16];
-
-        // FOR j := 0 to 15
-        for j in 0..16 {
-            // i := j*16
-            let i = j;
-
-            // tmp[31:0] := a[i+15:i] * b[i+15:i]
-            let op1 = a[i] as u32;
-            let op2 = b[i] as u32;
-            let tmp = op1 * op2;
-
-            // dst[i+15:i] := tmp[31:16]
-            dst[i] = (tmp >> 16) as u16;
-        }
-        // ENDFOR
-
-        // dst[MAX:256] := 0
-
-        unsafe { transmute(dst) }
-    }
-
-    // STUB: _mm256_mullo_epi16
-    // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm256_mullo_epi16
-    #[allow(dead_code)]
-    unsafe fn mm256_mullo_epi16_stub(a: __m256i, b: __m256i) -> __m256i {
-        let a: [i16; 16] = unsafe { transmute(a) };
-        let b: [i16; 16] = unsafe { transmute(b) };
-        let mut dst = [0i16; 16];
-
-        // FOR j := 0 to 15
-        for j in 0..16 {
-            // i := j*16
-            let i = j;
-
-            // tmp[31:0] := SignExtend32(a[i+15:i]) * SignExtend32(b[i+15:i])
-            let op1 = a[i] as i32;
-            let op2 = b[i] as i32;
-            let tmp: i32 = op1.wrapping_mul(op2);
-
-            // dst[i+15:i] := tmp[15:0]
-            dst[j] = tmp as i16;
-        }
-        // ENDFOR
-
-        // dst[MAX:256] := 0
-
-        unsafe { transmute(dst) }
-    }
-
-    // STUB: _mm256_add_epi8
-    // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm256_add_epi8
-    #[allow(dead_code)]
-    unsafe fn mm256_add_epi8_stub(a: __m256i, b: __m256i) -> __m256i {
-        let a: [u8; 32] = unsafe { transmute(a) };
-        let b: [u8; 32] = unsafe { transmute(b) };
-        let mut dst = [0u8; 32];
-
-        // FOR j := 0 to 31
-        for j in 0..32 {
-            // i := j*8
-            let i = j;
-
-	        // dst[i+7:i] := a[i+7:i] + b[i+7:i]
-            dst[i] = a[i].wrapping_add(b[i]);
-        }
-        // ENDFOR
-
-        // dst[MAX:256] := 0
-
-        unsafe { transmute(dst) }
-    }
-
     // STUB: _mm256_subs_epu8
     // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm256_subs_epu8
     #[allow(dead_code)]
-    unsafe fn mm256_subs_epu8_stub(a: __m256i, b: __m256i) -> __m256i {
+    unsafe fn _mm256_subs_epu8_stub(a: __m256i, b: __m256i) -> __m256i {
         let a: [u8; 32] = unsafe { transmute(a) };
         let b: [u8; 32] = unsafe { transmute(b) };
         let mut dst = [0u8; 32];
@@ -455,19 +400,14 @@ mod kani_verification_avx2 {
     // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm256_testz_si256
     // Note: in this logic added complexity as Rust do not support 256 bits values.
     #[allow(dead_code)]
-    unsafe fn mm256_testz_si256_stub(a: __m256i, b: __m256i) -> i32 {
+    unsafe fn _mm256_testz_si256_stub(a: __m256i, b: __m256i) -> i32 {
         let a: [u64; 4] = unsafe { transmute(a) };
         let b: [u64; 4] = unsafe { transmute(b) };
         let zf: i32;
         let _cf: i32;
 
         // Perform 256 bit AND
-        let res_and = [
-            a[0] & b[0],
-            a[1] & b[1],
-            a[2] & b[2],
-            a[3] & b[3],
-        ];
+        let res_and = [a[0] & b[0], a[1] & b[1], a[2] & b[2], a[3] & b[3]];
 
         // IF ((a[255:0] AND b[255:0]) == 0)
         if res_and[0] == 0 && res_and[1] == 0 && res_and[2] == 0 && res_and[3] == 0 {
@@ -488,7 +428,8 @@ mod kani_verification_avx2 {
         ];
 
         // IF (((NOT a[255:0]) AND b[255:0]) == 0)
-        if res_not_and[0] == 0 && res_not_and[1] == 0 && res_not_and[2] == 0 && res_not_and[3] == 0 {
+        if res_not_and[0] == 0 && res_not_and[1] == 0 && res_not_and[2] == 0 && res_not_and[3] == 0
+        {
             // CF := 1
             _cf = 1;
         } else {
@@ -504,7 +445,7 @@ mod kani_verification_avx2 {
     // STUB: _mm256_maddubs_epi16
     // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm256_maddubs_epi16
     #[allow(dead_code)]
-    unsafe fn mm256_maddubs_epi16_stub(a: __m256i, b: __m256i) -> __m256i {
+    unsafe fn _mm256_maddubs_epi16_stub(a: __m256i, b: __m256i) -> __m256i {
         let a: [u8; 32] = unsafe { transmute(a) };
         let b: [i8; 32] = unsafe { transmute(b) };
         let mut dst = [0i16; 16];
@@ -515,7 +456,8 @@ mod kani_verification_avx2 {
             let i = j * 2;
 
             // dst[i+15:i] := Saturate16( a[i+15:i+8]*b[i+15:i+8] + a[i+7:i]*b[i+7:i] )
-            dst[j] = ((a[i+1] as i16) * (b[i+1] as i16)).saturating_add((a[i] as i16) * (b[i] as i16));
+            dst[j] = ((a[i + 1] as i16) * (b[i + 1] as i16))
+                .saturating_add((a[i] as i16) * (b[i] as i16));
         }
         // ENDFOR
 
@@ -527,7 +469,7 @@ mod kani_verification_avx2 {
     // STUB: _mm256_madd_epi16
     // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm256_madd_epi16
     #[allow(dead_code)]
-    unsafe fn mm256_madd_epi16_stub(a: __m256i, b: __m256i) -> __m256i {
+    unsafe fn _mm256_madd_epi16_stub(a: __m256i, b: __m256i) -> __m256i {
         let a: [i16; 16] = unsafe { transmute(a) };
         let b: [i16; 16] = unsafe { transmute(b) };
         let mut dst = [0i32; 8];
@@ -538,7 +480,9 @@ mod kani_verification_avx2 {
             let i = j * 2;
 
             // dst[i+31:i] := SignExtend32(a[i+31:i+16]*b[i+31:i+16]) + SignExtend32(a[i+15:i]*b[i+15:i])
-            dst[j] = (a[i+1] as i32).wrapping_mul(b[i+1] as i32).wrapping_add((a[i] as i32).wrapping_mul(b[i] as i32));
+            dst[j] = (a[i + 1] as i32)
+                .wrapping_mul(b[i + 1] as i32)
+                .wrapping_add((a[i] as i32).wrapping_mul(b[i] as i32));
         }
         // ENDFOR
 
@@ -550,7 +494,7 @@ mod kani_verification_avx2 {
     // STUB: _mm256_sub_epi8
     // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm256_sub_epi8
     #[allow(dead_code)]
-    unsafe fn mm256_sub_epi8_stub(a: __m256i, b: __m256i) -> __m256i {
+    unsafe fn _mm256_sub_epi8_stub(a: __m256i, b: __m256i) -> __m256i {
         let a: [u8; 32] = unsafe { transmute(a) };
         let b: [u8; 32] = unsafe { transmute(b) };
         let mut dst = [0u8; 32];
@@ -570,23 +514,46 @@ mod kani_verification_avx2 {
         unsafe { transmute(dst) }
     }
 
+    // STUB: _mm256_min_epu8
+    // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm256_min_epu8
+    unsafe fn _mm256_min_epu8_stub(a: __m256i, b: __m256i) -> __m256i {
+        let a: [u8; 32] = unsafe { transmute(a) };
+        let b: [u8; 32] = unsafe { transmute(b) };
+        let mut dst = [0u8; 32];
+
+        // FOR j := 0 to 31
+        for j in 0..32 {
+            // i := j*8
+            let i = j;
+
+            // dst[i+7:i] := MIN(a[i+7:i], b[i+7:i])
+            dst[i] = a[i].min(b[i]);
+        }
+        // ENDFOR
+
+        // dst[MAX:256] := 0
+
+        unsafe { transmute(dst) }
+    }
+
     // --- PROOFS ---
 
     /// **Proof 1: Roundtrip Correctness (The Logic Check)**
-    /// 
+    ///
     /// Verifies that `Decode(Encode(X)) == X`.
     #[kani::proof]
-    #[kani::stub(_mm256_shuffle_epi8, mm256_shuffle_epi8_stub)]
-    #[kani::stub(_mm256_mulhi_epu16, mm256_mulhi_epu16_stub)]
-    #[kani::stub(_mm256_mullo_epi16, mm256_mullo_epi16_stub)]
-    #[kani::stub(_mm256_add_epi8, mm256_add_epi8_stub)]
-    #[kani::stub(_mm256_subs_epu8, mm256_subs_epu8_stub)]
-    #[kani::stub(_mm256_testz_si256, mm256_testz_si256_stub)]
-    #[kani::stub(_mm256_maddubs_epi16, mm256_maddubs_epi16_stub)]
-    #[kani::stub(_mm256_madd_epi16, mm256_madd_epi16_stub)]
-    #[kani::stub(_mm256_sub_epi8, mm256_sub_epi8_stub)]
+    #[kani::stub(_mm256_shuffle_epi8, _mm256_shuffle_epi8_stub)]
+    #[kani::stub(_mm256_subs_epu8, _mm256_subs_epu8_stub)]
+    #[kani::stub(_mm256_min_epu8, _mm256_min_epu8_stub)]
+    #[kani::stub(_mm256_testz_si256, _mm256_testz_si256_stub)]
+    #[kani::stub(_mm256_maddubs_epi16, _mm256_maddubs_epi16_stub)]
+    #[kani::stub(_mm256_madd_epi16, _mm256_madd_epi16_stub)]
+    #[kani::stub(_mm256_sub_epi8, _mm256_sub_epi8_stub)]
     fn check_avx2_roundtrip_correctness() {
-        let config = Config { url_safe: kani::any(), padding: true };
+        let config = Config {
+            url_safe: kani::any(),
+            padding: true,
+        };
         let input: [u8; ENC_INDUCTION_LEN] = kani::any();
 
         // Buffers
@@ -613,32 +580,33 @@ mod kani_verification_avx2 {
     }
 
     /// **Proof 2: Decoder Robustness & Induction**
-    /// 
+    ///
     /// Verifies that `decode_slice_avx2`:
     /// 1. Accepts ANY 33 bytes of garbage input.
     /// 2. Never Segfaults, Panics, or causes UB.
     /// 3. Safely handles the SIMD->Scalar pointer transition.
     #[kani::proof]
-    #[kani::stub(_mm256_shuffle_epi8, mm256_shuffle_epi8_stub)]
-    #[kani::stub(_mm256_mulhi_epu16, mm256_mulhi_epu16_stub)]
-    #[kani::stub(_mm256_mullo_epi16, mm256_mullo_epi16_stub)]
-    #[kani::stub(_mm256_add_epi8, mm256_add_epi8_stub)]
-    #[kani::stub(_mm256_subs_epu8, mm256_subs_epu8_stub)]
-    #[kani::stub(_mm256_testz_si256, mm256_testz_si256_stub)]
-    #[kani::stub(_mm256_maddubs_epi16, mm256_maddubs_epi16_stub)]
-    #[kani::stub(_mm256_madd_epi16, mm256_madd_epi16_stub)]
-    #[kani::stub(_mm256_sub_epi8, mm256_sub_epi8_stub)]
+    #[kani::stub(_mm256_shuffle_epi8, _mm256_shuffle_epi8_stub)]
+    #[kani::stub(_mm256_subs_epu8, _mm256_subs_epu8_stub)]
+    #[kani::stub(_mm256_min_epu8, _mm256_min_epu8_stub)]
+    #[kani::stub(_mm256_testz_si256, _mm256_testz_si256_stub)]
+    #[kani::stub(_mm256_maddubs_epi16, _mm256_maddubs_epi16_stub)]
+    #[kani::stub(_mm256_madd_epi16, _mm256_madd_epi16_stub)]
+    #[kani::stub(_mm256_sub_epi8, _mm256_sub_epi8_stub)]
     fn check_avx2_decode_robustness() {
-        let config = Config { url_safe: kani::any(), padding: true };
+        let config = Config {
+            url_safe: kani::any(),
+            padding: true,
+        };
 
         // Input: 33 bytes of unrestricted symbolic data (garbage)
         let input: [u8; DEC_INDUCTION_LEN] = kani::any();
-        
+
         // Output Buffer: Max estimated size
         let mut output = [0u8; 128];
 
         unsafe {
-            // We ignore the Result. We only care that this function call 
+            // We ignore the Result. We only care that this function call
             // returns safely (Ok or Err) and does not crash.
             let _ = decode_slice_avx2(&config, &input, output.as_mut_ptr());
         }
@@ -648,7 +616,10 @@ mod kani_verification_avx2 {
 #[cfg(all(test, miri))]
 mod miri_avx2_coverage {
     use super::*;
-    use base64::{engine::general_purpose::{STANDARD, URL_SAFE}, Engine};
+    use base64::{
+        Engine,
+        engine::general_purpose::{STANDARD, URL_SAFE},
+    };
     use rand::{RngExt, rng};
 
     // --- Mock Infrastructure ---
@@ -665,11 +636,18 @@ mod miri_avx2_coverage {
         // Allocate buffer (Base64 is ~4/3 larger)
         let mut dst = vec![0u8; expected.len() * 2]; // Safety margin
 
-        unsafe { encode_slice_avx2(config, &input, dst.as_mut_ptr()); }
+        unsafe {
+            encode_slice_avx2(config, &input, dst.as_mut_ptr());
+        }
 
         // Verify prefix matches expected
         let result = &dst[..expected.len()];
-        assert_eq!(std::str::from_utf8(result).unwrap(), expected, "Encode len {}", input_len);
+        assert_eq!(
+            std::str::from_utf8(result).unwrap(),
+            expected,
+            "Encode len {}",
+            input_len
+        );
     }
 
     /// Helper to verify AVX2 decoding against the 'base64' crate oracle
@@ -683,7 +661,8 @@ mod miri_avx2_coverage {
         let mut dst = vec![0u8; original_len + 64]; // Safety margin
 
         let len = unsafe {
-            decode_slice_avx2(config, encoded_bytes, dst.as_mut_ptr()).expect("Valid input failed to decode")
+            decode_slice_avx2(config, encoded_bytes, dst.as_mut_ptr())
+                .expect("Valid input failed to decode")
         };
 
         // 3. Verify
@@ -696,7 +675,10 @@ mod miri_avx2_coverage {
 
     #[test]
     fn miri_avx2_encode_scalar_fallback() {
-        let config = Config { url_safe: false, padding: true };
+        let config = Config {
+            url_safe: false,
+            padding: true,
+        };
         // Test < 24 bytes (Hits scalar fallback immediately)
         verify_encode_avx2(&config, &STANDARD, 1);
         verify_encode_avx2(&config, &STANDARD, 23);
@@ -704,7 +686,10 @@ mod miri_avx2_coverage {
 
     #[test]
     fn miri_avx2_encode_single_vector_loop() {
-        let config = Config { url_safe: false, padding: true };
+        let config = Config {
+            url_safe: false,
+            padding: true,
+        };
         // Your code uses 24-byte chunks (32-byte registers reading 24 bytes).
         // Test exactly 24 (1 loop)
         verify_encode_avx2(&config, &STANDARD, 24);
@@ -716,7 +701,10 @@ mod miri_avx2_coverage {
 
     #[test]
     fn miri_encode_quad_vector_loop() {
-        let config = Config { url_safe: false, padding: true };
+        let config = Config {
+            url_safe: false,
+            padding: true,
+        };
         // Your code uses 96-byte blocks (4 * 24).
         // Test exactly 96 (1 quad loop)
         verify_encode_avx2(&config, &STANDARD, 96);
@@ -731,7 +719,10 @@ mod miri_avx2_coverage {
     #[test]
     fn miri_avx2_encode_url_safe() {
         // Verify the lookup table switching logic
-        let config = Config { url_safe: true, padding: true };
+        let config = Config {
+            url_safe: true,
+            padding: true,
+        };
         verify_encode_avx2(&config, &URL_SAFE, 50);
     }
 
@@ -741,7 +732,10 @@ mod miri_avx2_coverage {
 
     #[test]
     fn miri_avx2_decode_scalar_fallback() {
-        let config = Config { url_safe: false, padding: true };
+        let config = Config {
+            url_safe: false,
+            padding: true,
+        };
         // Your code falls back for < 32 bytes
         // Note: Base64 expands 3 bytes -> 4 chars.
         // Input length 4 chars -> 3 bytes output.
@@ -751,7 +745,10 @@ mod miri_avx2_coverage {
 
     #[test]
     fn miri_avx2_decode_single_vector_loop() {
-        let config = Config { url_safe: false, padding: true };
+        let config = Config {
+            url_safe: false,
+            padding: true,
+        };
         // Your code processes 32-byte chunks.
         // 32 bytes of Base64 = 24 bytes of decoded data.
         verify_decode_avx2(&config, &STANDARD, 24); // Exactly 32 bytes input
@@ -761,7 +758,10 @@ mod miri_avx2_coverage {
 
     #[test]
     fn miri_avx2_decode_quad_vector_loop() {
-        let config = Config { url_safe: false, padding: true };
+        let config = Config {
+            url_safe: false,
+            padding: true,
+        };
         // Your code processes 128-byte chunks (4 * 32).
         // 128 bytes input = 96 bytes decoded.
         verify_decode_avx2(&config, &STANDARD, 96); // Exactly 128 bytes input
@@ -772,7 +772,10 @@ mod miri_avx2_coverage {
     #[test]
     fn miri_avx2_decode_url_safe() {
         // Verify '-' and '_' handling in the SIMD path
-        let config = Config { url_safe: true, padding: false };
+        let config = Config {
+            url_safe: true,
+            padding: false,
+        };
 
         // Construct specific input with URL safe chars
         // 0x3F (?) is usually '/', in URL safe it is '_'
@@ -780,7 +783,9 @@ mod miri_avx2_coverage {
         let input = b"-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_"; // 32 bytes
         let mut dst = [0u8; 32];
 
-        unsafe { decode_slice_avx2(&config, input, dst.as_mut_ptr()).unwrap(); }
+        unsafe {
+            decode_slice_avx2(&config, input, dst.as_mut_ptr()).unwrap();
+        }
     }
 
     // ----------------------------------------------------------------------
@@ -789,7 +794,10 @@ mod miri_avx2_coverage {
 
     #[test]
     fn miri_avx2_decode_error_detection() {
-        let config = Config { url_safe: false, padding: true };
+        let config = Config {
+            url_safe: false,
+            padding: true,
+        };
         let mut dst = [0u8; 256];
 
         // Case 1: Error in the Quad loop (byte 127)
@@ -803,5 +811,82 @@ mod miri_avx2_coverage {
         bad_input_32[31] = b'?'; // Invalid char
         let res = unsafe { decode_slice_avx2(&config, &bad_input_32, dst.as_mut_ptr()) };
         assert!(res.is_err(), "Failed to catch error in Single Loop");
+
+        // Case 3: Error in Quad Loop (first vector, first byte)
+        let mut bad_input_128_first = vec![b'A'; 128];
+        bad_input_128_first[0] = b'$';
+        let res = unsafe { decode_slice_avx2(&config, &bad_input_128_first, dst.as_mut_ptr()) };
+        assert!(res.is_err(), "Failed to catch error in Quad Loop lane 1");
+
+        // Case 4: Error in Scalar Fallback (after SIMD processing)
+        let mut bad_input_33 = vec![b'A'; 33];
+        bad_input_33[32] = b'?'; // Invalid in scalar region
+        let res = unsafe { decode_slice_avx2(&config, &bad_input_33, dst.as_mut_ptr()) };
+        assert!(res.is_err(), "Failed to catch error in Scalar Fallback");
+    }
+
+    // ----------------------------------------------------------------------
+    // 4. Roundtrip & Config Coverage
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn miri_avx2_roundtrip_standard() {
+        let config = Config {
+            url_safe: false,
+            padding: true,
+        };
+        for &len in &[24, 48, 96, 97, 120, 192] {
+            let input = random_bytes(len);
+            let expected = STANDARD.encode(&input);
+            let mut enc = vec![0u8; expected.len() * 2];
+            unsafe {
+                encode_slice_avx2(&config, &input, enc.as_mut_ptr());
+            }
+            let encoded = &enc[..expected.len()];
+            assert_eq!(std::str::from_utf8(encoded).unwrap(), expected);
+
+            let mut dec = vec![0u8; len + 64];
+            let dec_len = unsafe { decode_slice_avx2(&config, encoded, dec.as_mut_ptr()).unwrap() };
+            assert_eq!(&dec[..dec_len], &input, "Roundtrip len {}", len);
+        }
+    }
+
+    #[test]
+    fn miri_avx2_encode_no_padding() {
+        use base64::engine::general_purpose::STANDARD_NO_PAD;
+        let config = Config {
+            url_safe: false,
+            padding: false,
+        };
+        for &len in &[1, 24, 25, 48, 96, 97] {
+            verify_encode_avx2(&config, &STANDARD_NO_PAD, len);
+        }
+    }
+
+    #[test]
+    fn miri_avx2_decode_no_padding() {
+        use base64::engine::general_purpose::STANDARD_NO_PAD;
+        let config = Config {
+            url_safe: false,
+            padding: false,
+        };
+        for &len in &[3, 24, 25, 48, 96, 97] {
+            let input_bytes = random_bytes(len);
+            let encoded = STANDARD_NO_PAD.encode(&input_bytes);
+            let mut dst = vec![0u8; len + 64];
+            let dec_len = unsafe {
+                decode_slice_avx2(&config, encoded.as_bytes(), dst.as_mut_ptr()).unwrap()
+            };
+            assert_eq!(&dst[..dec_len], &input_bytes, "No-pad decode len {}", len);
+        }
+    }
+
+    #[test]
+    fn miri_avx2_decode_url_safe_padded() {
+        let config = Config {
+            url_safe: true,
+            padding: true,
+        };
+        verify_decode_avx2(&config, &URL_SAFE, 50);
     }
 }

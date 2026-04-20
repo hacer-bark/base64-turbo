@@ -38,15 +38,3 @@ harness = false
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
-
-[profile.release]
-opt-level = 3
-lto = "fat"
-codegen-units = 1
-panic = "abort"
-strip = true 
-
-[profile.bench]
-opt-level = 3
-lto = "fat"
-codegen-units = 1

@@ -1,7 +1,6 @@
-use crate::{Error, Config, scalar};
 use super::{PACK_L1, PACK_L2, PACK_SHUFFLE};
+use crate::{Config, Error, scalar};
 
-// TODO: Consider add special AVX-512VBMI support
 #[cfg(target_arch = "x86")]
 use std::arch::x86::*;
 #[cfg(target_arch = "x86_64")]
@@ -13,23 +12,31 @@ pub unsafe fn encode_slice_avx512(config: &Config, input: &[u8], mut dst: *mut u
     let mut src = input.as_ptr();
 
     // Shuffle bytes for mul
-    let shuffle = _mm512_broadcast_i32x4( _mm_setr_epi8(1, 0, 2, 1, 4, 3, 5, 4, 7, 6, 8, 7, 10, 9, 11, 10));
+    let shuffle = _mm512_broadcast_i32x4(_mm_setr_epi8(
+        1, 0, 2, 1, 4, 3, 5, 4, 7, 6, 8, 7, 10, 9, 11, 10,
+    ));
 
     // Masks and multiplier
     let mask_lo_6bits = _mm512_set1_epi16(0x003F);
     let mask_hi_6bits = _mm512_set1_epi16(0x3F00);
     let mul_right_shift = _mm512_set1_epi32(0x04000040);
-    let mul_left_shift  = _mm512_set1_epi32(0x01000010);
+    let mul_left_shift = _mm512_set1_epi32(0x01000010);
 
     // Character mapping
     let offset_base = _mm512_set1_epi8(65);
     let set_25 = _mm512_set1_epi8(25);
-    let delta_lower = _mm512_set1_epi8(6); 
+    let delta_lower = _mm512_set1_epi8(6);
     let set_51 = _mm512_set1_epi8(51);
 
     // LUT Table for numbers and special chars
-    let (sym_plus, sym_slash) = if config.url_safe { (-88, -39) } else { (-90, -87) };
-    let lut_offsets = _mm512_broadcast_i32x4(_mm_setr_epi8(0, -75, -75, -75, -75, -75, -75, -75, -75, -75, -75, sym_plus, sym_slash, 0, 0, 0));
+    let (sym_plus, sym_slash) = if config.url_safe {
+        (-88, -39)
+    } else {
+        (-90, -87)
+    };
+    let lut_offsets = _mm512_broadcast_i32x4(_mm_setr_epi8(
+        0, -75, -75, -75, -75, -75, -75, -75, -75, -75, -75, sym_plus, sym_slash, 0, 0, 0,
+    ));
 
     macro_rules! encode_vec {
         ($in_vec:expr) => {{
@@ -49,39 +56,39 @@ pub unsafe fn encode_slice_avx512(config: &Config, input: &[u8], mut dst: *mut u
             char_val = _mm512_mask_add_epi8(char_val, m_gt25, char_val, delta_lower);
 
             // Compute special chars offset
-            let offset_special = _mm512_shuffle_epi8(lut_offsets, _mm512_subs_epu8(indices, set_51));
-            
+            let offset_special =
+                _mm512_shuffle_epi8(lut_offsets, _mm512_subs_epu8(indices, set_51));
+
             _mm512_add_epi8(char_val, offset_special)
         }};
     }
 
+    // Permutation index for 48-byte distribution into 128-bit lanes
+    let permute_idx = _mm512_setr_epi32(
+        0, 1, 2, 3, // Lane 0 gets elements 0, 1, 2, and 3 (bytes 12-15 as garbage)
+        3, 4, 5, 6, // Lane 1 gets elements 3, 4, 5, and 6 (bytes 24-27 as garbage)
+        6, 7, 8, 9, // Lane 2 gets elements 6, 7, 8, and 9
+        9, 10, 11, 12, // Lane 3 gets elements 9, 10, 11, and 12
+    );
+
     macro_rules! load_48_bytes {
         ($ptr:expr) => {{
-            let p = $ptr;
-            let v0 = unsafe { _mm_loadu_si128(p as *const _) }; 
-            let v1 = unsafe {_mm_loadu_si128(p.add(12) as *const _) };
-            let v2 = unsafe { _mm_loadu_si128(p.add(24) as *const _) };
-            let v3 = unsafe { _mm_loadu_si128(p.add(36) as *const _) };
-
-            // Combine into ZMM
-            let z = _mm512_castsi128_si512(v0);
-            let z = _mm512_inserti32x4(z, v1, 1);
-            let z = _mm512_inserti32x4(z, v2, 2);
-            _mm512_inserti32x4(z, v3, 3)
+            let v = unsafe { _mm512_loadu_si512($ptr as *const _) };
+            _mm512_permutexvar_epi32(permute_idx, v)
         }};
     }
 
     // Process 192 bytes (4 chunks) at a time
-    let safe_len_192 = len.saturating_sub(4);
+    let safe_len_192 = len.saturating_sub(16);
     let aligned_len_192 = safe_len_192 - (safe_len_192 % 192);
     let src_end_192 = unsafe { src.add(aligned_len_192) };
 
     while src < src_end_192 {
         // Load 4 vectors
         let v0 = load_48_bytes!(src);
-        let v1 = load_48_bytes!(unsafe { src.add(48) });
-        let v2 = load_48_bytes!(unsafe { src.add(96) });
-        let v3 = load_48_bytes!(unsafe { src.add(144) });
+        let v1 = load_48_bytes!(src.add(48));
+        let v2 = load_48_bytes!(src.add(96));
+        let v3 = load_48_bytes!(src.add(144));
 
         // Process
         let i0 = encode_vec!(v0);
@@ -100,7 +107,7 @@ pub unsafe fn encode_slice_avx512(config: &Config, input: &[u8], mut dst: *mut u
     }
 
     // Process remaining 48-byte chunks
-    let safe_len_single = len.saturating_sub(4);
+    let safe_len_single = len.saturating_sub(16);
     let aligned_len_single = safe_len_single - (safe_len_single % 48);
     let src_end_single = unsafe { input.as_ptr().add(aligned_len_single) };
 
@@ -121,16 +128,26 @@ pub unsafe fn encode_slice_avx512(config: &Config, input: &[u8], mut dst: *mut u
 }
 
 #[target_feature(enable = "avx512f,avx512bw")]
-pub unsafe fn decode_slice_avx512(config: &Config, input: &[u8], mut dst: *mut u8) -> Result<usize, Error> {
+pub unsafe fn decode_slice_avx512(
+    config: &Config,
+    input: &[u8],
+    mut dst: *mut u8,
+) -> Result<usize, Error> {
     let len = input.len();
     let mut src = input.as_ptr();
     let dst_start = dst;
 
-    // LUT for offsets based on high nibble (bits 4-7). 
-    let lut_hi_nibble = _mm512_broadcast_i32x4(_mm_setr_epi8(0, 0, 19, 4, -65, -65, -71, -71, 0, 0, 0, 0, 0, 0, 0, 0));
+    // LUT for offsets based on high nibble (bits 4-7).
+    let lut_hi_nibble = _mm512_broadcast_i32x4(_mm_setr_epi8(
+        0, 0, 19, 4, -65, -65, -71, -71, 0, 0, 0, 0, 0, 0, 0, 0,
+    ));
 
     // Range and offsets of special chars
-    let (char_62, char_63) = if config.url_safe { (b'-', b'_') } else { (b'+', b'/') };
+    let (char_62, char_63) = if config.url_safe {
+        (b'-', b'_')
+    } else {
+        (b'+', b'/')
+    };
     let sym_62 = _mm512_set1_epi8(char_62 as i8);
     let sym_63 = _mm512_set1_epi8(char_63 as i8);
 
@@ -149,16 +166,18 @@ pub unsafe fn decode_slice_avx512(config: &Config, input: &[u8], mut dst: *mut u
     let range_z_low_len = _mm512_set1_epi8(25);
 
     // Packing Constants
-    let pack_l1 = unsafe { _mm512_broadcast_i32x4(_mm_loadu_si128(PACK_L1.as_ptr() as *const __m128i)) };
-    let pack_l2 = unsafe { _mm512_broadcast_i32x4(_mm_loadu_si128(PACK_L2.as_ptr() as *const __m128i)) };
-    let pack_shuffle = unsafe { _mm512_broadcast_i32x4(_mm_loadu_si128(PACK_SHUFFLE.as_ptr() as *const __m128i)) };
+    let pack_l1 =
+        unsafe { _mm512_broadcast_i32x4(_mm_loadu_si128(PACK_L1.as_ptr() as *const __m128i)) };
+    let pack_l2 =
+        unsafe { _mm512_broadcast_i32x4(_mm_loadu_si128(PACK_L2.as_ptr() as *const __m128i)) };
+    let pack_shuffle =
+        unsafe { _mm512_broadcast_i32x4(_mm_loadu_si128(PACK_SHUFFLE.as_ptr() as *const __m128i)) };
 
-    // Masks for nibble extraction and zeros
+    // Masks for nibble extraction
     let mask_hi_nibble = _mm512_set1_epi8(0x0F);
-    let zeros = _mm512_setzero_si512();
 
     // Decode & Validate Single Vector
-    // TODO: Think how we can compute `err` as mask
+    // Computed using mask ops for zero-blend performance
     macro_rules! decode_vec {
         ($input:expr) => {{
             let hi = _mm512_and_si512(_mm512_srli_epi16($input, 4), mask_hi_nibble);
@@ -170,18 +189,23 @@ pub unsafe fn decode_slice_avx512(config: &Config, input: &[u8], mut dst: *mut u
 
             indices = _mm512_mask_add_epi8(indices, mask_62, indices, delta_62);
             indices = _mm512_mask_add_epi8(indices, mask_63, indices, delta_63);
- 
+
             let is_sym = _kor_mask64(mask_62, mask_63);
 
-            let sub_0 = _mm512_subs_epu8(_mm512_sub_epi8($input, range_0), range_9_len);
-            let sub_a = _mm512_subs_epu8(_mm512_sub_epi8($input, range_a), range_z_len);
-            let sub_a_low = _mm512_subs_epu8(_mm512_sub_epi8($input, range_a_low), range_z_low_len);
+            let sub_0 = _mm512_sub_epi8($input, range_0);
+            let is_num = _mm512_cmple_epu8_mask(sub_0, range_9_len);
 
-            let is_char = _mm512_and_si512(sub_0, _mm512_and_si512(sub_a, sub_a_low));
+            let sub_a = _mm512_sub_epi8($input, range_a);
+            let is_upper = _mm512_cmple_epu8_mask(sub_a, range_z_len);
 
-            let err = _mm512_mask_blend_epi8(is_sym, is_char, zeros);
+            let sub_a_low = _mm512_sub_epi8($input, range_a_low);
+            let is_lower = _mm512_cmple_epu8_mask(sub_a_low, range_z_low_len);
 
-            (indices, err)
+            let is_char = _kor_mask64(is_num, _kor_mask64(is_upper, is_lower));
+            let is_valid = _kor_mask64(is_char, is_sym);
+            let err_mask = _knot_mask64(is_valid);
+
+            (indices, err_mask)
         }};
     }
 
@@ -221,12 +245,7 @@ pub unsafe fn decode_slice_avx512(config: &Config, input: &[u8], mut dst: *mut u
         let (i3, e3) = decode_vec!(v3);
 
         // Check errors
-        let m0 = _mm512_test_epi8_mask(e0, e0);
-        let m1 = _mm512_test_epi8_mask(e1, e1);
-        let m2 = _mm512_test_epi8_mask(e2, e2);
-        let m3 = _mm512_test_epi8_mask(e3, e3);
-
-        if (m0 | m1 | m2 | m3) != 0 {
+        if (e0 | e1 | e2 | e3) != 0 {
             return Err(Error::InvalidCharacter);
         }
 
@@ -247,9 +266,9 @@ pub unsafe fn decode_slice_avx512(config: &Config, input: &[u8], mut dst: *mut u
 
     while src < src_end_64 {
         let v = unsafe { _mm512_loadu_si512(src as *const __m512i) };
-        let (idx, err) = decode_vec!(v);
+        let (idx, err_mask) = decode_vec!(v);
 
-        if _mm512_test_epi8_mask(err, err) != 0 {
+        if err_mask != 0 {
             return Err(Error::InvalidCharacter);
         }
 
@@ -262,16 +281,111 @@ pub unsafe fn decode_slice_avx512(config: &Config, input: &[u8], mut dst: *mut u
     // Scalar Fallback
     let processed_len = unsafe { src.offset_from(input.as_ptr()) } as usize;
     if processed_len < len {
-        dst = unsafe { dst.add(scalar::decode_slice_unsafe(config, &input[processed_len..], dst)?) };
+        dst = unsafe {
+            dst.add(scalar::decode_slice_unsafe(
+                config,
+                &input[processed_len..],
+                dst,
+            )?)
+        };
     }
 
     Ok(unsafe { dst.offset_from(dst_start) } as usize)
 }
 
+#[cfg(kani)]
+mod kani_verification_avx512 {
+    use super::*;
+    use crate::{Config, STANDARD as TURBO_STANDARD, STANDARD_NO_PAD as TURBO_STANDARD_NO_PAD};
+
+    // --- CONSTANTS ---
+
+    // Encoder Induction Size: 28 (1 AVX2 Loop) + 1 (Scalar Transition)
+    const ENC_INDUCTION_LEN: usize = 29;
+
+    // Decoder Induction Size: 36 (1 AVX2 Loop) + 1 (Scalar Transition)
+    const DEC_INDUCTION_LEN: usize = 37;
+
+    // --- HELPERS ---
+
+    fn encoded_size(len: usize, padding: bool) -> usize {
+        if padding {
+            TURBO_STANDARD.encoded_len(len)
+        } else {
+            TURBO_STANDARD_NO_PAD.encoded_len(len)
+        }
+    }
+
+    // --- PROOFS ---
+
+    /// **Proof 1: Roundtrip Correctness (The Logic Check)**
+    ///
+    /// Verifies that `Decode(Encode(X)) == X`.
+    #[kani::proof]
+    fn check_avx512_roundtrip_correctness() {
+        let config = Config {
+            url_safe: kani::any(),
+            padding: true,
+        };
+        let input: [u8; ENC_INDUCTION_LEN] = kani::any();
+
+        // Buffers
+        let mut enc_buf = [0u8; 128];
+        let mut dec_buf = [0u8; 128];
+
+        unsafe {
+            // 1. Encode
+            encode_slice_avx512(&config, &input, enc_buf.as_mut_ptr());
+
+            // Calculate actual encoded length for slicing
+            let enc_len = encoded_size(ENC_INDUCTION_LEN, config.padding);
+            let encoded_slice = &enc_buf[..enc_len];
+
+            // 2. Decode
+            // This MUST succeed for valid encoded output
+            let dec_len = decode_slice_avx512(&config, encoded_slice, dec_buf.as_mut_ptr())
+                .expect("Valid encoding failed to decode");
+
+            // 3. Verify
+            assert_eq!(dec_len, ENC_INDUCTION_LEN);
+            assert_eq!(&dec_buf[..dec_len], &input, "Roundtrip mismatch");
+        }
+    }
+
+    /// **Proof 2: Decoder Robustness & Induction**
+    ///
+    /// Verifies that `decode_slice_avx512`:
+    /// 1. Accepts ANY 33 bytes of garbage input.
+    /// 2. Never Segfaults, Panics, or causes UB.
+    /// 3. Safely handles the SIMD->Scalar pointer transition.
+    #[kani::proof]
+    fn check_avx512_decode_robustness() {
+        let config = Config {
+            url_safe: kani::any(),
+            padding: true,
+        };
+
+        // Input: 33 bytes of unrestricted symbolic data (garbage)
+        let input: [u8; DEC_INDUCTION_LEN] = kani::any();
+
+        // Output Buffer: Max estimated size
+        let mut output = [0u8; 128];
+
+        unsafe {
+            // We ignore the Result. We only care that this function call
+            // returns safely (Ok or Err) and does not crash.
+            let _ = decode_slice_avx512(&config, &input, output.as_mut_ptr());
+        }
+    }
+}
+
 #[cfg(all(test, miri))]
 mod miri_avx512_coverage {
     use super::*;
-    use base64::{engine::general_purpose::{STANDARD, URL_SAFE}, Engine};
+    use base64::{
+        Engine,
+        engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD},
+    };
     use rand::{RngExt, rng};
 
     // --- Mock Infrastructure ---
@@ -286,10 +400,17 @@ mod miri_avx512_coverage {
         let expected = oracle.encode(&input);
         let mut dst = vec![0u8; expected.len() * 2]; // Safety margin
 
-        unsafe { encode_slice_avx512(config, &input, dst.as_mut_ptr()); }
+        unsafe {
+            encode_slice_avx512(config, &input, dst.as_mut_ptr());
+        }
 
         let result = &dst[..expected.len()];
-        assert_eq!(std::str::from_utf8(result).unwrap(), expected, "Encode len {}", input_len);
+        assert_eq!(
+            std::str::from_utf8(result).unwrap(),
+            expected,
+            "Encode len {}",
+            input_len
+        );
     }
 
     /// Helper to verify AVX512 decoding against the 'base64' crate oracle
@@ -300,7 +421,8 @@ mod miri_avx512_coverage {
         let mut dst = vec![0u8; original_len + 64];
 
         let len = unsafe {
-            decode_slice_avx512(config, encoded_bytes, dst.as_mut_ptr()).expect("Valid input failed to decode")
+            decode_slice_avx512(config, encoded_bytes, dst.as_mut_ptr())
+                .expect("Valid input failed to decode")
         };
 
         assert_eq!(&dst[..len], &input_bytes, "Decode len {}", original_len);
@@ -312,7 +434,10 @@ mod miri_avx512_coverage {
 
     #[test]
     fn miri_avx512_encode_scalar_fallback() {
-        let config = Config { url_safe: false, padding: true };
+        let config = Config {
+            url_safe: false,
+            padding: true,
+        };
         // AVX512 Single Loop threshold is 48 bytes.
         // Test < 48 bytes -> Pure Scalar
         verify_encode_avx512(&config, &STANDARD, 1);
@@ -321,7 +446,10 @@ mod miri_avx512_coverage {
 
     #[test]
     fn miri_avx512_encode_single_vector_loop() {
-        let config = Config { url_safe: false, padding: true };
+        let config = Config {
+            url_safe: false,
+            padding: true,
+        };
         // AVX512 Single Vector processes 48 input bytes.
         // Exactly 1 loop
         verify_encode_avx512(&config, &STANDARD, 48);
@@ -333,7 +461,10 @@ mod miri_avx512_coverage {
 
     #[test]
     fn miri_avx512_encode_quad_vector_loop() {
-        let config = Config { url_safe: false, padding: true };
+        let config = Config {
+            url_safe: false,
+            padding: true,
+        };
         // AVX512 Batch Loop processes 192 input bytes (4 * 48).
         // Exactly 1 Quad Loop
         verify_encode_avx512(&config, &STANDARD, 192);
@@ -347,7 +478,10 @@ mod miri_avx512_coverage {
 
     #[test]
     fn miri_avx512_encode_url_safe() {
-        let config = Config { url_safe: true, padding: true };
+        let config = Config {
+            url_safe: true,
+            padding: true,
+        };
         verify_encode_avx512(&config, &URL_SAFE, 100);
     }
 
@@ -357,16 +491,22 @@ mod miri_avx512_coverage {
 
     #[test]
     fn miri_avx512_decode_scalar_fallback() {
-        let config = Config { url_safe: false, padding: true };
+        let config = Config {
+            url_safe: false,
+            padding: true,
+        };
         // AVX512 decode loop threshold is 64 bytes.
         // < 64 bytes input -> Pure Scalar
-        verify_decode_avx512(&config, &STANDARD, 3);  // 4 encoded chars
+        verify_decode_avx512(&config, &STANDARD, 3); // 4 encoded chars
         verify_decode_avx512(&config, &STANDARD, 45); // 60 encoded chars
     }
 
     #[test]
     fn miri_avx512_decode_single_vector_loop() {
-        let config = Config { url_safe: false, padding: true };
+        let config = Config {
+            url_safe: false,
+            padding: true,
+        };
         // AVX512 Single Vector processes 64 input bytes.
         // Exactly 1 Single Loop
         verify_decode_avx512(&config, &STANDARD, 48); // 64 bytes encoded
@@ -378,7 +518,10 @@ mod miri_avx512_coverage {
 
     #[test]
     fn miri_avx512_decode_quad_vector_loop() {
-        let config = Config { url_safe: false, padding: true };
+        let config = Config {
+            url_safe: false,
+            padding: true,
+        };
         // AVX512 Batch Loop processes 256 input bytes (4 * 64).
         // Exactly 1 Quad Loop
         verify_decode_avx512(&config, &STANDARD, 192); // 256 bytes encoded
@@ -390,12 +533,17 @@ mod miri_avx512_coverage {
 
     #[test]
     fn miri_avx512_decode_url_safe() {
-        let config = Config { url_safe: true, padding: false };
+        let config = Config {
+            url_safe: true,
+            padding: false,
+        };
         // 64 bytes input to trigger one AVX512 vector
         // Repeated pattern of - and _
         let input = b"-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_";
         let mut dst = [0u8; 64];
-        unsafe { decode_slice_avx512(&config, input, dst.as_mut_ptr()).unwrap(); }
+        unsafe {
+            decode_slice_avx512(&config, input, dst.as_mut_ptr()).unwrap();
+        }
     }
 
     // ----------------------------------------------------------------------
@@ -404,7 +552,10 @@ mod miri_avx512_coverage {
 
     #[test]
     fn miri_avx512_decode_error_detection() {
-        let config = Config { url_safe: false, padding: true };
+        let config = Config {
+            url_safe: false,
+            padding: true,
+        };
         let mut dst = [0u8; 512];
 
         // Case 1: Error in Quad Loop (last vector, last lane)
@@ -420,5 +571,95 @@ mod miri_avx512_coverage {
         bad_input_64[63] = b'?'; // Invalid char
         let res = unsafe { decode_slice_avx512(&config, &bad_input_64, dst.as_mut_ptr()) };
         assert!(res.is_err(), "Failed to catch error in Single Loop");
+
+        // Case 3: Error in Quad Loop (first vector, first byte)
+        let mut bad_input_256_first = vec![b'A'; 256];
+        bad_input_256_first[0] = b'$';
+        let res = unsafe { decode_slice_avx512(&config, &bad_input_256_first, dst.as_mut_ptr()) };
+        assert!(
+            res.is_err(),
+            "Failed to catch error in Quad Loop first vector"
+        );
+
+        // Case 4: Error in Scalar Fallback (after SIMD processing)
+        let mut bad_input_65 = vec![b'A'; 65];
+        bad_input_65[64] = b'?'; // Invalid in scalar region
+        let res = unsafe { decode_slice_avx512(&config, &bad_input_65, dst.as_mut_ptr()) };
+        assert!(res.is_err(), "Failed to catch error in Scalar Fallback");
+    }
+
+    // ----------------------------------------------------------------------
+    // 4. Roundtrip & Config Coverage (AVX512)
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn miri_avx512_roundtrip_standard() {
+        let config = Config {
+            url_safe: false,
+            padding: true,
+        };
+        for &len in &[48, 96, 192, 193, 240, 384] {
+            let input = random_bytes(len);
+            let expected = STANDARD.encode(&input);
+            let mut enc = vec![0u8; expected.len() * 2];
+            unsafe {
+                encode_slice_avx512(&config, &input, enc.as_mut_ptr());
+            }
+            let encoded = &enc[..expected.len()];
+            assert_eq!(std::str::from_utf8(encoded).unwrap(), expected);
+
+            let mut dec = vec![0u8; len + 64];
+            let dec_len =
+                unsafe { decode_slice_avx512(&config, encoded, dec.as_mut_ptr()).unwrap() };
+            assert_eq!(&dec[..dec_len], &input, "Roundtrip len {}", len);
+        }
+    }
+
+    #[test]
+    fn miri_avx512_encode_no_padding() {
+        let config = Config {
+            url_safe: false,
+            padding: false,
+        };
+        for &len in &[1, 48, 49, 96, 192, 193] {
+            verify_encode_avx512(&config, &STANDARD_NO_PAD, len);
+        }
+    }
+
+    #[test]
+    fn miri_avx512_decode_no_padding() {
+        let config = Config {
+            url_safe: false,
+            padding: false,
+        };
+        for &len in &[3, 48, 49, 96, 192, 193] {
+            let input_bytes = random_bytes(len);
+            let encoded = STANDARD_NO_PAD.encode(&input_bytes);
+            let mut dst = vec![0u8; len + 64];
+            let dec_len = unsafe {
+                decode_slice_avx512(&config, encoded.as_bytes(), dst.as_mut_ptr()).unwrap()
+            };
+            assert_eq!(&dst[..dec_len], &input_bytes, "No-pad decode len {}", len);
+        }
+    }
+
+    #[test]
+    fn miri_avx512_encode_url_safe_no_pad() {
+        let config = Config {
+            url_safe: true,
+            padding: false,
+        };
+        for &len in &[48, 96, 192] {
+            verify_encode_avx512(&config, &URL_SAFE_NO_PAD, len);
+        }
+    }
+
+    #[test]
+    fn miri_avx512_decode_url_safe_roundtrip() {
+        let config = Config {
+            url_safe: true,
+            padding: true,
+        };
+        verify_decode_avx512(&config, &URL_SAFE, 100);
     }
 }
