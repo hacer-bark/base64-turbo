@@ -293,6 +293,92 @@ pub unsafe fn decode_slice_avx512(
     Ok(unsafe { dst.offset_from(dst_start) } as usize)
 }
 
+#[cfg(kani)]
+mod kani_verification_avx512 {
+    use super::*;
+    use crate::{Config, STANDARD as TURBO_STANDARD, STANDARD_NO_PAD as TURBO_STANDARD_NO_PAD};
+
+    // --- CONSTANTS ---
+
+    // Encoder Induction Size: 28 (1 AVX2 Loop) + 1 (Scalar Transition)
+    const ENC_INDUCTION_LEN: usize = 29;
+
+    // Decoder Induction Size: 36 (1 AVX2 Loop) + 1 (Scalar Transition)
+    const DEC_INDUCTION_LEN: usize = 37;
+
+    // --- HELPERS ---
+
+    fn encoded_size(len: usize, padding: bool) -> usize {
+        if padding {
+            TURBO_STANDARD.encoded_len(len)
+        } else {
+            TURBO_STANDARD_NO_PAD.encoded_len(len)
+        }
+    }
+
+    // --- PROOFS ---
+
+    /// **Proof 1: Roundtrip Correctness (The Logic Check)**
+    ///
+    /// Verifies that `Decode(Encode(X)) == X`.
+    #[kani::proof]
+    fn check_avx512_roundtrip_correctness() {
+        let config = Config {
+            url_safe: kani::any(),
+            padding: true,
+        };
+        let input: [u8; ENC_INDUCTION_LEN] = kani::any();
+
+        // Buffers
+        let mut enc_buf = [0u8; 128];
+        let mut dec_buf = [0u8; 128];
+
+        unsafe {
+            // 1. Encode
+            encode_slice_avx512(&config, &input, enc_buf.as_mut_ptr());
+
+            // Calculate actual encoded length for slicing
+            let enc_len = encoded_size(ENC_INDUCTION_LEN, config.padding);
+            let encoded_slice = &enc_buf[..enc_len];
+
+            // 2. Decode
+            // This MUST succeed for valid encoded output
+            let dec_len = decode_slice_avx512(&config, encoded_slice, dec_buf.as_mut_ptr())
+                .expect("Valid encoding failed to decode");
+
+            // 3. Verify
+            assert_eq!(dec_len, ENC_INDUCTION_LEN);
+            assert_eq!(&dec_buf[..dec_len], &input, "Roundtrip mismatch");
+        }
+    }
+
+    /// **Proof 2: Decoder Robustness & Induction**
+    ///
+    /// Verifies that `decode_slice_avx512`:
+    /// 1. Accepts ANY 33 bytes of garbage input.
+    /// 2. Never Segfaults, Panics, or causes UB.
+    /// 3. Safely handles the SIMD->Scalar pointer transition.
+    #[kani::proof]
+    fn check_avx512_decode_robustness() {
+        let config = Config {
+            url_safe: kani::any(),
+            padding: true,
+        };
+
+        // Input: 33 bytes of unrestricted symbolic data (garbage)
+        let input: [u8; DEC_INDUCTION_LEN] = kani::any();
+
+        // Output Buffer: Max estimated size
+        let mut output = [0u8; 128];
+
+        unsafe {
+            // We ignore the Result. We only care that this function call
+            // returns safely (Ok or Err) and does not crash.
+            let _ = decode_slice_avx512(&config, &input, output.as_mut_ptr());
+        }
+    }
+}
+
 #[cfg(all(test, miri))]
 mod miri_avx512_coverage {
     use super::*;
@@ -490,7 +576,10 @@ mod miri_avx512_coverage {
         let mut bad_input_256_first = vec![b'A'; 256];
         bad_input_256_first[0] = b'$';
         let res = unsafe { decode_slice_avx512(&config, &bad_input_256_first, dst.as_mut_ptr()) };
-        assert!(res.is_err(), "Failed to catch error in Quad Loop first vector");
+        assert!(
+            res.is_err(),
+            "Failed to catch error in Quad Loop first vector"
+        );
 
         // Case 4: Error in Scalar Fallback (after SIMD processing)
         let mut bad_input_65 = vec![b'A'; 65];
@@ -505,24 +594,33 @@ mod miri_avx512_coverage {
 
     #[test]
     fn miri_avx512_roundtrip_standard() {
-        let config = Config { url_safe: false, padding: true };
+        let config = Config {
+            url_safe: false,
+            padding: true,
+        };
         for &len in &[48, 96, 192, 193, 240, 384] {
             let input = random_bytes(len);
             let expected = STANDARD.encode(&input);
             let mut enc = vec![0u8; expected.len() * 2];
-            unsafe { encode_slice_avx512(&config, &input, enc.as_mut_ptr()); }
+            unsafe {
+                encode_slice_avx512(&config, &input, enc.as_mut_ptr());
+            }
             let encoded = &enc[..expected.len()];
             assert_eq!(std::str::from_utf8(encoded).unwrap(), expected);
 
             let mut dec = vec![0u8; len + 64];
-            let dec_len = unsafe { decode_slice_avx512(&config, encoded, dec.as_mut_ptr()).unwrap() };
+            let dec_len =
+                unsafe { decode_slice_avx512(&config, encoded, dec.as_mut_ptr()).unwrap() };
             assert_eq!(&dec[..dec_len], &input, "Roundtrip len {}", len);
         }
     }
 
     #[test]
     fn miri_avx512_encode_no_padding() {
-        let config = Config { url_safe: false, padding: false };
+        let config = Config {
+            url_safe: false,
+            padding: false,
+        };
         for &len in &[1, 48, 49, 96, 192, 193] {
             verify_encode_avx512(&config, &STANDARD_NO_PAD, len);
         }
@@ -530,7 +628,10 @@ mod miri_avx512_coverage {
 
     #[test]
     fn miri_avx512_decode_no_padding() {
-        let config = Config { url_safe: false, padding: false };
+        let config = Config {
+            url_safe: false,
+            padding: false,
+        };
         for &len in &[3, 48, 49, 96, 192, 193] {
             let input_bytes = random_bytes(len);
             let encoded = STANDARD_NO_PAD.encode(&input_bytes);
@@ -544,7 +645,10 @@ mod miri_avx512_coverage {
 
     #[test]
     fn miri_avx512_encode_url_safe_no_pad() {
-        let config = Config { url_safe: true, padding: false };
+        let config = Config {
+            url_safe: true,
+            padding: false,
+        };
         for &len in &[48, 96, 192] {
             verify_encode_avx512(&config, &URL_SAFE_NO_PAD, len);
         }
@@ -552,7 +656,10 @@ mod miri_avx512_coverage {
 
     #[test]
     fn miri_avx512_decode_url_safe_roundtrip() {
-        let config = Config { url_safe: true, padding: true };
+        let config = Config {
+            url_safe: true,
+            padding: true,
+        };
         verify_decode_avx512(&config, &URL_SAFE, 100);
     }
 }

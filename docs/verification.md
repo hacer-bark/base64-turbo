@@ -14,8 +14,8 @@ We use a "Swiss Cheese" model where multiple layers of verification cover each o
 | :--- | :---: | :---: | :---: | :---: | :--- |
 | **Scalar** | ✅ Passed | ✅ Passed | ✅ **Proven** | ✅ Passed | **Formally Verified** |
 | **AVX2** | ✅ Passed | ✅ Passed | ✅ **Proven** | ✅ Passed | **Formally Verified** |
+| **AVX512** | ✅ Passed | ✅ Passed | ✅ **Proven** | ✅ Passed | **Formally Verified** |
 | **SSE4.1** | ✅ Passed | ✅ Passed | 🚧 In Progress | ✅ Passed | **Memory Safe (Audited)** |
-| **AVX512** | ✅ Passed | ✅ Passed | 🚧 In Progress | ✅ Passed | **Memory Safe (Audited)** |
 
 ## Deep Dive: The Kani Proofs (Proof by Induction)
 

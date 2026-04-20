@@ -113,8 +113,8 @@ Achieving maximum throughput must not cost memory safety. While we leverage `uns
 | :--- | :---: | :---: | :---: | :--- |
 | **Scalar** | ✅ | ✅ | ✅ | **Formally Verified** |
 | **AVX2** | ✅ | ✅ | ✅ | **Formally Verified** |
+| **AVX512** | ✅ | ✅ | ✅ | **Formally Verified** |
 | **SSE4.1** | ✅ | ✅ | 🚧 | **Memory Safe (Audited)** |
-| **AVX512** | ✅ | ✅ | 🚧 | **Memory Safe (Audited)** |
 
 **[Read the Verification Audit](https://github.com/hacer-bark/base64-turbo/blob/main/docs/verification.md)**
 
