@@ -14,7 +14,7 @@ Traditional Base64 implementations iterate byte-by-byte using lookup tables. Thi
 
 ## 1. Scalar Implementation (SWAR)
 
-For architectures without supported SIMD (e.g., ARM NEON, older x86), we utilize a **SWAR (SIMD Within A Register)** approach.
+For architectures without supported SIMD (e.g., ARM, older x86), we utilize a **SWAR (SIMD Within A Register)** approach.
 
 *   **Wide Loads:** Instead of processing `u8`, we cast pointers to `u64`. This allows us to move 8 bytes of data with a single instruction.
 *   **Bitwise Logic:** We construct the Base64 indices using bitwise shifts (`<<`, `>>`) and masks (`&`) on 64-bit integers, rather than individual byte lookups.
@@ -54,8 +54,7 @@ To ensure portability, the library compiles multiple execution paths into a sing
 **Priority Order:**
 1.  **AVX512** (Detected & Verified Safe)
 2.  **AVX2**
-3.  **SSE4.1**
-4.  **Scalar** (Fallback)
+3.  **Scalar** (Fallback)
 
 > **Note:** This detection prevents `SIGILL` (Illegal Instruction) errors. An ARM CPU or older Intel CPU will simply take the Scalar path.
 

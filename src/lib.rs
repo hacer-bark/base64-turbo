@@ -9,7 +9,7 @@
 //!
 //! `base64-turbo` is a production-grade library engineered for high-throughput systems where CPU cycles are scarce and Undefined Behavior (UB) is unacceptable.
 //!
-//! This crate provides runtime CPU detection to utilize **AVX512**, **AVX2**, or **SSE4.1** intrinsics.
+//! This crate provides runtime CPU detection to utilize **AVX512** or **AVX2** intrinsics.
 //! It includes a highly optimized scalar fallback for non-SIMD targets and supports `no_std` environments.
 //!
 //! ## Usage
@@ -66,7 +66,7 @@
 //! | Feature | Default | Description |
 //! |---------|---------|-------------|
 //! | **`std`** | **Yes** | Enables `String` and `Vec` support. Disable this for `no_std` environments. |
-//! | **`simd`** | **Yes** | Enables runtime detection for **AVX512**, **AVX2**, and **SSE4.1** intrinsics. If disabled or unsupported by hardware, the crate falls back to scalar logic automatically. |
+//! | **`simd`** | **Yes** | Enables runtime detection for **AVX512** and **AVX2** intrinsics. If disabled or unsupported by hardware, the crate falls back to scalar logic automatically. |
 //! | **`unstable`** | **No** | Enables access to the raw, unsafe internal functions (e.g. `encode_avx2`). |
 //!
 //! ## Safety & Verification
@@ -75,7 +75,7 @@
 //! To ensure safety, we employ a "Swiss Cheese" model of verification layers:
 //!
 //! *   **Formal Verification (Kani):** Mathematical proofs ensure the kernels never read out of bounds or panic on any input (0..∞ bytes).
-//! *   **MIRI Audited:** All SIMD paths (AVX512, AVX2, SSE4.1) and Scalar fallbacks are verified with **MIRI** (Undefined Behavior checker) in CI to ensure strict memory safety.
+//! *   **MIRI Audited:** All SIMD paths (AVX512, AVX2) and Scalar fallbacks are verified with **MIRI** (Undefined Behavior checker) in CI to ensure strict memory safety.
 //! *   **MemorySanitizer:** The codebase is audited with MSan to prevent logic errors derived from reading uninitialized memory.
 //! *   **Fuzzing:** The codebase is fuzz-tested via `cargo-fuzz` (2.5B+ iterations).
 //!
@@ -528,14 +528,6 @@ impl Engine {
                 }
                 return;
             }
-
-            // Smart degrade: If len < 16, skip SSE4.1 and go straight to scalar.
-            if len >= 16 && std::is_x86_feature_detected!("sse4.1") {
-                unsafe {
-                    simd::encode_slice_simd(&self.config, input, dst);
-                }
-                return;
-            }
         }
 
         // Fallback: Scalar / Non-x86 / Short inputs
@@ -567,11 +559,6 @@ impl Engine {
             // Smart degrade: Fallback to AVX2 if len is between 32 and 64, or if AVX512 is missing.
             if len >= 32 && std::is_x86_feature_detected!("avx2") {
                 return unsafe { simd::decode_slice_avx2(&self.config, input, dst) };
-            }
-
-            // Smart degrade: Fallback to SSE4.1 if len is between 16 and 32.
-            if len >= 16 && std::is_x86_feature_detected!("sse4.1") {
-                return unsafe { simd::decode_slice_simd(&self.config, input, dst) };
             }
         }
 
@@ -647,70 +634,6 @@ impl Engine {
     pub unsafe fn decode_avx2(&self, input: &[u8], dst: &mut [u8]) -> Result<usize, Error> {
         // Safety: Caller must uphold the contracts documented on this function.
         unsafe { simd::decode_slice_avx2(&self.config, input, dst.as_mut_ptr()) }
-    }
-
-    /// Encodes a byte slice into Base64 using a highly optimized SSE4.1 SIMD implementation.
-    ///
-    /// This provides raw access to the direct SSE4.1 encoding logic.
-    ///
-    /// # Safety
-    ///
-    /// This function is **unsafe** and requires the caller to uphold strict memory contracts.
-    /// Failure to do so will result in **undefined behavior** (e.g., buffer overflow).
-    ///
-    /// - The destination pointer `dst` must be valid and point to a mutable memory region with
-    ///   sufficient capacity. The required size depends on `config.padding`:
-    ///   - With padding: `input.len().div_ceil(3) * 4`
-    ///   - Without padding: `(input.len() * 4).div_ceil(3)`
-    ///   - Highly recommended: use `Engine::encoded_len` to compute length.
-    ///
-    /// - The caller **must** ensure the target CPU supports SSE4.1 instructions at runtime.
-    ///   Executing this function on a CPU without SSE4.1 support will cause crashes or incorrect
-    ///   behavior.
-    ///
-    /// # Warning
-    ///
-    /// This is a low-level, unsafe primitive. Misuse can lead to undefined behavior regardless
-    /// of other crate guarantees. For better memory safety, use the safe higher-level APIs
-    /// (e.g., `Engine::encode`).
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    #[cfg(feature = "simd")]
-    #[cfg(feature = "unstable")]
-    pub unsafe fn encode_sse4(&self, input: &[u8], dst: &mut [u8]) {
-        // Safety: Caller must uphold the contracts documented on this function.
-        unsafe { simd::encode_slice_simd(&self.config, input, dst.as_mut_ptr()) }
-    }
-
-    /// Decodes a Base64 byte slice using a highly optimized SSE4.1 SIMD implementation.
-    ///
-    /// This provides raw access to the direct SSE4.1 decoding logic.
-    ///
-    /// # Safety
-    ///
-    /// This function is **unsafe** and requires the caller to uphold strict memory contracts.
-    /// Failure to do so will result in **undefined behavior** (e.g., buffer overflow).
-    ///
-    /// - The destination pointer `dst` must be valid and point to a mutable memory region with
-    ///   at least `(input.len() / 4 + 1) * 3` bytes of capacity. The extra space is required due
-    ///   to the implementation performing overlapping writes.
-    ///
-    /// - Highly recommended: use `Engine::estimate_decoded_len` to compute length.
-    ///
-    /// - The caller **must** ensure the target CPU supports SSE4.1 instructions at runtime.
-    ///   Executing this function on a CPU without SSE4.1 support may cause crashes or incorrect
-    ///   behavior.
-    ///
-    /// # Warning
-    ///
-    /// This is a low-level, unsafe primitive. Misuse can lead to undefined behavior regardless
-    /// of other crate guarantees. For better memory safety, use the safe higher-level APIs
-    /// (e.g., `Engine::decode`).
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    #[cfg(feature = "simd")]
-    #[cfg(feature = "unstable")]
-    pub unsafe fn decode_sse4(&self, input: &[u8], dst: &mut [u8]) -> Result<usize, Error> {
-        // Safety: Caller must uphold the contracts documented on this function.
-        unsafe { simd::decode_slice_simd(&self.config, input, dst.as_mut_ptr()) }
     }
 
     /// Encodes a byte slice into Base64 using a highly optimized scalar (non-SIMD) algorithm.

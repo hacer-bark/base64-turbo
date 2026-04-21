@@ -390,7 +390,7 @@ fn test_all_byte_values() {
 fn test_simd_threshold_boundaries() {
     // These sizes are chosen to hit exact SIMD loop boundaries
     let boundary_sizes = [
-        // SSE4.1 boundaries (16-byte vectors, 12-byte chunks)
+        // SIMD boundaries (alignment, chunks)
         11, 12, 13, 15, 16, 17, 23, 24, 25,
         // AVX2 boundaries (32-byte vectors, 24-byte chunks)
         47, 48, 49, 71, 72, 73, 95, 96, 97,
@@ -427,22 +427,6 @@ fn test_unstable_apis() {
         let mut dec = vec![0u8; STANDARD.estimate_decoded_len(dst.len())];
         let len = STANDARD.decode_scalar(&dst, &mut dec).unwrap();
         assert_eq!(&dec[..len], &input, "Scalar Unsafe Decode");
-    }
-
-    // --- SSE4.1 ---
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if std::is_x86_feature_detected!("sse4.1") {
-        unsafe {
-            let mut dst = vec![0u8; STANDARD.encoded_len(input.len())];
-            STANDARD.encode_sse4(&input, &mut dst);
-            assert_eq!(&dst, expected.as_bytes(), "SSE4.1 Unsafe Encode");
-
-            let mut dec = vec![0u8; STANDARD.estimate_decoded_len(dst.len())];
-            let len = STANDARD.decode_sse4(&dst, &mut dec).unwrap();
-            assert_eq!(&dec[..len], &input, "SSE4.1 Unsafe Decode");
-        }
-    } else {
-        println!("Skipping SSE4.1 Unstable test (hardware unsupported)");
     }
 
     // --- AVX2 ---

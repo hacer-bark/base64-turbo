@@ -6,6 +6,47 @@ use std::arch::x86::*;
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::*;
 
+// ======================================================================
+// AVX-512 VBMI Lookup Tables (compile-time)
+// ======================================================================
+
+/// Standard Base64 alphabet for VBMI `vpermb` encoder lookup.
+const VBMI_ENCODE_STANDARD: [u8; 64] =
+    *b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/// URL-safe Base64 alphabet for VBMI `vpermb` encoder lookup.
+const VBMI_ENCODE_URL_SAFE: [u8; 64] =
+    *b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+/// Standard Base64 reverse lookup (128 bytes) for VBMI `vpermi2b` decoder.
+/// Maps ASCII 0–127 → 6-bit index. Invalid entries contain `0xFF`.
+const VBMI_DECODE_STANDARD: [u8; 128] = {
+    let mut t = [0xFFu8; 128];
+    let a = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut i = 0;
+    while i < 64 {
+        t[a[i] as usize] = i as u8;
+        i += 1;
+    }
+    t
+};
+
+/// URL-safe Base64 reverse lookup (128 bytes) for VBMI `vpermi2b` decoder.
+const VBMI_DECODE_URL_SAFE: [u8; 128] = {
+    let mut t = [0xFFu8; 128];
+    let a = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut i = 0;
+    while i < 64 {
+        t[a[i] as usize] = i as u8;
+        i += 1;
+    }
+    t
+};
+
+// ======================================================================
+// AVX-512 VBMI Encoder
+// ======================================================================
+
 #[target_feature(enable = "avx512f,avx512bw")]
 pub unsafe fn encode_slice_avx512(config: &Config, input: &[u8], mut dst: *mut u8) {
     let len = input.len();
@@ -294,43 +335,6 @@ pub unsafe fn decode_slice_avx512(
 }
 
 // ======================================================================
-// AVX-512 VBMI Lookup Tables (compile-time)
-// ======================================================================
-
-/// Standard Base64 alphabet for VBMI `vpermb` encoder lookup.
-const VBMI_ENCODE_STANDARD: [u8; 64] =
-    *b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-/// URL-safe Base64 alphabet for VBMI `vpermb` encoder lookup.
-const VBMI_ENCODE_URL_SAFE: [u8; 64] =
-    *b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-
-/// Standard Base64 reverse lookup (128 bytes) for VBMI `vpermi2b` decoder.
-/// Maps ASCII 0–127 → 6-bit index. Invalid entries contain `0xFF`.
-const VBMI_DECODE_STANDARD: [u8; 128] = {
-    let mut t = [0xFFu8; 128];
-    let a = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut i = 0;
-    while i < 64 {
-        t[a[i] as usize] = i as u8;
-        i += 1;
-    }
-    t
-};
-
-/// URL-safe Base64 reverse lookup (128 bytes) for VBMI `vpermi2b` decoder.
-const VBMI_DECODE_URL_SAFE: [u8; 128] = {
-    let mut t = [0xFFu8; 128];
-    let a = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-    let mut i = 0;
-    while i < 64 {
-        t[a[i] as usize] = i as u8;
-        i += 1;
-    }
-    t
-};
-
-// ======================================================================
 // AVX-512 VBMI Encoder
 // ======================================================================
 
@@ -572,14 +576,15 @@ pub unsafe fn decode_slice_avx512_vbmi(
 mod kani_verification_avx512 {
     use super::*;
     use crate::{Config, STANDARD as TURBO_STANDARD, STANDARD_NO_PAD as TURBO_STANDARD_NO_PAD};
+    use std::mem::transmute;
 
     // --- CONSTANTS ---
 
-    // Encoder Induction Size: 28 (1 AVX2 Loop) + 1 (Scalar Transition)
-    const ENC_INDUCTION_LEN: usize = 29;
+    // Encoder Induction Size: 52 (1 AVX512 Loop) + 1 (Scalar Transition)
+    const ENC_INDUCTION_LEN: usize = 53;
 
-    // Decoder Induction Size: 36 (1 AVX2 Loop) + 1 (Scalar Transition)
-    const DEC_INDUCTION_LEN: usize = 37;
+    // Decoder Induction Size: 68 (1 AVX512 Loop) + 1 (Scalar Transition)
+    const DEC_INDUCTION_LEN: usize = 69;
 
     // --- HELPERS ---
 
@@ -591,12 +596,135 @@ mod kani_verification_avx512 {
         }
     }
 
+    // --- STUBS ---
+
+    // STUB: _mm512_shuffle_epi8
+    // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm512_shuffle_epi8
+    unsafe fn _mm512_shuffle_epi8_stub(a: __m512i, b: __m512i) -> __m512i {
+        let a: [u8; 64] = unsafe { transmute(a) };
+        let b: [u8; 64] = unsafe { transmute(b) };
+        let mut dst = [0u8; 64];
+
+        // FOR j := 0 to 63
+        for j in 0..64 {
+            // i := j*8
+            // (In Rust we access bytes 'j' so '*8' offset is not needed)
+            let i = j;
+
+            // IF b[i+7] == 1
+            if (b[i] & 0x80) != 0 {
+                // dst[i+7:i] := 0
+                dst[i] = 0;
+            // ELSE
+            } else {
+                // index[5:0] := b[i+3:i] + (j & 0x30)
+                let index: u8 = (b[i] & 0x0F) + (j as u8 & 0x30);
+                // dst[i+7:i] := a[index*8+7:index*8]
+                dst[i] = a[index as usize];
+                // FI
+            }
+            // ENDFOR
+        }
+        // dst[MAX:512] := 0
+        // (No extra bits beyond 512 in __m512i)
+
+        unsafe { transmute(dst) }
+    }
+
+    // STUB: _mm512_mask_add_epi8
+    // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm512_mask_add_epi8
+    unsafe fn _mm512_mask_add_epi8_stub(
+        src: __m512i,
+        k: __mmask64,
+        a: __m512i,
+        b: __m512i,
+    ) -> __m512i {
+        let src_bytes: [u8; 64] = unsafe { transmute(src) };
+        let a_bytes: [u8; 64] = unsafe { transmute(a) };
+        let b_bytes: [u8; 64] = unsafe { transmute(b) };
+        let mut dst = [0u8; 64];
+
+        // FOR j := 0 to 63
+        for j in 0..64 {
+            // i := j*8
+            let i = j;
+
+            // IF k[j]
+            if (k & (1 << j)) != 0 {
+                // dst[i+7:i] := a[i+7:i] + b[i+7:i]
+                dst[i] = a_bytes[i].wrapping_add(b_bytes[i]);
+            // ELSE
+            } else {
+                // dst[i+7:i] := src[i+7:i]
+                dst[i] = src_bytes[i];
+                // FI
+            }
+            // ENDFOR
+        }
+        // dst[MAX:512] := 0
+
+        unsafe { transmute(dst) }
+    }
+
+    // STUB: _mm512_maddubs_epi16
+    // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm512_maddubs_epi16
+    unsafe fn _mm512_maddubs_epi16_stub(a: __m512i, b: __m512i) -> __m512i {
+        let a: [u8; 64] = unsafe { transmute(a) };
+        let b: [i8; 64] = unsafe { transmute(b) };
+        let mut dst = [0i16; 32];
+
+        // FOR j := 0 to 31
+        for j in 0..32 {
+            // i := j*16
+            let i = j * 2;
+            // dst[i+15:i] := Saturate16( a[i+15:i+8]*b[i+15:i+8] + a[i+7:i]*b[i+7:i] )
+            dst[j] = ((a[i + 1] as i16) * (b[i + 1] as i16))
+                .saturating_add((a[i] as i16) * (b[i] as i16));
+            // ENDFOR
+        }
+        // dst[MAX:512] := 0
+
+        unsafe { transmute(dst) }
+    }
+
+    // STUB: _mm512_madd_epi16
+    // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm512_madd_epi16
+    unsafe fn _mm512_madd_epi16_stub(a: __m512i, b: __m512i) -> __m512i {
+        let a_i16: [i16; 32] = unsafe { transmute(a) };
+        let b_i16: [i16; 32] = unsafe { transmute(b) };
+        let mut dst = [0i32; 16];
+
+        // FOR j := 0 to 15
+        for j in 0..16 {
+            // i := j*32
+            // (In Rust, we access 32-bit chunks using j, and 16-bit halves using j*2 and j*2+1)
+
+            // dst[i+31:i] := SignExtend32(a[i+31:i+16]*b[i+31:i+16]) + SignExtend32(a[i+15:i]*b[i+15:i])
+            let a_hi = a_i16[j * 2 + 1] as i32; // a[i+31:i+16]
+            let b_hi = b_i16[j * 2 + 1] as i32; // b[i+31:i+16]
+
+            let a_lo = a_i16[j * 2] as i32; // a[i+15:i]
+            let b_lo = b_i16[j * 2] as i32; // b[i+15:i]
+
+            dst[j] = (a_hi.wrapping_mul(b_hi)).wrapping_add(a_lo.wrapping_mul(b_lo));
+            // ENDFOR
+        }
+        // dst[MAX:512] := 0
+        // (No extra bits beyond 512 in __m512i)
+
+        unsafe { transmute(dst) }
+    }
+
     // --- PROOFS ---
 
     /// **Proof 1: Roundtrip Correctness (The Logic Check)**
     ///
     /// Verifies that `Decode(Encode(X)) == X`.
     #[kani::proof]
+    #[kani::stub(_mm512_shuffle_epi8, _mm512_shuffle_epi8_stub)]
+    #[kani::stub(_mm512_mask_add_epi8, _mm512_mask_add_epi8_stub)]
+    #[kani::stub(_mm512_maddubs_epi16, _mm512_maddubs_epi16_stub)]
+    #[kani::stub(_mm512_madd_epi16, _mm512_madd_epi16_stub)]
     fn check_avx512_roundtrip_correctness() {
         let config = Config {
             url_safe: kani::any(),
@@ -605,8 +733,8 @@ mod kani_verification_avx512 {
         let input: [u8; ENC_INDUCTION_LEN] = kani::any();
 
         // Buffers
-        let mut enc_buf = [0u8; 128];
-        let mut dec_buf = [0u8; 128];
+        let mut enc_buf = [0u8; 256];
+        let mut dec_buf = [0u8; 256];
 
         unsafe {
             // 1. Encode
@@ -630,21 +758,25 @@ mod kani_verification_avx512 {
     /// **Proof 2: Decoder Robustness & Induction**
     ///
     /// Verifies that `decode_slice_avx512`:
-    /// 1. Accepts ANY 33 bytes of garbage input.
+    /// 1. Accepts ANY bytes of garbage input.
     /// 2. Never Segfaults, Panics, or causes UB.
     /// 3. Safely handles the SIMD->Scalar pointer transition.
     #[kani::proof]
+    #[kani::stub(_mm512_shuffle_epi8, _mm512_shuffle_epi8_stub)]
+    #[kani::stub(_mm512_mask_add_epi8, _mm512_mask_add_epi8_stub)]
+    #[kani::stub(_mm512_maddubs_epi16, _mm512_maddubs_epi16_stub)]
+    #[kani::stub(_mm512_madd_epi16, _mm512_madd_epi16_stub)]
     fn check_avx512_decode_robustness() {
         let config = Config {
             url_safe: kani::any(),
             padding: true,
         };
 
-        // Input: 33 bytes of unrestricted symbolic data (garbage)
+        // Input: bytes of unrestricted symbolic data (garbage)
         let input: [u8; DEC_INDUCTION_LEN] = kani::any();
 
         // Output Buffer: Max estimated size
-        let mut output = [0u8; 128];
+        let mut output = [0u8; 256];
 
         unsafe {
             // We ignore the Result. We only care that this function call

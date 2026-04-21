@@ -18,14 +18,14 @@ The `unsafe` internal functions (exposed via `unstable`) are raw tools for those
 
 ### Q: Is AVX512 enabled by default?
 **A:** **Yes.**
-We detect CPU features at runtime. If your CPU supports AVX512, we use it. If not, we gracefully downgrade to AVX2, SSE4.1, or Scalar. There is no need to manually enable feature flags for SIMD support.
+We detect CPU features at runtime. If your CPU supports AVX512, we use it. If not, we gracefully downgrade to AVX2 or Scalar. There is no need to manually enable feature flags for SIMD support.
 
 ## ⚡ Performance & Usage
 
 ### Q: Does this work on ARM (Apple Silicon / Raspberry Pi)?
 **A:** **Yes, currently via the Scalar backend.**
 The library compiles and runs perfectly on ARM.
-*   **x86_64:** Automatically uses AVX512 / AVX2 / SSE4.1.
+*   **x86_64:** Automatically uses AVX512 / AVX2.
 *   **ARM:** Currently falls back to our optimized Scalar implementation.
 *   **Roadmap:** Native NEON support is planned for a future release.
 

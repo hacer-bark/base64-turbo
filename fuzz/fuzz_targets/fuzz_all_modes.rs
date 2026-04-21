@@ -101,24 +101,6 @@ fuzz_target!(|data: &[u8]| {
         assert_eq!(&out_dec[..written], payload);
     }
 
-    // ----- SSE4.1 (x86/x86_64 only) -----
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if std::is_x86_feature_detected!("sse4.1") {
-        if enc_len > 0 {
-            let mut out_enc = vec![0u8; enc_len];
-            unsafe { engine.encode_sse4(payload, out_enc.as_mut_ptr()) };
-            assert_eq!(&out_enc[..enc_len], valid_encoded);
-        }
-
-        if valid_encoded.len() > 0 {
-            let mut out_dec = vec![0u8; dec_est + 3]; // slight overallocation for safety
-            let res = unsafe { engine.decode_sse4(valid_encoded, out_dec.as_mut_ptr()) };
-            let written = res.unwrap();
-            assert_eq!(written, payload.len());
-            assert_eq!(&out_dec[..written], payload);
-        }
-    }
-
     // ----- AVX2 (x86/x86_64 only) -----
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     if std::is_x86_feature_detected!("avx2") {
@@ -137,6 +119,6 @@ fuzz_target!(|data: &[u8]| {
         }
     }
 
-    // Note: Dispatch logic (AVX512/AVX2/SSE4/scalar selection)
+    // Note: Dispatch logic (AVX512/AVX2/scalar selection)
     // TODO: In feature will add explicit support for AVX512 instructions.
 });
