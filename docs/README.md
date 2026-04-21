@@ -20,7 +20,7 @@ This directory contains detailed technical reports, formal verification proofs, 
 **Target Audience:** Contributors, Curious Developers
 *   **SIMD Selection:** How the runtime detection logic works.
 *   **Data Flow:** How bytes move from the API to the CPU registers.
-*   **Fallback Strategies:** How we handle architectures without AVX2/SSE4.1.
+*   **Fallback Strategies:** How we handle architectures without AVX2.
 
 ### ⚖️ [Ecosystem Comparison](ecosystem_comparison.md)
 **Target Audience:** Architects, CTOs

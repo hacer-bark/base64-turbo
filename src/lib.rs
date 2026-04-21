@@ -1,84 +1,84 @@
 //! # Base64 Turbo
-//! 
+//!
 //! [![Crates.io](https://img.shields.io/crates/v/base64-turbo.svg)](https://crates.io/crates/base64-turbo)
 //! [![License](https://img.shields.io/crates/l/base64-turbo.svg)](https://crates.io/crates/base64-turbo)
 //! [![Kani Verified](https://img.shields.io/github/actions/workflow/status/hacer-bark/base64-turbo/verification.yml?label=Kani%20Verified)](https://github.com/hacer-bark/base64-turbo/actions/workflows/verification.yml)
 //! [![MIRI Verified](https://img.shields.io/github/actions/workflow/status/hacer-bark/base64-turbo/miri.yml?label=MIRI%20Verified)](https://github.com/hacer-bark/base64-turbo/actions/workflows/miri.yml)
-//! 
+//!
 //! **The fastest memory-safe Base64 implementation.**
-//! 
+//!
 //! `base64-turbo` is a production-grade library engineered for high-throughput systems where CPU cycles are scarce and Undefined Behavior (UB) is unacceptable.
-//! 
-//! This crate provides runtime CPU detection to utilize **AVX512**, **AVX2**, or **SSE4.1** intrinsics.
+//!
+//! This crate provides runtime CPU detection to utilize **AVX512** or **AVX2** intrinsics.
 //! It includes a highly optimized scalar fallback for non-SIMD targets and supports `no_std` environments.
-//! 
+//!
 //! ## Usage
-//! 
+//!
 //! Add this to your `Cargo.toml`:
-//! 
+//!
 //! ```toml
 //! [dependencies]
 //! base64-turbo = "0.1"
 //! ```
-//! 
+//!
 //! ### Basic API (Allocating)
-//! 
+//!
 //! Standard usage for general applications. Requires the `std` feature (enabled by default).
-//! 
+//!
 //! ```rust
 //! # #[cfg(feature = "std")]
 //! # {
 //! use base64_turbo::STANDARD;
-//! 
+//!
 //! let data = b"Hello world";
-//! 
+//!
 //! // Encode to String
 //! let encoded = STANDARD.encode(data);
 //! assert_eq!(encoded, "SGVsbG8gd29ybGQ=");
-//! 
+//!
 //! // Decode to Vec<u8>
 //! let decoded = STANDARD.decode(&encoded).unwrap();
 //! assert_eq!(decoded, data);
 //! # }
 //! ```
-//! 
+//!
 //! ### Zero-Allocation API (Slice-based)
-//! 
+//!
 //! For low-latency scenarios or `no_std` environments where heap allocation is undesirable.
 //! These methods write directly into a user-provided mutable slice.
-//! 
+//!
 //! ```rust
 //! use base64_turbo::STANDARD;
-//! 
+//!
 //! let input = b"Raw bytes";
 //! let mut output = [0u8; 64]; // Pre-allocated stack buffer
-//! 
+//!
 //! // Returns Result<usize, Error> indicating bytes written
 //! let len = STANDARD.encode_into(input, &mut output).unwrap();
-//! 
+//!
 //! assert_eq!(&output[..len], b"UmF3IGJ5dGVz");
 //! ```
-//! 
+//!
 //! ## Feature Flags
-//! 
+//!
 //! This crate is highly configurable via Cargo features:
-//! 
+//!
 //! | Feature | Default | Description |
 //! |---------|---------|-------------|
 //! | **`std`** | **Yes** | Enables `String` and `Vec` support. Disable this for `no_std` environments. |
-//! | **`simd`** | **Yes** | Enables runtime detection for **AVX512**, **AVX2**, and **SSE4.1** intrinsics. If disabled or unsupported by hardware, the crate falls back to scalar logic automatically. |
+//! | **`simd`** | **Yes** | Enables runtime detection for **AVX512** and **AVX2** intrinsics. If disabled or unsupported by hardware, the crate falls back to scalar logic automatically. |
 //! | **`unstable`** | **No** | Enables access to the raw, unsafe internal functions (e.g. `encode_avx2`). |
-//! 
+//!
 //! ## Safety & Verification
-//! 
+//!
 //! This crate utilizes `unsafe` code for SIMD intrinsics and pointer arithmetic to achieve maximum performance.
 //! To ensure safety, we employ a "Swiss Cheese" model of verification layers:
-//! 
+//!
 //! *   **Formal Verification (Kani):** Mathematical proofs ensure the kernels never read out of bounds or panic on any input (0..∞ bytes).
-//! *   **MIRI Audited:** All SIMD paths (AVX512, AVX2, SSE4.1) and Scalar fallbacks are verified with **MIRI** (Undefined Behavior checker) in CI to ensure strict memory safety.
+//! *   **MIRI Audited:** All SIMD paths (AVX512, AVX2) and Scalar fallbacks are verified with **MIRI** (Undefined Behavior checker) in CI to ensure strict memory safety.
 //! *   **MemorySanitizer:** The codebase is audited with MSan to prevent logic errors derived from reading uninitialized memory.
 //! *   **Fuzzing:** The codebase is fuzz-tested via `cargo-fuzz` (2.5B+ iterations).
-//! 
+//!
 //! **[Learn More](https://github.com/hacer-bark/base64-turbo/blob/main/docs/verification.md)**: Details on our threat model and formal verification strategy.
 
 #![cfg_attr(not(any(feature = "std", test)), no_std)]
@@ -128,7 +128,9 @@ pub enum Error {
 impl core::fmt::Display for Error {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Error::InvalidLength => write!(f, "Invalid Base64 input length (must be divisible by 4)"),
+            Error::InvalidLength => {
+                write!(f, "Invalid Base64 input length (must be divisible by 4)")
+            }
             Error::InvalidCharacter => write!(f, "Invalid character found in Base64 input"),
             Error::BufferTooSmall => write!(f, "Destination buffer is too small"),
         }
@@ -145,7 +147,8 @@ impl std::error::Error for Error {}
 
 /// The Standard RFC 4648 Base64 Alphabet.
 /// Used for `STANDARD` and `STANDARD_NO_PAD`.
-const STANDARD_ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const STANDARD_ALPHABET: &[u8; 64] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 /// Computed compile-time reverse lookup table for the Standard alphabet.
 /// Maps ASCII bytes back to 6-bit indices. 0xFF indicates an invalid character.
@@ -161,7 +164,8 @@ const STANDARD_DECODE_TABLE: [u8; 256] = {
 
 /// The URL-Safe Base64 Alphabet.
 /// Replaces `+` with `-` and `/` with `_`. Used for `URL_SAFE` and `URL_SAFE_NO_PAD`.
-const URL_SAFE_ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+const URL_SAFE_ALPHABET: &[u8; 64] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
 /// Computed compile-time reverse lookup table for the URL-Safe alphabet.
 /// Maps ASCII bytes back to 6-bit indices. 0xFF indicates an invalid character.
@@ -346,7 +350,7 @@ impl Engine {
         }
 
         // --- Normal Path ---
-        // Pass the raw pointer to the dispatcher. 
+        // Pass the raw pointer to the dispatcher.
         // SAFETY: We checked output.len() >= req_len above.
         unsafe { Self::encode_dispatch(self, input, output[..req_len].as_mut_ptr()) };
 
@@ -379,7 +383,8 @@ impl Engine {
 
         // --- Normal Path ---
         // SAFETY: We pass only verified data.
-        let real_len = unsafe { Self::decode_dispatch(self, input, output[..req_len].as_mut_ptr())? };
+        let real_len =
+            unsafe { Self::decode_dispatch(self, input, output[..req_len].as_mut_ptr())? };
 
         Ok(real_len)
     }
@@ -416,7 +421,9 @@ impl Engine {
         // Since `encode_into` guarantees it writes exactly `len` bytes or fails (and we panic on fail),
         // we won't expose uninitialized memory.
         #[allow(clippy::uninit_vec)]
-        unsafe { out.set_len(len); }
+        unsafe {
+            out.set_len(len);
+        }
 
         // 4. Encode
         // We trust our `encoded_len` math completely.
@@ -455,7 +462,9 @@ impl Engine {
         // SAFETY: We temporarily expose uninitialized memory to the `decode_into` function
         // so it can write into the slice. We strictly sanitize the length in step 5.
         #[allow(clippy::uninit_vec)]
-        unsafe { out.set_len(max_len); }
+        unsafe {
+            out.set_len(max_len);
+        }
 
         // 4. Decode
         // `decode_into` handles parallel/serial dispatch and returns the `actual_len`.
@@ -464,14 +473,18 @@ impl Engine {
                 // 5. Shrink to fit the real data
                 // SAFETY: `decode_into` reported it successfully wrote `actual_len` valid bytes.
                 // We truncate the Vec to this length, discarding any trailing garbage/uninitialized memory.
-                unsafe { out.set_len(actual_len); }
+                unsafe {
+                    out.set_len(actual_len);
+                }
                 Ok(out)
             }
             Err(e) => {
                 // SAFETY: If an error occurred, we force the length to 0.
                 // This prevents the caller from accidentally inspecting uninitialized memory
                 // if they were to (incorrectly) reuse the Vec from a partial result.
-                unsafe { out.set_len(0); }
+                unsafe {
+                    out.set_len(0);
+                }
                 Err(e)
             }
         }
@@ -491,30 +504,37 @@ impl Engine {
             let len = input.len();
 
             // Smart degrade: If len < 64, don't bother checking AVX512 features or setting up ZMM register
-            if len >= 64 
-                && std::is_x86_feature_detected!("avx512f") 
-                && std::is_x86_feature_detected!("avx512bw") 
+            if len >= 64
+                && std::is_x86_feature_detected!("avx512f")
+                && std::is_x86_feature_detected!("avx512bw")
             {
-                unsafe { simd::encode_slice_avx512(&self.config, input, dst); }
+                // VBMI fast-path: vpermb replaces 8-instruction char mapping with 1 instruction
+                if std::is_x86_feature_detected!("avx512vbmi") {
+                    unsafe {
+                        simd::encode_slice_avx512_vbmi(&self.config, input, dst);
+                    }
+                    return;
+                }
+                unsafe {
+                    simd::encode_slice_avx512(&self.config, input, dst);
+                }
                 return;
             }
 
             // Smart degrade: If len < 32, skip AVX2.
             if len >= 32 && std::is_x86_feature_detected!("avx2") {
-                unsafe { simd::encode_slice_avx2(&self.config, input, dst); }
-                return;
-            }
-
-            // Smart degrade: If len < 16, skip SSE4.1 and go straight to scalar.
-            if len >= 16 && std::is_x86_feature_detected!("sse4.1")  {
-                unsafe { simd::encode_slice_simd(&self.config, input, dst); }
+                unsafe {
+                    simd::encode_slice_avx2(&self.config, input, dst);
+                }
                 return;
             }
         }
 
         // Fallback: Scalar / Non-x86 / Short inputs
         // Safety: Pointers verified by caller
-        unsafe { scalar::encode_slice_unsafe(&self.config, input, dst); }
+        unsafe {
+            scalar::encode_slice_unsafe(&self.config, input, dst);
+        }
     }
 
     #[inline(always)]
@@ -525,21 +545,20 @@ impl Engine {
             let len = input.len();
 
             // Smart degrade: Don't enter AVX512 path if we don't have a full vector of input.
-            if len >= 64 
-                && std::is_x86_feature_detected!("avx512f") 
-                && std::is_x86_feature_detected!("avx512bw") 
+            if len >= 64
+                && std::is_x86_feature_detected!("avx512f")
+                && std::is_x86_feature_detected!("avx512bw")
             {
+                // VBMI fast-path: vpermi2b replaces 13-instruction decode+validate with ~4 instructions
+                if std::is_x86_feature_detected!("avx512vbmi") {
+                    return unsafe { simd::decode_slice_avx512_vbmi(&self.config, input, dst) };
+                }
                 return unsafe { simd::decode_slice_avx512(&self.config, input, dst) };
             }
 
             // Smart degrade: Fallback to AVX2 if len is between 32 and 64, or if AVX512 is missing.
             if len >= 32 && std::is_x86_feature_detected!("avx2") {
                 return unsafe { simd::decode_slice_avx2(&self.config, input, dst) };
-            }
-
-            // Smart degrade: Fallback to SSE4.1 if len is between 16 and 32.
-            if len >= 16 && std::is_x86_feature_detected!("sse4.1")  {
-                return unsafe { simd::decode_slice_simd(&self.config, input, dst) };
             }
         }
 
@@ -553,26 +572,26 @@ impl Engine {
     // ========================================================================
 
     /// Encodes a byte slice into Base64 using a highly optimized AVX2 SIMD implementation.
-    /// 
+    ///
     /// This provides raw access to the direct AVX2 encoding logic.
-    /// 
+    ///
     /// # Safety
-    /// 
+    ///
     /// This function is **unsafe** and requires the caller to uphold strict memory contracts.
     /// Failure to do so will result in **undefined behavior** (e.g., buffer overflow).
-    /// 
+    ///
     /// - The destination pointer `dst` must be valid and point to a mutable memory region with
     ///   sufficient capacity. The required size depends on `config.padding`:
     ///   - With padding: `input.len().div_ceil(3) * 4`
     ///   - Without padding: `(input.len() * 4).div_ceil(3)`
     ///   - Highly recommended: use `Engine::encoded_len` to compute length.
-    /// 
+    ///
     /// - The caller **must** ensure the target CPU supports AVX2 instructions at runtime.
     ///   Executing this function on a CPU without AVX2 support will cause crashes or incorrect
     ///   behavior.
-    /// 
+    ///
     /// # Warning
-    /// 
+    ///
     /// This is a low-level, unsafe primitive. Misuse can lead to undefined behavior regardless
     /// of other crate guarantees. For better memory safety, use the safe higher-level APIs
     /// (e.g., `Engine::encode`).
@@ -585,27 +604,27 @@ impl Engine {
     }
 
     /// Encodes a byte slice into Base64 using a highly optimized AVX2 SIMD implementation.
-    /// 
+    ///
     /// This provides raw access to the direct AVX2 encoding logic.
-    /// 
+    ///
     /// # Safety
-    /// 
+    ///
     /// This function is **unsafe** and requires the caller to uphold strict memory contracts.
     /// Failure to do so will result in **undefined behavior** (e.g., buffer overflow).
-    /// 
+    ///
     /// - The destination pointer `dst` must be valid and point to a mutable memory region with
     ///   sufficient capacity. The required size depends on `config.padding`:
     ///   - With padding: `input.len().div_ceil(3) * 4`
     ///   - Without padding: `(input.len() * 4).div_ceil(3)`
-    /// 
+    ///
     /// - Highly recommended: use `Engine::estimate_decoded_len` to compute length.
-    /// 
+    ///
     /// - The caller **must** ensure the target CPU supports AVX2 instructions at runtime.
     ///   Executing this function on a CPU without AVX2 support will cause an illegal instruction
     ///   crash.
-    /// 
+    ///
     /// # Warning
-    /// 
+    ///
     /// This is a low-level, unsafe primitive. Misuse can lead to undefined behavior regardless
     /// of other crate guarantees. For better memory safety, use the safe higher-level APIs
     /// (e.g., `Engine::encode`).
@@ -617,76 +636,12 @@ impl Engine {
         unsafe { simd::decode_slice_avx2(&self.config, input, dst.as_mut_ptr()) }
     }
 
-    /// Encodes a byte slice into Base64 using a highly optimized SSE4.1 SIMD implementation.
-    /// 
-    /// This provides raw access to the direct SSE4.1 encoding logic.
-    /// 
-    /// # Safety
-    /// 
-    /// This function is **unsafe** and requires the caller to uphold strict memory contracts.
-    /// Failure to do so will result in **undefined behavior** (e.g., buffer overflow).
-    /// 
-    /// - The destination pointer `dst` must be valid and point to a mutable memory region with
-    ///   sufficient capacity. The required size depends on `config.padding`:
-    ///   - With padding: `input.len().div_ceil(3) * 4`
-    ///   - Without padding: `(input.len() * 4).div_ceil(3)`
-    ///   - Highly recommended: use `Engine::encoded_len` to compute length.
-    /// 
-    /// - The caller **must** ensure the target CPU supports SSE4.1 instructions at runtime.
-    ///   Executing this function on a CPU without SSE4.1 support will cause crashes or incorrect
-    ///   behavior.
-    /// 
-    /// # Warning
-    /// 
-    /// This is a low-level, unsafe primitive. Misuse can lead to undefined behavior regardless
-    /// of other crate guarantees. For better memory safety, use the safe higher-level APIs
-    /// (e.g., `Engine::encode`).
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    #[cfg(feature = "simd")]
-    #[cfg(feature = "unstable")]
-    pub unsafe fn encode_sse4(&self, input: &[u8], dst: &mut [u8]) {
-        // Safety: Caller must uphold the contracts documented on this function.
-        unsafe { simd::encode_slice_simd(&self.config, input, dst.as_mut_ptr()) }
-    }
-
-    /// Decodes a Base64 byte slice using a highly optimized SSE4.1 SIMD implementation.
-    /// 
-    /// This provides raw access to the direct SSE4.1 decoding logic.
-    /// 
-    /// # Safety
-    /// 
-    /// This function is **unsafe** and requires the caller to uphold strict memory contracts.
-    /// Failure to do so will result in **undefined behavior** (e.g., buffer overflow).
-    ///
-    /// - The destination pointer `dst` must be valid and point to a mutable memory region with
-    ///   at least `(input.len() / 4 + 1) * 3` bytes of capacity. The extra space is required due
-    ///   to the implementation performing overlapping writes.
-    /// 
-    /// - Highly recommended: use `Engine::estimate_decoded_len` to compute length.
-    /// 
-    /// - The caller **must** ensure the target CPU supports SSE4.1 instructions at runtime.
-    ///   Executing this function on a CPU without SSE4.1 support may cause crashes or incorrect
-    ///   behavior.
-    /// 
-    /// # Warning
-    /// 
-    /// This is a low-level, unsafe primitive. Misuse can lead to undefined behavior regardless
-    /// of other crate guarantees. For better memory safety, use the safe higher-level APIs
-    /// (e.g., `Engine::decode`).
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    #[cfg(feature = "simd")]
-    #[cfg(feature = "unstable")]
-    pub unsafe fn decode_sse4(&self, input: &[u8], dst: &mut [u8]) -> Result<usize, Error> {
-        // Safety: Caller must uphold the contracts documented on this function.
-        unsafe { simd::decode_slice_simd(&self.config, input, dst.as_mut_ptr()) }
-    }
-
     /// Encodes a byte slice into Base64 using a highly optimized scalar (non-SIMD) algorithm.
-    /// 
+    ///
     /// This provides raw access to the direct scalar encoding logic.
-    /// 
+    ///
     /// # Safety
-    /// 
+    ///
     /// This function is **unsafe** and requires the caller to uphold strict memory contracts.
     /// Failure to do so will result in **undefined behavior** (e.g., buffer overflow).
     ///
@@ -695,9 +650,9 @@ impl Engine {
     ///   - With padding: `input.len().div_ceil(3) * 4`
     ///   - Without padding: `(input.len() * 4).div_ceil(3)`
     ///   - Highly recommended: use `Engine::encoded_len` to compute length.
-    /// 
+    ///
     /// # Warning
-    /// 
+    ///
     /// This is a low-level, unsafe primitive. Misuse can lead to undefined behavior regardless
     /// of other crate guarantees. For better memory safety, use the safe higher-level APIs
     /// (e.g., `Engine::encode`).
@@ -708,21 +663,21 @@ impl Engine {
     }
 
     /// Decodes a Base64 byte slice using a highly optimized scalar (non-SIMD) algorithm.
-    /// 
+    ///
     /// This provides raw access to the direct scalar decoding logic.
-    /// 
+    ///
     /// # Safety
-    /// 
+    ///
     /// This function is **unsafe** and requires the caller to uphold strict memory contracts.
     /// Failure to do so will result in **undefined behavior** (e.g., buffer overflow).
-    /// 
+    ///
     /// - The destination pointer `dst` must be valid and point to a mutable memory region with
     ///   at least `(input.len() / 4 + 1) * 3` bytes of capacity. The extra space is required due
     ///   to the implementation performing overlapping writes.
     ///  - Highly recommended: use `Engine::estimate_decoded_len` to compute length.
-    /// 
+    ///
     /// # Warning
-    /// 
+    ///
     /// This is a low-level, unsafe primitive. Misuse can lead to undefined behavior regardless
     /// of other crate guarantees. For better memory safety, use the safe higher-level APIs
     /// (e.g., `Engine::decode`).

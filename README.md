@@ -10,7 +10,7 @@
 `base64-turbo` is a production-grade library engineered for **High Frequency Trading (HFT)**, **Mission-Critical Servers**, and **Embedded Systems** where CPU cycles are scarce and Undefined Behavior (UB) is unacceptable.
 
 It aligns with **modern hardware reality** without sacrificing portability. It automatically detects the best algorithm at runtime:
-*   **x86_64:** Uses AVX512, AVX2, or SSE4.1.
+*   **x86_64:** Uses AVX512 or AVX2.
 *   **ARM / Other:** Falls back to a highly optimized Scalar kernel.
 
 ## Quick Start
@@ -114,7 +114,6 @@ Achieving maximum throughput must not cost memory safety. While we leverage `uns
 | **Scalar** | ✅ | ✅ | ✅ | **Formally Verified** |
 | **AVX2** | ✅ | ✅ | ✅ | **Formally Verified** |
 | **AVX512** | ✅ | ✅ | ✅ | **Formally Verified** |
-| **SSE4.1** | ✅ | ✅ | 🚧 | **Memory Safe (Audited)** |
 
 **[Read the Verification Audit](https://github.com/hacer-bark/base64-turbo/blob/main/docs/verification.md)**
 
@@ -140,7 +139,7 @@ The C library `turbo-base64` is the current theoretical "speed of light." Howeve
 | Feature | Default | Description |
 | :--- | :---: | :--- |
 | `std` | ✅ | Enables `String` and `Vec` support. Disable for `no_std` |
-| `simd` | ✅ | Enables runtime detection for AVX512, AVX2, and SSE4.1 |
+| `simd` | ✅ | Enables runtime detection for AVX512 and AVX2 |
 | `unstable` | ❌ | Exposes raw `unsafe` internal functions (e.g., `encode_avx2`) |
 
 ## Documentation

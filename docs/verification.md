@@ -15,7 +15,6 @@ We use a "Swiss Cheese" model where multiple layers of verification cover each o
 | **Scalar** | ✅ Passed | ✅ Passed | ✅ **Proven** | ✅ Passed | **Formally Verified** |
 | **AVX2** | ✅ Passed | ✅ Passed | ✅ **Proven** | ✅ Passed | **Formally Verified** |
 | **AVX512** | ✅ Passed | ✅ Passed | ✅ **Proven** | ✅ Passed | **Formally Verified** |
-| **SSE4.1** | ✅ Passed | ✅ Passed | 🚧 In Progress | ✅ Passed | **Memory Safe (Audited)** |
 
 ## Deep Dive: The Kani Proofs (Proof by Induction)
 
@@ -91,7 +90,7 @@ const ENC_INDUCTION_LEN: usize = 29;
 We run our comprehensive deterministic test suite under [MIRI](https://github.com/rust-lang/miri), an interpreter that checks for Undefined Behavior according to the strict Rust memory model.
 
 *   **Checks Performed:** Strict provenance tracking, alignment checks, out-of-bounds pointer arithmetic, and data races.
-*   **Coverage:** Covers **100% of execution paths** (Single-vector loops, Quad-vector loops, and Scalar fallbacks) for **Scalar, SSE4.1, AVX2, and AVX512**.
+*   **Coverage:** Covers **100% of execution paths** (Single-vector loops, Quad-vector loops, and Scalar fallbacks) for **Scalar, AVX2, and AVX512**.
 *   **Strategy:** We utilize deterministic input generation to force the engine into every possible boundary condition (e.g., buffer lengths of `0`, `1`, `31`, `32`, `33`, `63`, `64`, `65`...) to prove safe handling of pointers at register boundaries.
 
 ### 2. MemorySanitizer (MSan)
