@@ -72,11 +72,15 @@ pub unsafe fn encode_slice_neon(config: &Config, input: &[u8], mut dst: *mut u8)
 
     // Multipliers for shift-via-multiply (same constants as AVX2)
     let mul_right_shift: uint16x8_t = unsafe {
-        let m: [u16; 8] = [0x0040, 0x0400, 0x0040, 0x0400, 0x0040, 0x0400, 0x0040, 0x0400];
+        let m: [u16; 8] = [
+            0x0040, 0x0400, 0x0040, 0x0400, 0x0040, 0x0400, 0x0040, 0x0400,
+        ];
         vld1q_u16(m.as_ptr())
     };
     let mul_left_shift: uint16x8_t = unsafe {
-        let m: [u16; 8] = [0x0010, 0x0100, 0x0010, 0x0100, 0x0010, 0x0100, 0x0010, 0x0100];
+        let m: [u16; 8] = [
+            0x0010, 0x0100, 0x0010, 0x0100, 0x0010, 0x0100, 0x0010, 0x0100,
+        ];
         vld1q_u16(m.as_ptr())
     };
 
@@ -213,17 +217,21 @@ pub unsafe fn decode_slice_neon(
     // Packing constants (same as x86 PACK_L1/L2/SHUFFLE but 128-bit)
     let pack_l1 = unsafe {
         let p: [i8; 16] = [
-            0x40, 0x01, 0x40, 0x01, 0x40, 0x01, 0x40, 0x01,
-            0x40, 0x01, 0x40, 0x01, 0x40, 0x01, 0x40, 0x01,
+            0x40, 0x01, 0x40, 0x01, 0x40, 0x01, 0x40, 0x01, 0x40, 0x01, 0x40, 0x01, 0x40, 0x01,
+            0x40, 0x01,
         ];
         vld1q_s8(p.as_ptr())
     };
     let pack_l2 = unsafe {
-        let p: [i16; 8] = [0x1000, 0x0001, 0x1000, 0x0001, 0x1000, 0x0001, 0x1000, 0x0001];
+        let p: [i16; 8] = [
+            0x1000, 0x0001, 0x1000, 0x0001, 0x1000, 0x0001, 0x1000, 0x0001,
+        ];
         vld1q_s16(p.as_ptr())
     };
     let pack_shuffle = unsafe {
-        let p: [u8; 16] = [2, 1, 0, 6, 5, 4, 10, 9, 8, 14, 13, 12, 0xFF, 0xFF, 0xFF, 0xFF];
+        let p: [u8; 16] = [
+            2, 1, 0, 6, 5, 4, 10, 9, 8, 14, 13, 12, 0xFF, 0xFF, 0xFF, 0xFF,
+        ];
         vld1q_u8(p.as_ptr())
     };
 
@@ -248,9 +256,15 @@ pub unsafe fn decode_slice_neon(
 
             // Validate: check that every byte is in a valid range
             let is_sym = vorrq_u8(mask_62, mask_63);
-            let is_num = vandq_u8(vcgeq_u8($input_vec, range_0), vcleq_u8($input_vec, range_9_end));
+            let is_num = vandq_u8(
+                vcgeq_u8($input_vec, range_0),
+                vcleq_u8($input_vec, range_9_end),
+            );
             let is_upper = vandq_u8(vcgeq_u8($input_vec, range_a), vcleq_u8($input_vec, range_z));
-            let is_lower = vandq_u8(vcgeq_u8($input_vec, range_a_low), vcleq_u8($input_vec, range_z_low));
+            let is_lower = vandq_u8(
+                vcgeq_u8($input_vec, range_a_low),
+                vcleq_u8($input_vec, range_z_low),
+            );
             let is_valid = vorrq_u8(is_sym, vorrq_u8(is_num, vorrq_u8(is_upper, is_lower)));
 
             // err_any != 0 means there are invalid bytes
@@ -384,13 +398,16 @@ mod miri_neon_coverage {
         assert_eq!(&dst[..len], &input_bytes, "Decode len {}", original_len);
     }
 
-    // ------------------------------------------------------------------
+    // ----------------------------------------------------------------------
     // 1. Encoder Coverage Tests
-    // ------------------------------------------------------------------
+    // ----------------------------------------------------------------------
 
     #[test]
     fn miri_neon_encode_scalar_fallback() {
-        let config = Config { url_safe: false, padding: true };
+        let config = Config {
+            url_safe: false,
+            padding: true,
+        };
         // < 12 bytes → pure scalar
         verify_encode_neon(&config, &STANDARD, 1);
         verify_encode_neon(&config, &STANDARD, 11);
@@ -398,7 +415,10 @@ mod miri_neon_coverage {
 
     #[test]
     fn miri_neon_encode_single_vector_loop() {
-        let config = Config { url_safe: false, padding: true };
+        let config = Config {
+            url_safe: false,
+            padding: true,
+        };
         verify_encode_neon(&config, &STANDARD, 12); // Exactly 1 loop
         verify_encode_neon(&config, &STANDARD, 24); // Exactly 2 loops
         verify_encode_neon(&config, &STANDARD, 13); // 1 loop + 1 byte scalar
@@ -406,33 +426,45 @@ mod miri_neon_coverage {
 
     #[test]
     fn miri_neon_encode_quad_vector_loop() {
-        let config = Config { url_safe: false, padding: true };
-        verify_encode_neon(&config, &STANDARD, 48);  // Exactly 1 quad loop
-        verify_encode_neon(&config, &STANDARD, 96);  // Exactly 2 quad loops
-        verify_encode_neon(&config, &STANDARD, 49);  // 1 quad + scalar
-        verify_encode_neon(&config, &STANDARD, 60);  // 1 quad + 1 single
+        let config = Config {
+            url_safe: false,
+            padding: true,
+        };
+        verify_encode_neon(&config, &STANDARD, 48); // Exactly 1 quad loop
+        verify_encode_neon(&config, &STANDARD, 96); // Exactly 2 quad loops
+        verify_encode_neon(&config, &STANDARD, 49); // 1 quad + scalar
+        verify_encode_neon(&config, &STANDARD, 60); // 1 quad + 1 single
     }
 
     #[test]
     fn miri_neon_encode_url_safe() {
-        let config = Config { url_safe: true, padding: true };
+        let config = Config {
+            url_safe: true,
+            padding: true,
+        };
         verify_encode_neon(&config, &URL_SAFE, 50);
     }
 
-    // ------------------------------------------------------------------
+    // ----------------------------------------------------------------------
     // 2. Decoder Coverage Tests
-    // ------------------------------------------------------------------
+    // ----------------------------------------------------------------------
 
     #[test]
     fn miri_neon_decode_scalar_fallback() {
-        let config = Config { url_safe: false, padding: true };
-        verify_decode_neon(&config, &STANDARD, 3);  // 4 chars
-        verify_decode_neon(&config, &STANDARD, 9);  // 12 chars (< 16)
+        let config = Config {
+            url_safe: false,
+            padding: true,
+        };
+        verify_decode_neon(&config, &STANDARD, 3); // 4 chars
+        verify_decode_neon(&config, &STANDARD, 9); // 12 chars (< 16)
     }
 
     #[test]
     fn miri_neon_decode_single_vector_loop() {
-        let config = Config { url_safe: false, padding: true };
+        let config = Config {
+            url_safe: false,
+            padding: true,
+        };
         verify_decode_neon(&config, &STANDARD, 12); // 16 chars → 1 loop
         verify_decode_neon(&config, &STANDARD, 24); // 32 chars → 2 loops
         verify_decode_neon(&config, &STANDARD, 13); // 16 chars + scalar
@@ -440,15 +472,21 @@ mod miri_neon_coverage {
 
     #[test]
     fn miri_neon_decode_quad_vector_loop() {
-        let config = Config { url_safe: false, padding: true };
-        verify_decode_neon(&config, &STANDARD, 48);  // 64 chars → 1 quad loop
-        verify_decode_neon(&config, &STANDARD, 96);  // 128 chars → 2 quad loops
-        verify_decode_neon(&config, &STANDARD, 49);  // 1 quad + remainder
+        let config = Config {
+            url_safe: false,
+            padding: true,
+        };
+        verify_decode_neon(&config, &STANDARD, 48); // 64 chars → 1 quad loop
+        verify_decode_neon(&config, &STANDARD, 96); // 128 chars → 2 quad loops
+        verify_decode_neon(&config, &STANDARD, 49); // 1 quad + remainder
     }
 
     #[test]
     fn miri_neon_decode_url_safe() {
-        let config = Config { url_safe: true, padding: false };
+        let config = Config {
+            url_safe: true,
+            padding: false,
+        };
         let input = b"-_-_-_-_-_-_-_-_"; // 16 bytes
         let mut dst = [0u8; 16];
         unsafe {
@@ -456,13 +494,16 @@ mod miri_neon_coverage {
         }
     }
 
-    // ------------------------------------------------------------------
+    // ----------------------------------------------------------------------
     // 3. Error Logic Coverage
-    // ------------------------------------------------------------------
+    // ----------------------------------------------------------------------
 
     #[test]
     fn miri_neon_decode_error_detection() {
-        let config = Config { url_safe: false, padding: true };
+        let config = Config {
+            url_safe: false,
+            padding: true,
+        };
         let mut dst = [0u8; 128];
 
         // Error in Quad Loop
@@ -481,7 +522,10 @@ mod miri_neon_coverage {
         let mut bad_input_64_first = vec![b'A'; 64];
         bad_input_64_first[0] = b'$';
         let res = unsafe { decode_slice_neon(&config, &bad_input_64_first, dst.as_mut_ptr()) };
-        assert!(res.is_err(), "Failed to catch error in Quad Loop first byte");
+        assert!(
+            res.is_err(),
+            "Failed to catch error in Quad Loop first byte"
+        );
 
         // Error in Scalar Fallback
         let mut bad_input_17 = vec![b'A'; 17];
@@ -490,13 +534,16 @@ mod miri_neon_coverage {
         assert!(res.is_err(), "Failed to catch error in Scalar Fallback");
     }
 
-    // ------------------------------------------------------------------
+    // ----------------------------------------------------------------------
     // 4. Roundtrip & Config Coverage
-    // ------------------------------------------------------------------
+    // ----------------------------------------------------------------------
 
     #[test]
     fn miri_neon_roundtrip_standard() {
-        let config = Config { url_safe: false, padding: true };
+        let config = Config {
+            url_safe: false,
+            padding: true,
+        };
         for &len in &[12, 24, 48, 49, 60, 96] {
             let input = random_bytes(len);
             let expected = STANDARD.encode(&input);
@@ -508,15 +555,17 @@ mod miri_neon_coverage {
             assert_eq!(std::str::from_utf8(encoded).unwrap(), expected);
 
             let mut dec = vec![0u8; len + 64];
-            let dec_len =
-                unsafe { decode_slice_neon(&config, encoded, dec.as_mut_ptr()).unwrap() };
+            let dec_len = unsafe { decode_slice_neon(&config, encoded, dec.as_mut_ptr()).unwrap() };
             assert_eq!(&dec[..dec_len], &input, "Roundtrip len {}", len);
         }
     }
 
     #[test]
     fn miri_neon_encode_no_padding() {
-        let config = Config { url_safe: false, padding: false };
+        let config = Config {
+            url_safe: false,
+            padding: false,
+        };
         for &len in &[1, 12, 13, 24, 48, 49] {
             verify_encode_neon(&config, &STANDARD_NO_PAD, len);
         }
@@ -524,7 +573,10 @@ mod miri_neon_coverage {
 
     #[test]
     fn miri_neon_decode_no_padding() {
-        let config = Config { url_safe: false, padding: false };
+        let config = Config {
+            url_safe: false,
+            padding: false,
+        };
         for &len in &[3, 12, 13, 24, 48, 49] {
             let input_bytes = random_bytes(len);
             let encoded = STANDARD_NO_PAD.encode(&input_bytes);
@@ -538,7 +590,10 @@ mod miri_neon_coverage {
 
     #[test]
     fn miri_neon_decode_url_safe_padded() {
-        let config = Config { url_safe: true, padding: true };
+        let config = Config {
+            url_safe: true,
+            padding: true,
+        };
         verify_decode_neon(&config, &URL_SAFE, 50);
     }
 }
