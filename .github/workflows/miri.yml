@@ -18,7 +18,7 @@ env:
 
 jobs:
   miri-check:
-    name: MIRI Safety Checks
+    name: MIRI Safety Checks (x86_64)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -36,4 +36,24 @@ jobs:
         run: |
           echo "Running MIRI with AVX512 enabled..."
           # Runs Unit Tests, Integration Tests, Binaries, and Examples in one pass
+          cargo miri test --lib --bins --tests --examples
+
+  miri-check-aarch64:
+    name: MIRI Safety Checks (aarch64)
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust Nightly with MIRI
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+
+      - name: Run MIRI
+        env:
+          MIRIFLAGS: "-Zmiri-symbolic-alignment-check"
+          RUSTFLAGS: "-C target-feature=+neon"
+        run: |
+          echo "Running MIRI with NEON enabled..."
           cargo miri test --lib --bins --tests --examples

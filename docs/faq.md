@@ -23,11 +23,11 @@ We detect CPU features at runtime. If your CPU supports AVX512, we use it. If no
 ## ⚡ Performance & Usage
 
 ### Q: Does this work on ARM (Apple Silicon / Raspberry Pi)?
-**A:** **Yes, currently via the Scalar backend.**
-The library compiles and runs perfectly on ARM.
+**A:** **Yes, with native NEON acceleration.**
+The library compiles and runs with full hardware acceleration on ARM.
 *   **x86_64:** Automatically uses AVX512 / AVX2.
-*   **ARM:** Currently falls back to our optimized Scalar implementation.
-*   **Roadmap:** Native NEON support is planned for a future release.
+*   **ARM (aarch64):** Uses NEON SIMD instructions (compile-time dispatch, no runtime detection needed).
+*   **Other:** Falls back to our optimized Scalar implementation.
 
 ### Q: How do I calculate the buffer size for `encode_into`?
 **A:** Use the helper functions.

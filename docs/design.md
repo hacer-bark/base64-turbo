@@ -14,7 +14,7 @@ Traditional Base64 implementations iterate byte-by-byte using lookup tables. Thi
 
 ## 1. Scalar Implementation (SWAR)
 
-For architectures without supported SIMD (e.g., ARM, older x86), we utilize a **SWAR (SIMD Within A Register)** approach.
+For architectures without supported SIMD (e.g., older x86), we utilize a **SWAR (SIMD Within A Register)** approach.
 
 *   **Wide Loads:** Instead of processing `u8`, we cast pointers to `u64`. This allows us to move 8 bytes of data with a single instruction.
 *   **Bitwise Logic:** We construct the Base64 indices using bitwise shifts (`<<`, `>>`) and masks (`&`) on 64-bit integers, rather than individual byte lookups.
@@ -47,16 +47,36 @@ The AVX512 implementation targets Zen 4 and newer Intel CPUs. It offers two dist
 2.  **Larger Register File:**
     With 32 `zmm` registers (vs 16 `ymm` in AVX2), we can unroll loops more aggressively, keeping all lookup tables and constants resident in registers to avoid L1 cache latency.
 
-## 4. Runtime Dispatch
+## 4. NEON Implementation (aarch64)
 
-To ensure portability, the library compiles multiple execution paths into a single binary. Feature detection occurs at runtime (during the first call).
+The NEON path targets all ARMv8-A CPUs (Apple Silicon, AWS Graviton, Raspberry Pi 4+, Android).
 
-**Priority Order:**
+### 128-bit Vector Processing
+NEON provides 128-bit `q` registers. Each register processes **12 input bytes → 16 output bytes** (encode) or **16 input bytes → 12 output bytes** (decode).
+
+### Branchless Character Mapping
+The character mapping algorithm is identical to AVX2: range-check indices, conditionally add offsets, and apply a LUT for digits and special characters. NEON's `vqtbl1q_u8` provides the same byte-shuffle capability as x86's `vpshufb`.
+
+### Compile-Time Dispatch
+Unlike x86 where SIMD support varies, NEON is **mandatory** on all ARMv8-A cores. The NEON path uses `#[target_feature(enable = "neon")]` with no runtime detection overhead, and works in `no_std` environments.
+
+### No Lane-Stitching
+Unlike AVX2's 256-bit registers that are split into independent 128-bit lanes, NEON has full cross-lane operations within its 128-bit registers, eliminating the need for lane-stitching permutations.
+
+## 5. Runtime Dispatch
+
+To ensure portability, the library compiles multiple execution paths into a single binary.
+
+**x86/x86_64 Priority Order** (runtime detection):
 1.  **AVX512** (Detected & Verified Safe)
 2.  **AVX2**
 3.  **Scalar** (Fallback)
 
-> **Note:** This detection prevents `SIGILL` (Illegal Instruction) errors. An ARM CPU or older Intel CPU will simply take the Scalar path.
+**aarch64 Priority Order** (compile-time):
+1.  **NEON** (Always available on ARMv8-A)
+2.  **Scalar** (Fallback for short inputs)
+
+> **Note:** On x86, runtime detection prevents `SIGILL` (Illegal Instruction) errors. On aarch64, NEON is guaranteed by the architecture specification, so no detection is needed.
 
 ## 5. Performance Characteristics
 

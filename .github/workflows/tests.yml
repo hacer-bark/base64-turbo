@@ -76,6 +76,65 @@ jobs:
         if: always()
         run: rm -rf target_logic_* *.log
 
+  logic-aarch64:
+    name: Logic Tests (aarch64)
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust Stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run Parallel Logic Tests (aarch64)
+        run: |
+          set +e
+          echo "Starting Parallel Logic Suite (aarch64)..."
+
+          # --- 1. NO_STD ---
+          (
+            export CARGO_TARGET_DIR="target_logic_nostd"
+            echo "[no_std] Running..."
+            cargo test --no-default-features --features "" > nostd.log 2>&1
+          ) &
+          PID_NOSTD=$!
+
+          # --- 2. STD ONLY ---
+          (
+            export CARGO_TARGET_DIR="target_logic_std"
+            echo "[std] Running..."
+            cargo test --no-default-features --features "std" > std.log 2>&1
+          ) &
+          PID_STD=$!
+
+          # --- 3. NEON ENABLED ---
+          (
+            export CARGO_TARGET_DIR="target_logic_neon"
+            echo "[NEON] Running..."
+            cargo test --no-default-features --features "std,neon,unstable" > neon.log 2>&1
+          ) &
+          PID_NEON=$!
+
+          # --- WAIT AND REPORT ---
+          FAILED=0
+
+          wait $PID_NOSTD
+          if [ $? -ne 0 ]; then echo "[no_std] FAILED. Logs:"; cat nostd.log; FAILED=1; else echo "[no_std] PASSED"; fi
+
+          wait $PID_STD
+          if [ $? -ne 0 ]; then echo "[std] FAILED. Logs:"; cat std.log; FAILED=1; else echo "[std] PASSED"; fi
+
+          wait $PID_NEON
+          if [ $? -ne 0 ]; then echo "[NEON] FAILED. Logs:"; cat neon.log; FAILED=1; else echo "[NEON] PASSED"; fi
+
+          if [ $FAILED -ne 0 ]; then exit 1; fi
+          set -e
+          echo "All Logic tests passed!"
+
+      - name: Cleanup Artifacts
+        if: always()
+        run: rm -rf target_logic_* *.log
+
   security-msan:
     name: MemorySanitizer (Nightly)
     runs-on: ubuntu-latest
