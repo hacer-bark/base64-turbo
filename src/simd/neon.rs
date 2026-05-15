@@ -80,14 +80,14 @@ pub unsafe fn encode_slice_neon(config: &Config, input: &[u8], mut dst: *mut u8)
         vld1q_u16(m.as_ptr())
     };
 
-    let mask_lo_6bits = unsafe { vdupq_n_u16(0x003F) };
-    let mask_hi_6bits = unsafe { vdupq_n_u16(0x3F00) };
+    let mask_lo_6bits = vdupq_n_u16(0x003F);
+    let mask_hi_6bits = vdupq_n_u16(0x3F00);
 
     // Character mapping constants
-    let offset_base = unsafe { vdupq_n_s8(65) }; // 'A'
-    let set_25 = unsafe { vdupq_n_s8(25) };
-    let delta_lower = unsafe { vdupq_n_s8(6) };
-    let set_51 = unsafe { vdupq_n_u8(51) };
+    let offset_base = vdupq_n_s8(65); // 'A'
+    let set_25 = vdupq_n_s8(25);
+    let delta_lower = vdupq_n_s8(6);
+    let set_51 = vdupq_n_u8(51);
 
     let (sym_plus, sym_slash): (i8, i8) = if config.url_safe {
         (-88, -39)
@@ -111,7 +111,7 @@ pub unsafe fn encode_slice_neon(config: &Config, input: &[u8], mut dst: *mut u8)
 
             // Multiply-shift to extract 6-bit indices
             let lo = vmulq_u16(v_u16, mul_left_shift);
-            let hi = vmulhq_u16(v_u16, mul_right_shift);
+            let hi = unsafe { vmulhq_u16(v_u16, mul_right_shift) };
             let indices_u8 = vreinterpretq_u8_u16(vorrq_u16(
                 vandq_u16(lo, mask_hi_6bits),
                 vandq_u16(hi, mask_lo_6bits),
@@ -121,7 +121,7 @@ pub unsafe fn encode_slice_neon(config: &Config, input: &[u8], mut dst: *mut u8)
             let indices_s8 = vreinterpretq_s8_u8(indices_u8);
             let mut char_val = vaddq_s8(indices_s8, offset_base);
             let gt25 = vcgtq_s8(indices_s8, set_25);
-            char_val = vaddq_s8(char_val, vandq_s8(gt25, delta_lower));
+            char_val = vaddq_s8(char_val, vandq_s8(vreinterpretq_s8_u8(gt25), delta_lower));
 
             // Special chars (digits, +, /)
             let offset_special = vqtbl1q_s8(lut_offsets, vqsubq_u8(indices_u8, set_51));
@@ -195,20 +195,20 @@ pub unsafe fn decode_slice_neon(
     } else {
         (b'+', b'/')
     };
-    let sym_62 = unsafe { vdupq_n_u8(char_62) };
-    let sym_63 = unsafe { vdupq_n_u8(char_63) };
+    let sym_62 = vdupq_n_u8(char_62);
+    let sym_63 = vdupq_n_u8(char_63);
 
     let (fix_62, fix_63): (i8, i8) = if config.url_safe { (-2, 33) } else { (0, -3) };
-    let delta_62 = unsafe { vdupq_n_s8(fix_62) };
-    let delta_63 = unsafe { vdupq_n_s8(fix_63) };
+    let delta_62 = vdupq_n_s8(fix_62);
+    let delta_63 = vdupq_n_s8(fix_63);
 
     // Range validation constants
-    let range_0 = unsafe { vdupq_n_u8(b'0') };
-    let range_9_end = unsafe { vdupq_n_u8(b'9') };
-    let range_a = unsafe { vdupq_n_u8(b'A') };
-    let range_z = unsafe { vdupq_n_u8(b'Z') };
-    let range_a_low = unsafe { vdupq_n_u8(b'a') };
-    let range_z_low = unsafe { vdupq_n_u8(b'z') };
+    let range_0 = vdupq_n_u8(b'0');
+    let range_9_end = vdupq_n_u8(b'9');
+    let range_a = vdupq_n_u8(b'A');
+    let range_z = vdupq_n_u8(b'Z');
+    let range_a_low = vdupq_n_u8(b'a');
+    let range_z_low = vdupq_n_u8(b'z');
 
     // Packing constants (same as x86 PACK_L1/L2/SHUFFLE but 128-bit)
     let pack_l1 = unsafe {
@@ -227,7 +227,7 @@ pub unsafe fn decode_slice_neon(
         vld1q_u8(p.as_ptr())
     };
 
-    let mask_hi_nibble = unsafe { vdupq_n_u8(0x0F) };
+    let mask_hi_nibble = vdupq_n_u8(0x0F);
 
     // Decode & validate one 128-bit vector
     macro_rules! decode_vec {
@@ -265,9 +265,9 @@ pub unsafe fn decode_slice_neon(
     macro_rules! pack_and_store {
         ($indices:expr, $dst_ptr:expr) => {{
             // Step 1: maddubs — pair adjacent 6-bit values
-            let m = vmaddubs_s16($indices, pack_l1);
+            let m = unsafe { vmaddubs_s16($indices, pack_l1) };
             // Step 2: madd — pair adjacent 12-bit values → 24-bit in i32
-            let p = vmadd_s32(m, pack_l2);
+            let p = unsafe { vmadd_s32(m, pack_l2) };
             // Step 3: shuffle to extract 3 bytes from each 4-byte lane
             let out = vqtbl1q_u8(vreinterpretq_u8_s32(p), pack_shuffle);
             // Store 12 bytes (write 16, last 4 are garbage overwritten next iter)
@@ -338,7 +338,7 @@ pub unsafe fn decode_slice_neon(
     Ok(unsafe { dst.offset_from(dst_start) } as usize)
 }
 
-#[cfg(all(test, miri))]
+#[cfg(test)]
 mod miri_neon_coverage {
     use super::*;
     use base64::{
