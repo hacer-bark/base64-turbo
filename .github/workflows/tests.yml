@@ -17,20 +17,22 @@ env:
   CARGO_BUILD_JOBS: 2
 
 jobs:
-  logic-parallel:
-    name: Logic Tests (Stable)
+  logic-x86_64:
+    name: Logic + MSan Tests (x86_64)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install Rust Stable
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust Nightly
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
 
-      - name: Run Parallel Logic Tests
+      - name: Run Parallel Logic + MSan Tests (x86_64)
         run: |
           set +e
-          echo "Starting Parallel Logic Suite..."
+          echo "Starting Parallel Logic + MSan Suite (x86_64)..."
 
           # --- 1. NO_STD ---
           (
@@ -48,11 +50,14 @@ jobs:
           ) &
           PID_STD=$!
 
-          # --- 3. SIMD ENABLED ---
+          # --- 3. SIMD + MSan ---
           (
             export CARGO_TARGET_DIR="target_logic_simd"
-            echo "[SIMD] Running..."
-            cargo test --no-default-features --features "std,simd,unstable" > simd.log 2>&1
+            echo "[SIMD+MSan] Running..."
+            RUSTFLAGS="-Z sanitizer=memory" cargo test -Z build-std \
+              --target x86_64-unknown-linux-gnu \
+              --no-default-features --features "std,simd,unstable" \
+              --lib --tests > simd.log 2>&1
           ) &
           PID_SIMD=$!
 
@@ -66,19 +71,19 @@ jobs:
           if [ $? -ne 0 ]; then echo "[std] FAILED. Logs:"; cat std.log; FAILED=1; else echo "[std] PASSED"; fi
 
           wait $PID_SIMD
-          if [ $? -ne 0 ]; then echo "[SIMD] FAILED. Logs:"; cat simd.log; FAILED=1; else echo "[SIMD] PASSED"; fi
+          if [ $? -ne 0 ]; then echo "[SIMD+MSan] FAILED. Logs:"; cat simd.log; FAILED=1; else echo "[SIMD+MSan] PASSED"; fi
 
           if [ $FAILED -ne 0 ]; then exit 1; fi
           set -e
-          echo "All Logic tests passed!"
+          echo "All Logic + MSan tests passed!"
 
       - name: Cleanup Artifacts
         if: always()
         run: rm -rf target_logic_* *.log
 
-  security-msan:
-    name: MemorySanitizer (Nightly)
-    runs-on: ubuntu-latest
+  logic-aarch64:
+    name: Logic + MSan Tests (aarch64)
+    runs-on: ubuntu-24.04-arm
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -86,12 +91,56 @@ jobs:
       - name: Install Rust Nightly
         uses: dtolnay/rust-toolchain@nightly
         with:
-          components: rust-src 
+          components: rust-src
 
-      - name: Run MSan (Full Features)
+      - name: Run Parallel Logic + MSan Tests (aarch64)
         run: |
-          RUSTFLAGS="-Z sanitizer=memory" cargo test -Z build-std \
-            --target x86_64-unknown-linux-gnu \
-            --features "std,simd,unstable" \
-            --lib \
-            --tests
+          set +e
+          echo "Starting Parallel Logic + MSan Suite (aarch64)..."
+
+          # --- 1. NO_STD ---
+          (
+            export CARGO_TARGET_DIR="target_logic_nostd"
+            echo "[no_std] Running..."
+            cargo test --no-default-features --features "" > nostd.log 2>&1
+          ) &
+          PID_NOSTD=$!
+
+          # --- 2. STD ONLY ---
+          (
+            export CARGO_TARGET_DIR="target_logic_std"
+            echo "[std] Running..."
+            cargo test --no-default-features --features "std" > std.log 2>&1
+          ) &
+          PID_STD=$!
+
+          # --- 3. NEON + MSan ---
+          (
+            export CARGO_TARGET_DIR="target_logic_neon"
+            echo "[NEON+MSan] Running..."
+            RUSTFLAGS="-Z sanitizer=memory" cargo test -Z build-std \
+              --target aarch64-unknown-linux-gnu \
+              --no-default-features --features "std,neon,unstable" \
+              --lib --tests > neon.log 2>&1
+          ) &
+          PID_NEON=$!
+
+          # --- WAIT AND REPORT ---
+          FAILED=0
+
+          wait $PID_NOSTD
+          if [ $? -ne 0 ]; then echo "[no_std] FAILED. Logs:"; cat nostd.log; FAILED=1; else echo "[no_std] PASSED"; fi
+
+          wait $PID_STD
+          if [ $? -ne 0 ]; then echo "[std] FAILED. Logs:"; cat std.log; FAILED=1; else echo "[std] PASSED"; fi
+
+          wait $PID_NEON
+          if [ $? -ne 0 ]; then echo "[NEON+MSan] FAILED. Logs:"; cat neon.log; FAILED=1; else echo "[NEON+MSan] PASSED"; fi
+
+          if [ $FAILED -ne 0 ]; then exit 1; fi
+          set -e
+          echo "All Logic + MSan tests passed!"
+
+      - name: Cleanup Artifacts
+        if: always()
+        run: rm -rf target_logic_* *.log

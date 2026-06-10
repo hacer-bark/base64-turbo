@@ -3,13 +3,13 @@ name = "base64-turbo"
 version = "0.1.7"
 edition = "2024"
 rust-version = "1.89"
-description = "The fastest memory-safe Base64 engine. Formally verified (Kani/MIRI). Features runtime AVX2/AVX512 detection, zero-allocation API, and robust no_std support."
+description = "The fastest memory-safe Base64 engine. Formally verified (Kani/MIRI). Features runtime AVX2/AVX512 detection, NEON acceleration, zero-allocation API, and robust no_std support."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/hacer-bark/base64-turbo"
 documentation = "https://docs.rs/base64-turbo"
 readme = "README.md"
 authors = ["Hacer"]
-keywords = ["base64", "simd", "avx512", "performance", "encoding"]
+keywords = ["base64", "simd", "avx512", "neon", "encoding"]
 categories = ["encoding", "hardware-support", "no-std", "web-programming"]
 exclude = [
     ".github",
@@ -20,10 +20,11 @@ exclude = [
 ]
 
 [features]
-default = ["std", "simd"]
+default = ["std", "simd", "neon"]
 unstable = []
 std = []
 simd = ["std"]
+neon = []
 
 [dev-dependencies]
 rand = "0.10"
@@ -38,3 +39,4 @@ harness = false
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+

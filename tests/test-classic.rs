@@ -396,6 +396,8 @@ fn test_simd_threshold_boundaries() {
         47, 48, 49, 71, 72, 73, 95, 96, 97,
         // AVX512 boundaries (64-byte vectors, 48-byte chunks)
         47, 48, 49, 95, 96, 97, 143, 144, 145, 191, 192, 193,
+        // NEON boundaries (128-bit vectors, 12-byte encode chunks, 16-byte decode chunks)
+        11, 12, 13, 23, 24, 25, 35, 36, 37, 47, 48, 49, 59, 60, 61,
         // Multi-loop boundaries
         239, 240, 241, 383, 384, 385, 767, 768, 769,
     ];
@@ -443,5 +445,18 @@ fn test_unstable_apis() {
         }
     } else {
         println!("Skipping AVX2 Unstable test (hardware unsupported)");
+    }
+
+    // --- NEON ---
+    #[cfg(target_arch = "aarch64")]
+    #[cfg(feature = "neon")]
+    unsafe {
+        let mut dst = vec![0u8; STANDARD.encoded_len(input.len())];
+        STANDARD.encode_neon(&input, &mut dst);
+        assert_eq!(&dst, expected.as_bytes(), "NEON Unsafe Encode");
+
+        let mut dec = vec![0u8; STANDARD.estimate_decoded_len(dst.len())];
+        let len = STANDARD.decode_neon(&dst, &mut dec).unwrap();
+        assert_eq!(&dec[..len], &input, "NEON Unsafe Decode");
     }
 }
