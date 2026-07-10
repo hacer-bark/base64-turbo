@@ -19,7 +19,7 @@ We use a "Swiss Cheese" model where multiple layers of verification cover each o
 
 ## Deep Dive: The Kani Proofs (Proof by Induction)
 
-The most unique aspect of `base64-turbo`'s verification is the use of the **Kani Model Checker** to mathematically prove the correctness of our SIMD logic.
+The most distinctive part of `base64-turbo`'s verification is the use of the **Kani Model Checker** to mathematically prove the correctness of our SIMD logic, rather than relying on test cases alone.
 
 ### The Challenge
 It is impossible to verify an input of "infinite length" using standard testing. Even symbolic execution engines cannot check a 1GB buffer because the state space is too large.
@@ -91,7 +91,7 @@ const ENC_INDUCTION_LEN: usize = 29;
 We run our comprehensive deterministic test suite under [MIRI](https://github.com/rust-lang/miri), an interpreter that checks for Undefined Behavior according to the strict Rust memory model.
 
 *   **Checks Performed:** Strict provenance tracking, alignment checks, out-of-bounds pointer arithmetic, and data races.
-*   **Coverage:** Covers **100% of execution paths** (Single-vector loops, Quad-vector loops, and Scalar fallbacks) for **Scalar, AVX2, and AVX512**.
+*   **Coverage:** Every distinct code path (single-vector loop, quad-vector loop, and scalar-tail fallback) for **Scalar, AVX2, and AVX512** is exercised at least once — this is branch coverage, not exhaustive input coverage (that's what the Kani proofs above are for).
 *   **Strategy:** We utilize deterministic input generation to force the engine into every possible boundary condition (e.g., buffer lengths of `0`, `1`, `31`, `32`, `33`, `63`, `64`, `65`...) to prove safe handling of pointers at register boundaries.
 
 ### 2. MemorySanitizer (MSan)
@@ -101,24 +101,13 @@ While MIRI checks for validity, **MemorySanitizer (MSan)** checks for **Initiali
 *   **The Check:** We recompile the **entire Rust Standard Library** from source with MSan instrumentation (`-Z build-std -Z sanitizer=memory`). This allows us to track the "definedness" of every single bit of memory.
 *   **Guarantee:** We ensure that our SIMD algorithms (including AVX512's extensive masking operations) never perform logic on garbage data derived from uninitialized buffers.
 
-### 3. Supply Chain Security
-This repository adheres to strict **Supply Chain Security** protocols.
-
-1.  **No Direct Commits:** All changes must go through a Pull Request (PR).
-2.  **Required Checks:** A PR cannot be merged unless it passes 4 mandatory gates:
-    *   ✅ **Kani Verification**
-    *   ✅ **MSan Audit**
-    *   ✅ **MIRI Audit**
-    *   ✅ **Logic/Unit Tests**
-3.  **GPG Signing:** All commits are cryptographically signed.
-
 ## ❓ FAQ
 
 **Q: Does this crate use `unsafe` Rust?**
 **A:** Yes, extensively. We use pointers and SIMD intrinsics to achieve speed. However, all `unsafe` blocks are encapsulated behind a Safe API and have been formally audited.
 
 **Q: Is it safe to use in Production?**
-**A:** Yes. It is **proven** to be memory-safe for all supported architectures. "Safe" here isn't an opinion; it's a result of symbolic execution and sanitizer analysis.
+**A:** For Scalar, AVX2, and AVX512, yes — those paths are Kani-proven (symbolic execution, not just testing) in addition to passing MIRI and MSan. NEON currently has MIRI + fuzzing coverage but no Kani proof yet (see the matrix above); we consider it production-ready based on that coverage, but it is a strictly lower bar than the other three architectures.
 
 **Q: How do I know your SIMD stubs are correct?**
 **A:** We use **"Literal Translation."** We copy the exact variable names and logic flow from the [Intel Intrinsics Guide](https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html), replicating specific hardware behaviors (saturation, masking) exactly as documented, allowing side-by-side verification.

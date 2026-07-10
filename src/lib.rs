@@ -5,22 +5,22 @@
 //! [![Kani Verified](https://img.shields.io/github/actions/workflow/status/hacer-bark/base64-turbo/verification.yml?label=Kani%20Verified)](https://github.com/hacer-bark/base64-turbo/actions/workflows/verification.yml)
 //! [![MIRI Verified](https://img.shields.io/github/actions/workflow/status/hacer-bark/base64-turbo/miri.yml?label=MIRI%20Verified)](https://github.com/hacer-bark/base64-turbo/actions/workflows/miri.yml)
 //!
-//! **The fastest memory-safe Base64 implementation.**
+//! **The fastest Base64 implementation we're aware of that is formally verified memory-safe.**
 //!
 //! `base64-turbo` is a production-grade library engineered for high-throughput systems where CPU cycles are scarce and Undefined Behavior (UB) is unacceptable.
 //!
-//! This crate provides runtime CPU detection to utilize **AVX512** or **AVX2** intrinsics on x86_64,
-//! and compile-time **NEON** acceleration on aarch64.
+//! "Memory-safe" here means something concrete: the `unsafe` SIMD paths are checked by the
+//! [Kani](https://github.com/model-checking/kani) model checker (mathematical proof, not testing)
+//! and [MIRI](https://github.com/rust-lang/miri) (a strict UB interpreter), on top of `MemorySanitizer`
+//! audits and continuous fuzzing — see the "Safety & Verification" section below for exactly what is
+//! and isn't covered per architecture. This crate is **not** faster than unchecked C/assembly
+//! implementations and does not claim to be; within the narrower set of crates combining
+//! SIMD-accelerated Base64 with Kani + MIRI verification, we are not aware of another one that
+//! reaches AVX512 speeds.
+//!
+//! This crate provides runtime CPU detection to utilize **AVX512** or **AVX2** intrinsics on `x86_64`,
+//! and compile-time **NEON** acceleration on `aarch64`.
 //! It includes a highly optimized scalar fallback for non-SIMD targets and supports `no_std` environments.
-//!
-//! ## Usage
-//!
-//! Add this to your `Cargo.toml`:
-//!
-//! ```toml
-//! [dependencies]
-//! base64-turbo = "0.1"
-//! ```
 //!
 //! ### Basic API (Allocating)
 //!
@@ -78,17 +78,20 @@
 //!
 //! *   **Formal Verification (Kani):** Mathematical proofs ensure the kernels never read out of bounds or panic on any input (0..∞ bytes).
 //! *   **MIRI Audited:** All SIMD paths (AVX512, AVX2, NEON) and Scalar fallbacks are verified with **MIRI** (Undefined Behavior checker) in CI to ensure strict memory safety.
-//! *   **MemorySanitizer:** The codebase is audited with MSan to prevent logic errors derived from reading uninitialized memory.
+//! *   **`MemorySanitizer`:** The codebase is audited with `MSan` to prevent logic errors derived from reading uninitialized memory.
 //! *   **Fuzzing:** The codebase is fuzz-tested via `cargo-fuzz` (2.5B+ iterations).
 //!
 //! **[Learn More](https://github.com/hacer-bark/base64-turbo/blob/main/docs/verification.md)**: Details on our threat model and formal verification strategy.
 
 #![cfg_attr(not(any(feature = "std", test)), no_std)]
 #![doc(issue_tracker_base_url = "https://github.com/hacer-bark/base64-turbo/issues/")]
-#![deny(unsafe_op_in_unsafe_fn)]
-#![warn(missing_docs)]
-#![warn(rust_2018_idioms)]
-#![warn(unused_qualifications)]
+// This crate casts pointers to wider SIMD vector types (`__m128i`, `__m256i`, `__m512i`)
+// purely to call `_mm*_loadu_*`/`_mm*_storeu_*` intrinsics, which are explicitly
+// documented to work on any alignment ("u" = unaligned). Clippy cannot see through
+// the intrinsic to know alignment isn't required here, so this lint is a crate-wide
+// false positive for our SIMD code paths.
+#![allow(clippy::cast_ptr_alignment)]
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 // Scalar implementation
@@ -134,11 +137,11 @@ pub enum Error {
 impl core::fmt::Display for Error {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Error::InvalidLength => {
+            Self::InvalidLength => {
                 write!(f, "Invalid Base64 input length (must be divisible by 4)")
             }
-            Error::InvalidCharacter => write!(f, "Invalid character found in Base64 input"),
-            Error::BufferTooSmall => write!(f, "Destination buffer is too small"),
+            Self::InvalidCharacter => write!(f, "Invalid character found in Base64 input"),
+            Self::BufferTooSmall => write!(f, "Destination buffer is too small"),
         }
     }
 }
@@ -158,6 +161,7 @@ const STANDARD_ALPHABET: &[u8; 64] =
 
 /// Computed compile-time reverse lookup table for the Standard alphabet.
 /// Maps ASCII bytes back to 6-bit indices. 0xFF indicates an invalid character.
+#[allow(clippy::cast_possible_truncation)] // `i` is always < 64, fits in u8
 const STANDARD_DECODE_TABLE: [u8; 256] = {
     let mut table = [0xFF; 256];
     let mut i = 0;
@@ -175,6 +179,7 @@ const URL_SAFE_ALPHABET: &[u8; 64] =
 
 /// Computed compile-time reverse lookup table for the URL-Safe alphabet.
 /// Maps ASCII bytes back to 6-bit indices. 0xFF indicates an invalid character.
+#[allow(clippy::cast_possible_truncation)] // `i` is always < 64, fits in u8
 const URL_SAFE_DECODE_TABLE: [u8; 256] = {
     let mut table = [0xFF; 256];
     let mut i = 0;
@@ -337,6 +342,11 @@ impl Engine {
     ///
     /// * `Ok(usize)`: The actual number of bytes written to `output`.
     /// * `Err(Error::BufferTooSmall)`: If `output.len()` is less than [`encoded_len`](Self::encoded_len).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::BufferTooSmall`] if `output` is not large enough to hold the
+    /// encoded data (see [`encoded_len`](Self::encoded_len)).
     #[inline]
     pub fn encode_into<T: AsRef<[u8]> + Sync>(
         &self,
@@ -369,6 +379,12 @@ impl Engine {
     ///
     /// * `Ok(usize)`: The actual number of bytes written to `output`.
     /// * `Err(Error)`: If the input is invalid or the buffer is too small.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::BufferTooSmall`] if `output` is not large enough, or
+    /// [`Error::InvalidLength`] / [`Error::InvalidCharacter`] if `input` is not
+    /// valid Base64.
     #[inline]
     pub fn decode_into<T: AsRef<[u8]> + Sync>(
         &self,
@@ -432,8 +448,14 @@ impl Engine {
         }
 
         // 4. Encode
-        // We trust our `encoded_len` math completely.
-        Self::encode_into(self, input, &mut out).expect("Base64 logic error: buffer size mismatch");
+        // We already sized `out` to the exact required length, so we call the
+        // (infallible) dispatcher directly instead of the bounds-checked
+        // `encode_into`, which would otherwise force us to handle an
+        // unreachable `Err(BufferTooSmall)`.
+        // SAFETY: `out` has capacity `len`, which is exactly what `encode_dispatch` writes.
+        unsafe {
+            Self::encode_dispatch(self, input, out.as_mut_ptr());
+        }
 
         // 5. Convert to String
         // SAFETY: The Base64 alphabet consists strictly of ASCII characters,
@@ -502,7 +524,7 @@ impl Engine {
 
     // TODO: Recalculate lengths for SIMDs paths.
 
-    #[inline(always)]
+    #[inline]
     unsafe fn encode_dispatch(&self, input: &[u8], dst: *mut u8) {
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         #[cfg(feature = "simd")]
@@ -556,7 +578,7 @@ impl Engine {
         }
     }
 
-    #[inline(always)]
+    #[inline]
     unsafe fn decode_dispatch(&self, input: &[u8], dst: *mut u8) -> Result<usize, Error> {
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         #[cfg(feature = "simd")]
@@ -657,6 +679,11 @@ impl Engine {
     /// This is a low-level, unsafe primitive. Misuse can lead to undefined behavior regardless
     /// of other crate guarantees. For better memory safety, use the safe higher-level APIs
     /// (e.g., `Engine::encode`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidLength`] or [`Error::InvalidCharacter`] if `input` is not
+    /// valid Base64.
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     #[cfg(feature = "simd")]
     #[cfg(feature = "unstable")]
@@ -710,6 +737,11 @@ impl Engine {
     /// This is a low-level, unsafe primitive. Misuse can lead to undefined behavior regardless
     /// of other crate guarantees. For better memory safety, use the safe higher-level APIs
     /// (e.g., `Engine::decode`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidLength`] or [`Error::InvalidCharacter`] if `input` is not
+    /// valid Base64.
     #[cfg(feature = "unstable")]
     pub unsafe fn decode_scalar(&self, input: &[u8], dst: &mut [u8]) -> Result<usize, Error> {
         // Safety: Caller must uphold the contracts documented on this function.
@@ -758,6 +790,11 @@ impl Engine {
     /// This is a low-level, unsafe primitive. Misuse can lead to undefined behavior regardless
     /// of other crate guarantees. For better memory safety, use the safe higher-level APIs
     /// (e.g., `Engine::decode`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidLength`] or [`Error::InvalidCharacter`] if `input` is not
+    /// valid Base64.
     #[cfg(target_arch = "aarch64")]
     #[cfg(feature = "neon")]
     #[cfg(feature = "unstable")]

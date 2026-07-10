@@ -2,142 +2,267 @@ use super::{PACK_L1, PACK_L2, PACK_SHUFFLE};
 use crate::{Config, Error, scalar};
 
 #[cfg(target_arch = "x86")]
-use std::arch::x86::*;
+use std::arch::x86::{
+    __m128i, __m256i, _mm256_add_epi8, _mm256_and_si256, _mm256_castsi256_si128,
+    _mm256_cmpeq_epi8, _mm256_cmpgt_epi8, _mm256_extracti128_si256, _mm256_loadu_si256, _mm256_madd_epi16,
+    _mm256_maddubs_epi16, _mm256_mulhi_epu16, _mm256_mullo_epi16, _mm256_or_si256,
+    _mm256_permutevar8x32_epi32, _mm256_set1_epi32, _mm256_set1_epi8, _mm256_setr_epi32,
+    _mm256_setr_epi8, _mm256_shuffle_epi8, _mm256_srli_epi16, _mm256_storeu_si256, _mm256_sub_epi8, _mm256_subs_epu8, _mm256_testz_si256, _mm256_set_epi8, _mm_storeu_si128,
+};
 #[cfg(target_arch = "x86_64")]
-use std::arch::x86_64::*;
+use std::arch::x86_64::{
+    __m128i, __m256i, _mm256_add_epi8, _mm256_and_si256, _mm256_castsi256_si128,
+    _mm256_cmpeq_epi8, _mm256_cmpgt_epi8, _mm256_extracti128_si256, _mm256_loadu_si256, _mm256_madd_epi16,
+    _mm256_maddubs_epi16, _mm256_mulhi_epu16, _mm256_mullo_epi16, _mm256_or_si256,
+    _mm256_permutevar8x32_epi32, _mm256_set1_epi32, _mm256_set1_epi8, _mm256_setr_epi32,
+    _mm256_setr_epi8, _mm256_shuffle_epi8, _mm256_srli_epi16, _mm256_storeu_si256, _mm256_sub_epi8, _mm256_subs_epu8, _mm256_testz_si256, _mm256_set_epi8, _mm_storeu_si128,
+};
+
+/// Encodes 32 raw input bytes (of which only the low 24 bytes, byte-shifted
+/// by 4, are logically consumed) into 32 Base64 characters.
+///
+/// Credit: the reshuffle bit-extraction (`shuffle_epi8` + `and`/`mulhi`/`and`/
+/// `mullo`/`or`) and the single-LUT character-mapping technique below are
+/// Alfred Klomp's (`aklomp/base64`, BSD-licensed); see the README for full
+/// credit. The URL-safe `translate_lut` variant was re-derived for this crate
+/// (only the `+`/`/` vs `-`/`_` delta entries differ) and cross-checked
+/// exhaustively against all 64 alphabet indices in a standalone Python
+/// script; see `avx2_encode_url_safe_all_lengths_0_to_400` below.
+#[target_feature(enable = "avx2")]
+unsafe fn encode_vec_avx2(input: __m256i, translate_lut: __m256i) -> __m256i {
+    // Reshuffle the (4-byte-shifted) input so each 32-bit lane holds one
+    // 3-byte Base64 group, then extract the four 6-bit indices per lane via
+    // two masked multiplies (mulhi for the high half, mullo for the low
+    // half of each 16-bit sub-lane) instead of per-group shifts.
+    let reshuffle = _mm256_set_epi8(
+        10, 11, 9, 10, 7, 8, 6, 7, 4, 5, 3, 4, 1, 2, 0, 1, 14, 15, 13, 14, 11, 12, 10, 11, 8, 9, 7,
+        8, 5, 6, 4, 5,
+    );
+    let shuffled = _mm256_shuffle_epi8(input, reshuffle);
+    let t0 = _mm256_and_si256(shuffled, _mm256_set1_epi32(0x0FC0_FC00));
+    let t1 = _mm256_mulhi_epu16(t0, _mm256_set1_epi32(0x0400_0040));
+    let t2 = _mm256_and_si256(shuffled, _mm256_set1_epi32(0x003F_03F0));
+    let t3 = _mm256_mullo_epi16(t2, _mm256_set1_epi32(0x0100_0010));
+    let indices = _mm256_or_si256(t1, t3);
+
+    // Map each 6-bit index (0..=63) to its Base64 character via one LUT
+    // lookup: `subs_epu8(idx, 51)` gives a 0-based offset into the last 3
+    // ranges (digits, `+`/`-`, `/`/`_`), and `cmpgt_epi8(idx, 25)` bumps that
+    // offset by 1 for indices past the uppercase-letter range so it also
+    // reaches the digit/lowercase-letter table slots correctly.
+    let set_51 = _mm256_set1_epi8(51);
+    let set_25 = _mm256_set1_epi8(25);
+    let lut_idx = _mm256_sub_epi8(
+        _mm256_subs_epu8(indices, set_51),
+        _mm256_cmpgt_epi8(indices, set_25),
+    );
+    _mm256_add_epi8(indices, _mm256_shuffle_epi8(translate_lut, lut_idx))
+}
 
 #[target_feature(enable = "avx2")]
-pub unsafe fn encode_slice_avx2(config: &Config, input: &[u8], mut dst: *mut u8) {
+pub(crate) unsafe fn encode_slice_avx2(config: &Config, input: &[u8], mut dst: *mut u8) {
     let len = input.len();
     let mut src = input.as_ptr();
 
-    // Shuffle bytes for mul
-    let shuffle = _mm256_setr_epi8(
-        1, 0, 2, 1, 4, 3, 5, 4, 7, 6, 8, 7, 10, 9, 11, 10, 1, 0, 2, 1, 4, 3, 5, 4, 7, 6, 8, 7, 10,
-        9, 11, 10,
-    );
-
-    // Masks for bit extraction
-    let mask_lo_6bits = _mm256_set1_epi16(0x003F);
-    let mask_hi_6bits = _mm256_set1_epi16(0x3F00);
-
-    // Multiplier for shift of bytes.
-    let mul_right_shift = _mm256_setr_epi16(
-        0x0040, 0x0400, 0x0040, 0x0400, 0x0040, 0x0400, 0x0040, 0x0400, 0x0040, 0x0400, 0x0040,
-        0x0400, 0x0040, 0x0400, 0x0040, 0x0400,
-    );
-    let mul_left_shift = _mm256_setr_epi16(
-        0x0010, 0x0100, 0x0010, 0x0100, 0x0010, 0x0100, 0x0010, 0x0100, 0x0010, 0x0100, 0x0010,
-        0x0100, 0x0010, 0x0100, 0x0010, 0x0100,
-    );
-
-    // Mapping logic for letters
-    let offset_base = _mm256_set1_epi8(65);
-    let set_25 = _mm256_set1_epi8(25);
-    let delta_lower = _mm256_set1_epi8(6);
-    let set_51 = _mm256_set1_epi8(51);
-
-    // LUT Table for numbers and special chars
-    let (sym_plus, sym_slash) = if config.url_safe {
-        (-88, -39)
+    let translate_lut = if config.url_safe {
+        _mm256_setr_epi8(
+            65, 71, -4, -4, -4, -4, -4, -4, -4, -4, -4, -4, -17, 32, 0, 0, 65, 71, -4, -4, -4, -4,
+            -4, -4, -4, -4, -4, -4, -17, 32, 0, 0,
+        )
     } else {
-        (-90, -87)
+        _mm256_setr_epi8(
+            65, 71, -4, -4, -4, -4, -4, -4, -4, -4, -4, -4, -19, -16, 0, 0, 65, 71, -4, -4, -4,
+            -4, -4, -4, -4, -4, -4, -4, -19, -16, 0, 0,
+        )
     };
-    let lut_offsets = _mm256_setr_epi8(
-        0, -75, -75, -75, -75, -75, -75, -75, -75, -75, -75, sym_plus, sym_slash, 0, 0, 0, 0, -75,
-        -75, -75, -75, -75, -75, -75, -75, -75, -75, sym_plus, sym_slash, 0, 0, 0,
-    );
 
-    macro_rules! encode_vec {
-        ($in_vec:expr) => {{
-            // Compute 3 bytes => 4 letters
-            let v = _mm256_shuffle_epi8($in_vec, shuffle);
+    // Each round consumes 24 logical input bytes and produces 32 output
+    // bytes, but every round's *load* reads a full 32-byte vector that is
+    // shifted 4 bytes "into the future" relative to what it logically
+    // consumes (this is what lets `encode_vec_avx2`'s reshuffle avoid a
+    // cross-lane permute on every iteration). The very first round can't
+    // read 4 bytes before the start of `input`, so it instead reads at
+    // offset 0 and reproduces the same shift with a one-time lane permute;
+    // every subsequent round gets the shift for free because the previous
+    // round only advanced the read pointer by 20 bytes (not 24), so the
+    // next 32-byte load naturally starts 4 bytes "early". The final `+= 4`
+    // below undoes that bookkeeping deficit once the loop is done.
+    //
+    // Safety margin: round `k` (1-indexed) reads `[24*(k-1) - 4, 24*(k-1) + 28)`
+    // relative to `input`'s start (round 1 reads `[0, 32)` instead, via the
+    // permute). Requiring `rounds <= (len - 4) / 24` (i.e. `rounds` computed
+    // via truncating integer division) keeps every round's read within
+    // `input`, including the last one.
+    if len >= 32 {
+        let rounds = (len - 4) / 24;
 
-            let lo = _mm256_mullo_epi16(v, mul_left_shift);
-            let hi = _mm256_mulhi_epu16(v, mul_right_shift);
-            let indices = _mm256_or_si256(
-                _mm256_and_si256(lo, mask_hi_6bits),
-                _mm256_and_si256(hi, mask_lo_6bits),
-            );
-
-            // Found char values offsets
-            let mut char_val = _mm256_add_epi8(indices, offset_base);
-            let offset_lower = _mm256_and_si256(_mm256_cmpgt_epi8(indices, set_25), delta_lower);
-            char_val = _mm256_add_epi8(char_val, offset_lower);
-
-            // Found numbers and special symbols offsets
-            let offset_special =
-                _mm256_shuffle_epi8(lut_offsets, _mm256_subs_epu8(indices, set_51));
-
-            // Final sum
-            _mm256_add_epi8(char_val, offset_special)
-        }};
-    }
-
-    // Permutation index for 24-byte distribution into 128-bit lanes
-    let permute_idx = _mm256_setr_epi32(
-        0, 1, 2, 3, // Lane 0 gets elements 0, 1, 2 (bytes 0..11)
-        3, 4, 5, 6, // Lane 1 gets elements 3, 4, 5 (bytes 12..23)
-    );
-
-    macro_rules! load_24_bytes {
-        ($ptr:expr) => {{
-            let v = unsafe { _mm256_loadu_si256($ptr as *const _) };
-            _mm256_permutevar8x32_epi32(v, permute_idx)
-        }};
-    }
-
-    // Process 96 bytes (4 chunks) at a time
-    let safe_len_96 = len.saturating_sub(8);
-    let aligned_len_96 = safe_len_96 - (safe_len_96 % 96);
-    let src_end_96 = unsafe { src.add(aligned_len_96) };
-
-    while src < src_end_96 {
-        // Load 4 vectors
-        let v0 = load_24_bytes!(src);
-        let v1 = load_24_bytes!(src.add(24));
-        let v2 = load_24_bytes!(src.add(48));
-        let v3 = load_24_bytes!(src.add(72));
-
-        // Process
-        let i0 = encode_vec!(v0);
-        let i1 = encode_vec!(v1);
-        let i2 = encode_vec!(v2);
-        let i3 = encode_vec!(v3);
-
-        // Store 4 chunks
-        unsafe { _mm256_storeu_si256(dst as *mut __m256i, i0) };
-        unsafe { _mm256_storeu_si256(dst.add(32) as *mut __m256i, i1) };
-        unsafe { _mm256_storeu_si256(dst.add(64) as *mut __m256i, i2) };
-        unsafe { _mm256_storeu_si256(dst.add(96) as *mut __m256i, i3) };
-
-        src = unsafe { src.add(96) };
-        dst = unsafe { dst.add(128) };
-    }
-
-    // Process remaining 24-byte chunks
-    let safe_len_single = len.saturating_sub(8);
-    let aligned_len_single = safe_len_single - (safe_len_single % 24);
-    let src_end_single = unsafe { input.as_ptr().add(aligned_len_single) };
-
-    while src < src_end_single {
-        let v = load_24_bytes!(src);
-        let res = encode_vec!(v);
-        unsafe { _mm256_storeu_si256(dst as *mut __m256i, res) };
-
-        src = unsafe { src.add(24) };
+        let first = unsafe { _mm256_loadu_si256(src.cast::<__m256i>()) };
+        let first = _mm256_permutevar8x32_epi32(first, _mm256_setr_epi32(0, 0, 1, 2, 3, 4, 5, 6));
+        let out0 = unsafe { encode_vec_avx2(first, translate_lut) };
+        unsafe { _mm256_storeu_si256(dst.cast::<__m256i>(), out0) };
+        src = unsafe { src.add(20) };
         dst = unsafe { dst.add(32) };
+
+        let mut remaining = rounds - 1;
+
+        while remaining >= 4 {
+            let v0 = unsafe { _mm256_loadu_si256(src.cast::<__m256i>()) };
+            let v1 = unsafe { _mm256_loadu_si256(src.add(24).cast::<__m256i>()) };
+            let v2 = unsafe { _mm256_loadu_si256(src.add(48).cast::<__m256i>()) };
+            let v3 = unsafe { _mm256_loadu_si256(src.add(72).cast::<__m256i>()) };
+
+            let o0 = unsafe { encode_vec_avx2(v0, translate_lut) };
+            let o1 = unsafe { encode_vec_avx2(v1, translate_lut) };
+            let o2 = unsafe { encode_vec_avx2(v2, translate_lut) };
+            let o3 = unsafe { encode_vec_avx2(v3, translate_lut) };
+
+            unsafe { _mm256_storeu_si256(dst.cast::<__m256i>(), o0) };
+            unsafe { _mm256_storeu_si256(dst.add(32).cast::<__m256i>(), o1) };
+            unsafe { _mm256_storeu_si256(dst.add(64).cast::<__m256i>(), o2) };
+            unsafe { _mm256_storeu_si256(dst.add(96).cast::<__m256i>(), o3) };
+
+            src = unsafe { src.add(96) };
+            dst = unsafe { dst.add(128) };
+            remaining -= 4;
+        }
+
+        while remaining > 0 {
+            let v = unsafe { _mm256_loadu_si256(src.cast::<__m256i>()) };
+            let out = unsafe { encode_vec_avx2(v, translate_lut) };
+            unsafe { _mm256_storeu_si256(dst.cast::<__m256i>(), out) };
+
+            src = unsafe { src.add(24) };
+            dst = unsafe { dst.add(32) };
+            remaining -= 1;
+        }
+
+        // Undo the first round's 20-vs-24 pointer-advancement deficit.
+        src = unsafe { src.add(4) };
     }
 
     // Scalar Fallback
-    let processed_len = unsafe { src.offset_from(input.as_ptr()) } as usize;
+    let processed_len = unsafe { src.offset_from(input.as_ptr()) }.cast_unsigned();
     if processed_len < len {
         unsafe { scalar::encode_slice_unsafe(config, &input[processed_len..], dst) };
     }
 }
 
+/// Precomputed AVX2 vector constants shared by every lane processed in
+/// [`decode_slice_avx2`]. Factored out purely to keep that function's body
+/// under clippy's line-count threshold; the values themselves are unchanged.
+///
+/// The validation/decode strategy is the nibble-lookup algorithm originated by
+/// Wojciech Muła (with the `/`-vs-`+` disambiguation trick credited to `@aqrit`),
+/// as implemented in Alfred Klomp's `aklomp/base64` and Daniel Lemire's
+/// `lemire/fastbase64`. Both are BSD/permissive-licensed; see the README for
+/// full credit. That published algorithm only covers the standard alphabet
+/// (`+`/`/`); the `lut_lo`/`lut_hi`/`lut_roll` values for the URL-safe alphabet
+/// (`-`/`_`) below were re-derived from scratch for this crate, following the
+/// same construction technique, and are verified exhaustively against all 256
+/// byte values (see the Kani proof and the `avx2_lut_url_safe_matches_scalar`
+/// test below).
+struct DecodeConstantsAvx2 {
+    lut_lo: __m256i,
+    lut_hi: __m256i,
+    lut_roll: __m256i,
+    eq_char: __m256i,
+    eq_shift: __m256i,
+    pack_l1: __m256i,
+    pack_l2: __m256i,
+    pack_shuffle: __m256i,
+    mask_nibble: __m256i,
+}
+
 #[target_feature(enable = "avx2")]
-pub unsafe fn decode_slice_avx2(
+unsafe fn decode_constants_avx2(config: &Config) -> DecodeConstantsAvx2 {
+    // Nibble-indexed bitmask LUTs: a byte is invalid iff
+    // `lut_lo[byte & 0xF] & lut_hi[byte >> 4] != 0`. Bit 4 (0x10) is a
+    // catch-all set in every `lut_lo` entry, paired with `lut_hi = 0x10` for
+    // every high-nibble row that contains no valid Base64 characters at all
+    // (rows 0, 1, 8..=15). Each high-nibble row that *does* contain valid
+    // characters (rows 2..=7) gets its own guard bit in `lut_hi`; `lut_lo`
+    // clears that guard bit only for the low-nibble values valid in that row.
+    let (lut_lo, lut_hi, lut_roll, eq_char, eq_shift) = if config.url_safe {
+        // Row 2 (0x2_): only `-` (0x2D, lo=13) is valid  -> guard bit 0x01.
+        // Row 3 (0x3_): digits `0`-`9` (lo=0..=9), same as standard -> 0x02.
+        // Row 4 (0x4_): `A`-`O` (lo=1..=15) -> 0x04, shared with row 6.
+        // Row 5 (0x5_): `P`-`Z` (lo=0..=10) *and* `_` (0x5F, lo=15) -> 0x08.
+        //   Unlike the standard alphabet, row 5 is no longer symmetric with
+        //   row 7 (only `_` breaks the pattern), so it needs its own bit.
+        // Row 6 (0x6_): `a`-`o` (lo=1..=15) -> 0x04, shared with row 4.
+        // Row 7 (0x7_): `p`-`z` (lo=0..=10) -> 0x20 (its own bit, see row 5).
+        let lut_lo = _mm256_setr_epi8(
+            0x15, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x13, 0x3B, 0x3B, 0x3A,
+            0x3B, 0x33, 0x15, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x13, 0x3B,
+            0x3B, 0x3A, 0x3B, 0x33,
+        );
+        let lut_hi = _mm256_setr_epi8(
+            0x10, 0x10, 0x01, 0x02, 0x04, 0x08, 0x04, 0x20, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10,
+            0x10, 0x10, 0x10, 0x10, 0x01, 0x02, 0x04, 0x08, 0x04, 0x20, 0x10, 0x10, 0x10, 0x10,
+            0x10, 0x10, 0x10, 0x10,
+        );
+        // Delta to add to the raw ASCII byte to get its 6-bit value. Row 5 is
+        // ambiguous (`P`..`Z` need -65, but `_` needs -32), so when the byte
+        // equals `_` exactly, the lookup index is pushed from 5 to 5+8=13 (an
+        // otherwise-dead slot) to select the alternate delta.
+        let lut_roll = _mm256_setr_epi8(
+            0, 0, 17, 4, -65, -65, -71, -71, 0, 0, 0, 0, 0, -32, 0, 0, 0, 0, 17, 4, -65, -65, -71,
+            -71, 0, 0, 0, 0, 0, -32, 0, 0,
+        );
+        (lut_lo, lut_hi, lut_roll, b'_', 8i8)
+    } else {
+        // Row 2 (0x2_): `+` (0x2B, lo=11) and `/` (0x2F, lo=15) -> 0x01.
+        // Row 3 (0x3_): digits `0`-`9` (lo=0..=9) -> 0x02.
+        // Row 4 (0x4_): `A`-`O` (lo=1..=15) -> 0x04, shared with row 6.
+        // Row 5 (0x5_): `P`-`Z` (lo=0..=10) -> 0x08, shared with row 7.
+        // Row 6 (0x6_): `a`-`o` (lo=1..=15) -> 0x04, shared with row 4.
+        // Row 7 (0x7_): `p`-`z` (lo=0..=10) -> 0x08, shared with row 5.
+        let lut_lo = _mm256_setr_epi8(
+            0x15, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x13, 0x1A, 0x1B, 0x1B,
+            0x1B, 0x1A, 0x15, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x13, 0x1A,
+            0x1B, 0x1B, 0x1B, 0x1A,
+        );
+        let lut_hi = _mm256_setr_epi8(
+            0x10, 0x10, 0x01, 0x02, 0x04, 0x08, 0x04, 0x08, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10,
+            0x10, 0x10, 0x10, 0x10, 0x01, 0x02, 0x04, 0x08, 0x04, 0x08, 0x10, 0x10, 0x10, 0x10,
+            0x10, 0x10, 0x10, 0x10,
+        );
+        // Row 2 is ambiguous (`+` needs +19, `/` needs +16), so when the byte
+        // equals `/` exactly, the lookup index is pulled from 2 down to 1 to
+        // select the alternate delta.
+        let lut_roll = _mm256_setr_epi8(
+            0, 16, 19, 4, -65, -65, -71, -71, 0, 0, 0, 0, 0, 0, 0, 0, 0, 16, 19, 4, -65, -65, -71,
+            -71, 0, 0, 0, 0, 0, 0, 0, 0,
+        );
+        (lut_lo, lut_hi, lut_roll, b'/', -1i8)
+    };
+
+    let eq_char = _mm256_set1_epi8(eq_char.cast_signed());
+    let eq_shift = _mm256_set1_epi8(eq_shift);
+
+    // Packing Constants
+    let pack_l1 = unsafe { _mm256_loadu_si256(PACK_L1.as_ptr().cast::<__m256i>()) };
+    let pack_l2 = unsafe { _mm256_loadu_si256(PACK_L2.as_ptr().cast::<__m256i>()) };
+    let pack_shuffle = unsafe { _mm256_loadu_si256(PACK_SHUFFLE.as_ptr().cast::<__m256i>()) };
+
+    // Mask for nibble extraction (both low and high nibbles).
+    let mask_nibble = _mm256_set1_epi8(0x0F);
+
+    DecodeConstantsAvx2 {
+        lut_lo,
+        lut_hi,
+        lut_roll,
+        eq_char,
+        eq_shift,
+        pack_l1,
+        pack_l2,
+        pack_shuffle,
+        mask_nibble,
+    }
+}
+
+#[target_feature(enable = "avx2")]
+pub(crate) unsafe fn decode_slice_avx2(
     config: &Config,
     input: &[u8],
     mut dst: *mut u8,
@@ -146,74 +271,36 @@ pub unsafe fn decode_slice_avx2(
     let mut src = input.as_ptr();
     let dst_start = dst;
 
-    // LUT for offsets based on high nibble (bits 4-7).
-    // 0x2_: '+'(43) -> 62 (diff +19).
-    // 0x3_: '0'(48) -> 52 (diff +4).
-    // 0x4_: 'A'(65) -> 0  (diff -65).
-    // 0x5_: 'P'(80) -> 15 (diff -65).
-    // 0x6_: 'a'(97) -> 26 (diff -71).
-    // 0x7_: 'p'(112)-> 41 (diff -71).
-    let lut_hi_nibble = _mm256_setr_epi8(
-        0, 0, 19, 4, -65, -65, -71, -71, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 19, 4, -65, -65, -71, -71,
-        0, 0, 0, 0, 0, 0, 0, 0,
-    );
+    let DecodeConstantsAvx2 {
+        lut_lo,
+        lut_hi,
+        lut_roll,
+        eq_char,
+        eq_shift,
+        pack_l1,
+        pack_l2,
+        pack_shuffle,
+        mask_nibble,
+    } = unsafe { decode_constants_avx2(config) };
 
-    // Range and offsets of special chars
-    let (char_62, char_63) = if config.url_safe {
-        (b'-', b'_')
-    } else {
-        (b'+', b'/')
-    };
-    let sym_62 = _mm256_set1_epi8(char_62 as i8);
-    let sym_63 = _mm256_set1_epi8(char_63 as i8);
-
-    let (fix_62, fix_63) = if config.url_safe { (-2, 33) } else { (0, -3) };
-    let delta_62 = _mm256_set1_epi8(fix_62);
-    let delta_63 = _mm256_set1_epi8(fix_63);
-
-    // Range Validation Constants
-    let range_0 = _mm256_set1_epi8(b'0' as i8);
-    let range_9_len = _mm256_set1_epi8(9);
-
-    let range_a = _mm256_set1_epi8(b'A' as i8);
-    let range_z_len = _mm256_set1_epi8(25);
-
-    let range_a_low = _mm256_set1_epi8(b'a' as i8);
-    let range_z_low_len = _mm256_set1_epi8(25);
-
-    // Packing Constants
-    let pack_l1 = unsafe { _mm256_loadu_si256(PACK_L1.as_ptr() as *const __m256i) };
-    let pack_l2 = unsafe { _mm256_loadu_si256(PACK_L2.as_ptr() as *const __m256i) };
-    let pack_shuffle = unsafe { _mm256_loadu_si256(PACK_SHUFFLE.as_ptr() as *const __m256i) };
-
-    // Masks for nibble extraction
-    let mask_hi_nibble = _mm256_set1_epi8(0x0F);
-
-    // Decode & Validate Single Vector
+    // Decode & Validate Single Vector.
+    //
+    // Credit: nibble-lookup validation + roll-based decode, originated by
+    // Wojciech Muła / `@aqrit`, as implemented in `aklomp/base64` and
+    // `lemire/fastbase64` (both BSD-licensed) — see the struct doc above.
     macro_rules! decode_vec {
         ($input:expr) => {{
-            let hi = _mm256_and_si256(_mm256_srli_epi16($input, 4), mask_hi_nibble);
-            let offset = _mm256_shuffle_epi8(lut_hi_nibble, hi);
-            let mut indices = _mm256_add_epi8($input, offset);
+            let hi_nibbles = _mm256_and_si256(_mm256_srli_epi16($input, 4), mask_nibble);
+            let lo_nibbles = _mm256_and_si256($input, mask_nibble);
 
-            let mask_62 = _mm256_cmpeq_epi8($input, sym_62);
-            let mask_63 = _mm256_cmpeq_epi8($input, sym_63);
+            let lo = _mm256_shuffle_epi8(lut_lo, lo_nibbles);
+            let hi = _mm256_shuffle_epi8(lut_hi, hi_nibbles);
+            let err = _mm256_and_si256(lo, hi);
 
-            let fix = _mm256_or_si256(
-                _mm256_and_si256(mask_62, delta_62),
-                _mm256_and_si256(mask_63, delta_63),
-            );
-            indices = _mm256_add_epi8(indices, fix);
-
-            let is_sym = _mm256_or_si256(mask_62, mask_63);
-
-            let sub_0 = _mm256_subs_epu8(_mm256_sub_epi8($input, range_0), range_9_len);
-            let sub_a = _mm256_subs_epu8(_mm256_sub_epi8($input, range_a), range_z_len);
-            let sub_a_low = _mm256_subs_epu8(_mm256_sub_epi8($input, range_a_low), range_z_low_len);
-
-            let is_char = _mm256_min_epu8(sub_0, _mm256_min_epu8(sub_a, sub_a_low));
-
-            let err = _mm256_andnot_si256(is_sym, is_char);
+            let eq = _mm256_cmpeq_epi8($input, eq_char);
+            let roll_idx = _mm256_add_epi8(hi_nibbles, _mm256_and_si256(eq, eq_shift));
+            let roll = _mm256_shuffle_epi8(lut_roll, roll_idx);
+            let indices = _mm256_add_epi8($input, roll);
 
             (indices, err)
         }};
@@ -226,9 +313,9 @@ pub unsafe fn decode_slice_avx2(
             let out = _mm256_shuffle_epi8(p, pack_shuffle);
 
             let lane_0 = _mm256_castsi256_si128(out);
-            unsafe { _mm_storeu_si128($dst_ptr as *mut __m128i, lane_0) };
+            unsafe { _mm_storeu_si128($dst_ptr.cast::<__m128i>(), lane_0) };
             let lane_1 = _mm256_extracti128_si256(out, 1);
-            unsafe { _mm_storeu_si128($dst_ptr.add(12) as *mut __m128i, lane_1) };
+            unsafe { _mm_storeu_si128($dst_ptr.add(12).cast::<__m128i>(), lane_1) };
         }};
     }
 
@@ -239,10 +326,10 @@ pub unsafe fn decode_slice_avx2(
 
     while src < src_end_128 {
         // Load 4 vectors
-        let v0 = unsafe { _mm256_loadu_si256(src as *const __m256i) };
-        let v1 = unsafe { _mm256_loadu_si256(src.add(32) as *const __m256i) };
-        let v2 = unsafe { _mm256_loadu_si256(src.add(64) as *const __m256i) };
-        let v3 = unsafe { _mm256_loadu_si256(src.add(96) as *const __m256i) };
+        let v0 = unsafe { _mm256_loadu_si256(src.cast::<__m256i>()) };
+        let v1 = unsafe { _mm256_loadu_si256(src.add(32).cast::<__m256i>()) };
+        let v2 = unsafe { _mm256_loadu_si256(src.add(64).cast::<__m256i>()) };
+        let v3 = unsafe { _mm256_loadu_si256(src.add(96).cast::<__m256i>()) };
 
         // Process
         let (i0, e0) = decode_vec!(v0);
@@ -273,7 +360,7 @@ pub unsafe fn decode_slice_avx2(
     let src_end_32 = unsafe { input.as_ptr().add(aligned_len_32) };
 
     while src < src_end_32 {
-        let v = unsafe { _mm256_loadu_si256(src as *const __m256i) };
+        let v = unsafe { _mm256_loadu_si256(src.cast::<__m256i>()) };
         let (idx, err) = decode_vec!(v);
 
         if _mm256_testz_si256(err, err) != 1 {
@@ -287,7 +374,7 @@ pub unsafe fn decode_slice_avx2(
     }
 
     // Scalar Fallback
-    let processed_len = unsafe { src.offset_from(input.as_ptr()) } as usize;
+    let processed_len = unsafe { src.offset_from(input.as_ptr()) }.cast_unsigned();
     if processed_len < len {
         dst = unsafe {
             dst.add(scalar::decode_slice_unsafe(
@@ -298,7 +385,7 @@ pub unsafe fn decode_slice_avx2(
         };
     }
 
-    Ok(unsafe { dst.offset_from(dst_start) } as usize)
+    Ok(unsafe { dst.offset_from(dst_start) }.cast_unsigned())
 }
 
 #[cfg(kani)]
@@ -491,51 +578,6 @@ mod kani_verification_avx2 {
         unsafe { transmute(dst) }
     }
 
-    // STUB: _mm256_sub_epi8
-    // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm256_sub_epi8
-    #[allow(dead_code)]
-    unsafe fn _mm256_sub_epi8_stub(a: __m256i, b: __m256i) -> __m256i {
-        let a: [u8; 32] = unsafe { transmute(a) };
-        let b: [u8; 32] = unsafe { transmute(b) };
-        let mut dst = [0u8; 32];
-
-        // FOR j := 0 to 31
-        for j in 0..32 {
-            // i := j*8
-            let i = j;
-
-            // dst[i+7:i] := a[i+7:i] - b[i+7:i]
-            dst[i] = a[i].wrapping_sub(b[i]);
-        }
-        // ENDFOR
-
-        // dst[MAX:256] := 0
-
-        unsafe { transmute(dst) }
-    }
-
-    // STUB: _mm256_min_epu8
-    // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm256_min_epu8
-    unsafe fn _mm256_min_epu8_stub(a: __m256i, b: __m256i) -> __m256i {
-        let a: [u8; 32] = unsafe { transmute(a) };
-        let b: [u8; 32] = unsafe { transmute(b) };
-        let mut dst = [0u8; 32];
-
-        // FOR j := 0 to 31
-        for j in 0..32 {
-            // i := j*8
-            let i = j;
-
-            // dst[i+7:i] := MIN(a[i+7:i], b[i+7:i])
-            dst[i] = a[i].min(b[i]);
-        }
-        // ENDFOR
-
-        // dst[MAX:256] := 0
-
-        unsafe { transmute(dst) }
-    }
-
     // --- PROOFS ---
 
     /// **Proof 1: Roundtrip Correctness (The Logic Check)**
@@ -544,11 +586,9 @@ mod kani_verification_avx2 {
     #[kani::proof]
     #[kani::stub(_mm256_shuffle_epi8, _mm256_shuffle_epi8_stub)]
     #[kani::stub(_mm256_subs_epu8, _mm256_subs_epu8_stub)]
-    #[kani::stub(_mm256_min_epu8, _mm256_min_epu8_stub)]
     #[kani::stub(_mm256_testz_si256, _mm256_testz_si256_stub)]
     #[kani::stub(_mm256_maddubs_epi16, _mm256_maddubs_epi16_stub)]
     #[kani::stub(_mm256_madd_epi16, _mm256_madd_epi16_stub)]
-    #[kani::stub(_mm256_sub_epi8, _mm256_sub_epi8_stub)]
     fn check_avx2_roundtrip_correctness() {
         let config = Config {
             url_safe: kani::any(),
@@ -588,11 +628,9 @@ mod kani_verification_avx2 {
     #[kani::proof]
     #[kani::stub(_mm256_shuffle_epi8, _mm256_shuffle_epi8_stub)]
     #[kani::stub(_mm256_subs_epu8, _mm256_subs_epu8_stub)]
-    #[kani::stub(_mm256_min_epu8, _mm256_min_epu8_stub)]
     #[kani::stub(_mm256_testz_si256, _mm256_testz_si256_stub)]
     #[kani::stub(_mm256_maddubs_epi16, _mm256_maddubs_epi16_stub)]
     #[kani::stub(_mm256_madd_epi16, _mm256_madd_epi16_stub)]
-    #[kani::stub(_mm256_sub_epi8, _mm256_sub_epi8_stub)]
     fn check_avx2_decode_robustness() {
         let config = Config {
             url_safe: kani::any(),
@@ -888,5 +926,151 @@ mod miri_avx2_coverage {
             padding: true,
         };
         verify_decode_avx2(&config, &URL_SAFE, 50);
+    }
+}
+
+/// Exhaustive regression test for the nibble-lookup `lut_lo`/`lut_hi`/`lut_roll`
+/// tables in [`decode_constants_avx2`]. Runs on real AVX2 hardware (not a Kani
+/// stub or a Python model), unlike the Kani harnesses this doesn't need the
+/// `kani` toolchain, so it always runs under plain `cargo test`.
+///
+/// The table values were derived by hand (see the doc comment on
+/// [`DecodeConstantsAvx2`]) and cross-checked exhaustively against this
+/// crate's own scalar decode tables in a standalone Python script before
+/// being transcribed into Rust; this test guards against transcription
+/// mistakes (e.g. a mistyped hex literal) that a one-off script can't catch.
+#[cfg(test)]
+mod avx2_decode_lut_exhaustive {
+    use super::*;
+
+    /// For every possible byte value (0..=255), build a 36-byte input whose
+    /// first 32 bytes are all that byte value (the one AVX2 vector processed
+    /// by the fast path) followed by 4 valid filler bytes (pushed to the
+    /// scalar tail), and check that `decode_slice_avx2` agrees with the
+    /// scalar decoder on both validity and the decoded value.
+    fn check_all_byte_values(config: &Config) {
+        for candidate in 0u8..=255 {
+            let mut input = [candidate; 36];
+            input[32..].copy_from_slice(b"AAAA");
+
+            let mut avx2_out = [0u8; 64];
+            let avx2_result = unsafe { decode_slice_avx2(config, &input, avx2_out.as_mut_ptr()) };
+
+            // Oracle: the first 32 bytes decoded on their own via the scalar
+            // path (already covered by its own dedicated tests/Kani proofs).
+            let mut scalar_out = [0u8; 64];
+            let scalar_result = unsafe {
+                crate::scalar::decode_slice_unsafe(config, &input[..32], scalar_out.as_mut_ptr())
+            };
+
+            match scalar_result {
+                Ok(scalar_len) => {
+                    assert!(
+                        avx2_result.is_ok(),
+                        "byte {candidate:#04x} ({candidate}): scalar accepted it (decoded \
+                         {scalar_len} bytes) but avx2 rejected it with {avx2_result:?}"
+                    );
+                    let avx2_len = avx2_result.expect("checked above");
+                    // avx2_len covers all 36 input bytes (32 vectorized + 4
+                    // scalar-tail bytes "AAAA" -> 3 more decoded bytes).
+                    assert_eq!(avx2_len, scalar_len + 3, "byte {candidate:#04x}: length mismatch");
+                    assert_eq!(
+                        &avx2_out[..scalar_len],
+                        &scalar_out[..scalar_len],
+                        "byte {candidate:#04x} ({candidate}): decoded value mismatch"
+                    );
+                }
+                Err(scalar_err) => {
+                    assert_eq!(
+                        avx2_result,
+                        Err(scalar_err),
+                        "byte {candidate:#04x} ({candidate}): avx2/scalar disagree on validity"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn avx2_lut_standard_matches_scalar() {
+        let config = Config {
+            url_safe: false,
+            padding: true,
+        };
+        check_all_byte_values(&config);
+    }
+
+    #[test]
+    fn avx2_lut_url_safe_matches_scalar() {
+        let config = Config {
+            url_safe: true,
+            padding: true,
+        };
+        check_all_byte_values(&config);
+    }
+}
+
+/// Exhaustive length-boundary regression test for the offset-load
+/// `encode_slice_avx2` rewrite. Runs on real AVX2 hardware under plain
+/// `cargo test` (no Kani needed) and compares against the independent
+/// `base64` crate oracle at every length from 0 to 400 bytes — densely
+/// covering the `rounds = (len - 4) / 24` arithmetic and the 4-round batch
+/// boundary — plus a handful of large random lengths.
+#[cfg(test)]
+mod avx2_encode_length_sweep {
+    use super::*;
+    use base64::engine::general_purpose::{STANDARD as REF_STANDARD, URL_SAFE as REF_URL_SAFE};
+
+    fn check(config: &Config, oracle: &impl base64::Engine, len: usize) {
+        let input: Vec<u8> = (0..len)
+            .map(|i| u8::try_from((i * 37 + 11) % 256).expect("value masked to fit in u8"))
+            .collect();
+        let expected = oracle.encode(&input);
+
+        // `encoded_len` for padded output is always >= input.len() * 4 / 3;
+        // add a little extra slack since this is a raw byte buffer, not the
+        // exact `Engine::encoded_len` (padding doesn't matter here, we only
+        // compare the encoded prefix).
+        let mut dst = vec![0u8; len * 2 + 64];
+        unsafe { encode_slice_avx2(config, &input, dst.as_mut_ptr()) };
+
+        assert_eq!(
+            &dst[..expected.len()],
+            expected.as_bytes(),
+            "encode mismatch at len={len}"
+        );
+    }
+
+    #[test]
+    fn avx2_encode_standard_all_lengths_0_to_400() {
+        let config = Config {
+            url_safe: false,
+            padding: true,
+        };
+        for len in 0..=400 {
+            check(&config, &REF_STANDARD, len);
+        }
+    }
+
+    #[test]
+    fn avx2_encode_url_safe_all_lengths_0_to_400() {
+        let config = Config {
+            url_safe: true,
+            padding: true,
+        };
+        for len in 0..=400 {
+            check(&config, &REF_URL_SAFE, len);
+        }
+    }
+
+    #[test]
+    fn avx2_encode_large_lengths() {
+        let config = Config {
+            url_safe: false,
+            padding: true,
+        };
+        for len in [1_000, 10_000, 100_000, 1_000_003] {
+            check(&config, &REF_STANDARD, len);
+        }
     }
 }

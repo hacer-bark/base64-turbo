@@ -1,8 +1,8 @@
-# 📚 Technical Documentation
+# Technical Documentation
 
 This directory contains detailed technical reports, formal verification proofs, and architectural decision records for `base64-turbo`.
 
-## 📂 Index
+## Index
 
 ### 🛡️ [Safety & Verification](verification.md)
 **Target Audience:** Security Auditors, Systems Engineers

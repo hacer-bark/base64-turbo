@@ -78,7 +78,7 @@ To ensure portability, the library compiles multiple execution paths into a sing
 
 > **Note:** On x86, runtime detection prevents `SIGILL` (Illegal Instruction) errors. On aarch64, NEON is guaranteed by the architecture specification, so no detection is needed.
 
-## 5. Performance Characteristics
+## 6. Performance Characteristics
 
 Performance is dictated by the complexity of the bit-shuffling required and the available hardware bandwidth.
 

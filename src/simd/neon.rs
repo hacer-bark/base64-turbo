@@ -1,13 +1,22 @@
 use crate::{Config, Error, scalar};
 
-use core::arch::aarch64::*;
+use core::arch::aarch64::{
+    int16x8_t, int32x4_t, int8x16_t, uint16x8_t, uint8x16_t, vaddq_s8, vandq_s8, vandq_u16,
+    vandq_u8, vceqq_u8, vcgeq_u8, vcgtq_s8, vcleq_u8, vcombine_u16, vdupq_n_s8, vdupq_n_u16,
+    vdupq_n_u8, vget_low_s16, vget_low_s8, vget_low_u16, vget_low_u8, vld1q_s16, vld1q_s8,
+    vld1q_u16, vld1q_u8, vmaxvq_u8, vmulq_u16, vmull_high_s16, vmull_high_s8, vmull_high_u16,
+    vmull_s16, vmull_s8, vmull_u16, vmvnq_u8, vorrq_s8, vorrq_u16, vorrq_u8, vpaddq_s16,
+    vpaddq_s32, vqsubq_u8, vqtbl1q_s8, vqtbl1q_u8, vreinterpret_s8_u8, vreinterpretq_s8_u8,
+    vreinterpretq_u16_u8, vreinterpretq_u8_s32, vreinterpretq_u8_s8, vreinterpretq_u8_u16,
+    vshrn_n_u32, vshrq_n_u8, vst1q_u8,
+};
 
 // ======================================================================
 // Helper: unsigned multiply-high for u16x8
 // NEON lacks a direct mulhi_u16; we emulate via widening multiply.
 // ======================================================================
 
-#[inline(always)]
+#[inline]
 unsafe fn vmulhq_u16(a: uint16x8_t, b: uint16x8_t) -> uint16x8_t {
     unsafe {
         let lo = vshrn_n_u32(vmull_u16(vget_low_u16(a), vget_low_u16(b)), 16);
@@ -22,7 +31,7 @@ unsafe fn vmulhq_u16(a: uint16x8_t, b: uint16x8_t) -> uint16x8_t {
 // result[k] = saturate_i16(a[2k]*b[2k] + a[2k+1]*b[2k+1])
 // ======================================================================
 
-#[inline(always)]
+#[inline]
 unsafe fn vmaddubs_s16(a: uint8x16_t, b: int8x16_t) -> int16x8_t {
     unsafe {
         // Widening multiply: u8 * s8 → s16 (low and high halves)
@@ -46,7 +55,7 @@ unsafe fn vmaddubs_s16(a: uint8x16_t, b: int8x16_t) -> int16x8_t {
 // result[k] = a[2k]*b[2k] + a[2k+1]*b[2k+1]
 // ======================================================================
 
-#[inline(always)]
+#[inline]
 unsafe fn vmadd_s32(a: int16x8_t, b: int16x8_t) -> int32x4_t {
     unsafe {
         let prod_lo = vmull_s16(vget_low_s16(a), vget_low_s16(b));
@@ -60,7 +69,7 @@ unsafe fn vmadd_s32(a: int16x8_t, b: int16x8_t) -> int32x4_t {
 // ======================================================================
 
 #[target_feature(enable = "neon")]
-pub unsafe fn encode_slice_neon(config: &Config, input: &[u8], mut dst: *mut u8) {
+pub(crate) unsafe fn encode_slice_neon(config: &Config, input: &[u8], mut dst: *mut u8) {
     let len = input.len();
     let mut src = input.as_ptr();
 
@@ -167,7 +176,7 @@ pub unsafe fn encode_slice_neon(config: &Config, input: &[u8], mut dst: *mut u8)
     }
 
     // --- Scalar fallback for tail ---
-    let processed_len = unsafe { src.offset_from(input.as_ptr()) } as usize;
+    let processed_len = unsafe { src.offset_from(input.as_ptr()) }.cast_unsigned();
     if processed_len < len {
         unsafe { scalar::encode_slice_unsafe(config, &input[processed_len..], dst) };
     }
@@ -177,16 +186,29 @@ pub unsafe fn encode_slice_neon(config: &Config, input: &[u8], mut dst: *mut u8)
 // NEON Decoder
 // ======================================================================
 
-#[target_feature(enable = "neon")]
-pub unsafe fn decode_slice_neon(
-    config: &Config,
-    input: &[u8],
-    mut dst: *mut u8,
-) -> Result<usize, Error> {
-    let len = input.len();
-    let mut src = input.as_ptr();
-    let dst_start = dst;
+/// Precomputed NEON vector constants shared by every lane processed in
+/// [`decode_slice_neon`]. Factored out purely to keep that function's body
+/// under clippy's line-count threshold; the values themselves are unchanged.
+struct DecodeConstantsNeon {
+    lut_hi_nibble: int8x16_t,
+    sym_62: uint8x16_t,
+    sym_63: uint8x16_t,
+    delta_62: int8x16_t,
+    delta_63: int8x16_t,
+    range_0: uint8x16_t,
+    range_9_end: uint8x16_t,
+    range_a: uint8x16_t,
+    range_z: uint8x16_t,
+    range_lower_start: uint8x16_t,
+    range_lower_end: uint8x16_t,
+    pack_l1: int8x16_t,
+    pack_l2: int16x8_t,
+    pack_shuffle: uint8x16_t,
+    mask_hi_nibble: uint8x16_t,
+}
 
+#[target_feature(enable = "neon")]
+unsafe fn decode_constants_neon(config: &Config) -> DecodeConstantsNeon {
     // High-nibble LUT for character → index offset
     let lut_hi_nibble = unsafe {
         let l: [i8; 16] = [0, 0, 19, 4, -65, -65, -71, -71, 0, 0, 0, 0, 0, 0, 0, 0];
@@ -211,8 +233,8 @@ pub unsafe fn decode_slice_neon(
     let range_9_end = vdupq_n_u8(b'9');
     let range_a = vdupq_n_u8(b'A');
     let range_z = vdupq_n_u8(b'Z');
-    let range_a_low = vdupq_n_u8(b'a');
-    let range_z_low = vdupq_n_u8(b'z');
+    let range_lower_start = vdupq_n_u8(b'a');
+    let range_lower_end = vdupq_n_u8(b'z');
 
     // Packing constants (same as x86 PACK_L1/L2/SHUFFLE but 128-bit)
     let pack_l1 = unsafe {
@@ -236,6 +258,53 @@ pub unsafe fn decode_slice_neon(
     };
 
     let mask_hi_nibble = vdupq_n_u8(0x0F);
+
+    DecodeConstantsNeon {
+        lut_hi_nibble,
+        sym_62,
+        sym_63,
+        delta_62,
+        delta_63,
+        range_0,
+        range_9_end,
+        range_a,
+        range_z,
+        range_lower_start,
+        range_lower_end,
+        pack_l1,
+        pack_l2,
+        pack_shuffle,
+        mask_hi_nibble,
+    }
+}
+
+#[target_feature(enable = "neon")]
+pub(crate) unsafe fn decode_slice_neon(
+    config: &Config,
+    input: &[u8],
+    mut dst: *mut u8,
+) -> Result<usize, Error> {
+    let len = input.len();
+    let mut src = input.as_ptr();
+    let dst_start = dst;
+
+    let DecodeConstantsNeon {
+        lut_hi_nibble,
+        sym_62,
+        sym_63,
+        delta_62,
+        delta_63,
+        range_0,
+        range_9_end,
+        range_a,
+        range_z,
+        range_lower_start,
+        range_lower_end,
+        pack_l1,
+        pack_l2,
+        pack_shuffle,
+        mask_hi_nibble,
+    } = unsafe { decode_constants_neon(config) };
 
     // Decode & validate one 128-bit vector
     macro_rules! decode_vec {
@@ -262,8 +331,8 @@ pub unsafe fn decode_slice_neon(
             );
             let is_upper = vandq_u8(vcgeq_u8($input_vec, range_a), vcleq_u8($input_vec, range_z));
             let is_lower = vandq_u8(
-                vcgeq_u8($input_vec, range_a_low),
-                vcleq_u8($input_vec, range_z_low),
+                vcgeq_u8($input_vec, range_lower_start),
+                vcleq_u8($input_vec, range_lower_end),
             );
             let is_valid = vorrq_u8(is_sym, vorrq_u8(is_num, vorrq_u8(is_upper, is_lower)));
 
@@ -337,9 +406,24 @@ pub unsafe fn decode_slice_neon(
         dst = unsafe { dst.add(12) };
     }
 
-    // --- Scalar fallback for tail ---
-    let processed_len = unsafe { src.offset_from(input.as_ptr()) } as usize;
-    if processed_len < len {
+    unsafe { decode_scalar_tail(config, input, src, dst, dst_start) }
+}
+
+/// Decodes any bytes left over after the vectorized main/tail loops via the
+/// scalar fallback, then returns the total number of bytes written.
+///
+/// # Safety
+/// `src` must point within `input`, and `dst`/`dst_start` must satisfy the
+/// same contract as [`scalar::decode_slice_unsafe`].
+unsafe fn decode_scalar_tail(
+    config: &Config,
+    input: &[u8],
+    src: *const u8,
+    mut dst: *mut u8,
+    dst_start: *mut u8,
+) -> Result<usize, Error> {
+    let processed_len = unsafe { src.offset_from(input.as_ptr()) }.cast_unsigned();
+    if processed_len < input.len() {
         dst = unsafe {
             dst.add(scalar::decode_slice_unsafe(
                 config,
@@ -349,7 +433,7 @@ pub unsafe fn decode_slice_neon(
         };
     }
 
-    Ok(unsafe { dst.offset_from(dst_start) } as usize)
+    Ok(unsafe { dst.offset_from(dst_start) }.cast_unsigned())
 }
 
 #[cfg(test)]

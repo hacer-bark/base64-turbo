@@ -51,7 +51,7 @@ Even without SIMD, our scalar implementation eliminates many bounds checks found
 Simply disable the default `std` feature in your `Cargo.toml`. The library does not require a heap allocator if you use the `_into` (slice-based) APIs.
 ```toml
 [dependencies]
-base64-turbo = { version = "0.1", default-features = false }
+base64-turbo = { version = "0.2", default-features = false }
 ```
 
 ## 🔌 Compatibility & Ecosystem
@@ -68,11 +68,11 @@ You can swap `base64-turbo` into any project using standard Base64 without break
 To keep compile times low and dependencies minimal, we do not include `serde` implementations by default. However, you can easily use `base64-turbo` inside a custom `serde` serializer/deserializer.
 
 ### Q: Why should I use this over the C library (`turbo-base64`)?
-**A:** **Memory Safety.**
-The C library is faster (~29 GiB/s vs our ~12 GiB/s), but it is **Unsafe**. It relies on unchecked pointer arithmetic. `base64-turbo` offers a strategic compromise: saturating memory bandwidth while maintaining **100% Rust Memory Safety guarantees**.
+**A:** **Formally verified memory safety, at a moderate speed cost.**
+The C library is faster (~29 GiB/s vs our ~12-20 GiB/s) and relies on unchecked pointer arithmetic with no published safety audits. `base64-turbo` trades some of that throughput for `unsafe` paths that are Kani-proven and MIRI-checked (see [Safety & Verification](./verification.md) for exactly what that covers).
 
 ### Q: How can I trust this code?
-**A:** **Trust the math, not the author.**
-1.  Check the **[GitHub Actions](https://github.com/hacer-bark/base64-turbo/actions)** to see the live Kani/MIRI logs.
-2.  Inspect the **GPG Signatures** on our commits.
-3.  Read the **[Verification Report](./verification.md)** to understand our audit methodology.
+**A:** Don't take our word for it — check the evidence directly.
+1.  Check **[GitHub Actions](https://github.com/hacer-bark/base64-turbo/actions)** for the live Kani/MIRI/fuzzing CI logs.
+2.  Read the **[Verification Report](./verification.md)** to see exactly which architectures are Kani-proven versus MIRI-only, and what each check actually covers.
+3.  Read the `unsafe` code yourself — every `unsafe` block is documented with the safety contract it relies on.

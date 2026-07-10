@@ -31,12 +31,28 @@ rand = "0.10"
 criterion = { version = "0.8", features = ["html_reports"] }
 base64 = "0.22"
 base64-simd = "0.8"
-base64-turbo = { path = "." }
+
+[lints.rust]
+warnings = { level = "deny", priority = -1 }
+future_incompatible = { level = "deny", priority = -1 }
+unused = { level = "deny", priority = -1 }
+missing_docs = "deny"
+missing_debug_implementations = "deny"
+unreachable_pub = "deny"
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+cargo = { level = "deny", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+redundant_pub_crate = "allow"
 
 [[bench]]
 name = "encoding_bench"
 harness = false
-
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
-

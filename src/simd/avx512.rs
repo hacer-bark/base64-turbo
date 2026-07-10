@@ -2,9 +2,25 @@ use super::{PACK_L1, PACK_L2, PACK_SHUFFLE};
 use crate::{Config, Error, scalar};
 
 #[cfg(target_arch = "x86")]
-use std::arch::x86::*;
+use std::arch::x86::{
+    __m128i, __m512i, _kor_mask64, _knot_mask64, _mm512_add_epi8, _mm512_and_si512, _mm512_broadcast_i32x4,
+    _mm512_castsi512_si128, _mm512_cmpeq_epi8_mask, _mm512_cmpgt_epi8_mask, _mm512_cmple_epu8_mask,
+    _mm512_extracti32x4_epi32, _mm512_loadu_si512, _mm512_madd_epi16, _mm512_maddubs_epi16,
+    _mm512_mask_add_epi8, _mm512_movepi8_mask, _mm512_mulhi_epu16, _mm512_mullo_epi16, _mm512_or_si512,
+    _mm512_permutex2var_epi8, _mm512_permutexvar_epi32, _mm512_permutexvar_epi8, _mm512_set1_epi16,
+    _mm512_set1_epi32, _mm512_set1_epi8, _mm512_setr_epi32, _mm512_shuffle_epi8, _mm512_srli_epi16,
+    _mm512_storeu_si512, _mm512_sub_epi8, _mm512_subs_epu8, _mm_loadu_si128, _mm_setr_epi8, _mm_storeu_si128,
+};
 #[cfg(target_arch = "x86_64")]
-use std::arch::x86_64::*;
+use std::arch::x86_64::{
+    __m128i, __m512i, _kor_mask64, _knot_mask64, _mm512_add_epi8, _mm512_and_si512, _mm512_broadcast_i32x4,
+    _mm512_castsi512_si128, _mm512_cmpeq_epi8_mask, _mm512_cmpgt_epi8_mask, _mm512_cmple_epu8_mask,
+    _mm512_extracti32x4_epi32, _mm512_loadu_si512, _mm512_madd_epi16, _mm512_maddubs_epi16,
+    _mm512_mask_add_epi8, _mm512_movepi8_mask, _mm512_mulhi_epu16, _mm512_mullo_epi16, _mm512_or_si512,
+    _mm512_permutex2var_epi8, _mm512_permutexvar_epi32, _mm512_permutexvar_epi8, _mm512_set1_epi16,
+    _mm512_set1_epi32, _mm512_set1_epi8, _mm512_setr_epi32, _mm512_shuffle_epi8, _mm512_srli_epi16,
+    _mm512_storeu_si512, _mm512_sub_epi8, _mm512_subs_epu8, _mm_loadu_si128, _mm_setr_epi8, _mm_storeu_si128,
+};
 
 // ======================================================================
 // AVX-512 VBMI Lookup Tables (compile-time)
@@ -20,6 +36,7 @@ const VBMI_ENCODE_URL_SAFE: [u8; 64] =
 
 /// Standard Base64 reverse lookup (128 bytes) for VBMI `vpermi2b` decoder.
 /// Maps ASCII 0–127 → 6-bit index. Invalid entries contain `0xFF`.
+#[allow(clippy::cast_possible_truncation)] // `i` is always < 64, fits in u8
 const VBMI_DECODE_STANDARD: [u8; 128] = {
     let mut t = [0xFFu8; 128];
     let a = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -32,6 +49,7 @@ const VBMI_DECODE_STANDARD: [u8; 128] = {
 };
 
 /// URL-safe Base64 reverse lookup (128 bytes) for VBMI `vpermi2b` decoder.
+#[allow(clippy::cast_possible_truncation)] // `i` is always < 64, fits in u8
 const VBMI_DECODE_URL_SAFE: [u8; 128] = {
     let mut t = [0xFFu8; 128];
     let a = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
@@ -48,7 +66,7 @@ const VBMI_DECODE_URL_SAFE: [u8; 128] = {
 // ======================================================================
 
 #[target_feature(enable = "avx512f,avx512bw")]
-pub unsafe fn encode_slice_avx512(config: &Config, input: &[u8], mut dst: *mut u8) {
+pub(crate) unsafe fn encode_slice_avx512(config: &Config, input: &[u8], mut dst: *mut u8) {
     let len = input.len();
     let mut src = input.as_ptr();
 
@@ -60,8 +78,8 @@ pub unsafe fn encode_slice_avx512(config: &Config, input: &[u8], mut dst: *mut u
     // Masks and multiplier
     let mask_lo_6bits = _mm512_set1_epi16(0x003F);
     let mask_hi_6bits = _mm512_set1_epi16(0x3F00);
-    let mul_right_shift = _mm512_set1_epi32(0x04000040);
-    let mul_left_shift = _mm512_set1_epi32(0x01000010);
+    let mul_right_shift = _mm512_set1_epi32(0x0400_0040);
+    let mul_left_shift = _mm512_set1_epi32(0x0100_0010);
 
     // Character mapping
     let offset_base = _mm512_set1_epi8(65);
@@ -114,7 +132,7 @@ pub unsafe fn encode_slice_avx512(config: &Config, input: &[u8], mut dst: *mut u
 
     macro_rules! load_48_bytes {
         ($ptr:expr) => {{
-            let v = unsafe { _mm512_loadu_si512($ptr as *const _) };
+            let v = unsafe { _mm512_loadu_si512($ptr.cast()) };
             _mm512_permutexvar_epi32(permute_idx, v)
         }};
     }
@@ -138,10 +156,10 @@ pub unsafe fn encode_slice_avx512(config: &Config, input: &[u8], mut dst: *mut u
         let i3 = encode_vec!(v3);
 
         // Store results
-        unsafe { _mm512_storeu_si512(dst as *mut _, i0) };
-        unsafe { _mm512_storeu_si512(dst.add(64) as *mut _, i1) };
-        unsafe { _mm512_storeu_si512(dst.add(128) as *mut _, i2) };
-        unsafe { _mm512_storeu_si512(dst.add(192) as *mut _, i3) };
+        unsafe { _mm512_storeu_si512(dst.cast(), i0) };
+        unsafe { _mm512_storeu_si512(dst.add(64).cast(), i1) };
+        unsafe { _mm512_storeu_si512(dst.add(128).cast(), i2) };
+        unsafe { _mm512_storeu_si512(dst.add(192).cast(), i3) };
 
         src = unsafe { src.add(192) };
         dst = unsafe { dst.add(256) };
@@ -155,29 +173,42 @@ pub unsafe fn encode_slice_avx512(config: &Config, input: &[u8], mut dst: *mut u
     while src < src_end_single {
         let v = load_48_bytes!(src);
         let res = encode_vec!(v);
-        unsafe { _mm512_storeu_si512(dst as *mut _, res) };
+        unsafe { _mm512_storeu_si512(dst.cast(), res) };
 
         src = unsafe { src.add(48) };
         dst = unsafe { dst.add(64) };
     }
 
     // Scalar Fallback
-    let processed_len = unsafe { src.offset_from(input.as_ptr()) } as usize;
+    let processed_len = unsafe { src.offset_from(input.as_ptr()) }.cast_unsigned();
     if processed_len < len {
         unsafe { scalar::encode_slice_unsafe(config, &input[processed_len..], dst) };
     }
 }
 
-#[target_feature(enable = "avx512f,avx512bw")]
-pub unsafe fn decode_slice_avx512(
-    config: &Config,
-    input: &[u8],
-    mut dst: *mut u8,
-) -> Result<usize, Error> {
-    let len = input.len();
-    let mut src = input.as_ptr();
-    let dst_start = dst;
+/// Precomputed AVX-512 vector constants shared by every lane processed in
+/// [`decode_slice_avx512`]. Factored out purely to keep that function's body
+/// under clippy's line-count threshold; the values themselves are unchanged.
+struct DecodeConstantsAvx512 {
+    lut_hi_nibble: __m512i,
+    sym_62: __m512i,
+    sym_63: __m512i,
+    delta_62: __m512i,
+    delta_63: __m512i,
+    range_0: __m512i,
+    digit_span: __m512i,
+    range_a: __m512i,
+    upper_span: __m512i,
+    range_a_low: __m512i,
+    range_z_low_len: __m512i,
+    pack_l1: __m512i,
+    pack_l2: __m512i,
+    pack_shuffle: __m512i,
+    mask_hi_nibble: __m512i,
+}
 
+#[target_feature(enable = "avx512f,avx512bw")]
+unsafe fn decode_constants_avx512(config: &Config) -> DecodeConstantsAvx512 {
     // LUT for offsets based on high nibble (bits 4-7).
     let lut_hi_nibble = _mm512_broadcast_i32x4(_mm_setr_epi8(
         0, 0, 19, 4, -65, -65, -71, -71, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -189,33 +220,77 @@ pub unsafe fn decode_slice_avx512(
     } else {
         (b'+', b'/')
     };
-    let sym_62 = _mm512_set1_epi8(char_62 as i8);
-    let sym_63 = _mm512_set1_epi8(char_63 as i8);
+    let sym_62 = _mm512_set1_epi8(char_62.cast_signed());
+    let sym_63 = _mm512_set1_epi8(char_63.cast_signed());
 
     let (fix_62, fix_63) = if config.url_safe { (-2, 33) } else { (0, -3) };
     let delta_62 = _mm512_set1_epi8(fix_62);
     let delta_63 = _mm512_set1_epi8(fix_63);
 
     // Range Validation Constants
-    let range_0 = _mm512_set1_epi8(b'0' as i8);
-    let range_9_len = _mm512_set1_epi8(9);
+    let range_0 = _mm512_set1_epi8(b'0'.cast_signed());
+    let digit_span = _mm512_set1_epi8(9);
 
-    let range_a = _mm512_set1_epi8(b'A' as i8);
-    let range_z_len = _mm512_set1_epi8(25);
+    let range_a = _mm512_set1_epi8(b'A'.cast_signed());
+    let upper_span = _mm512_set1_epi8(25);
 
-    let range_a_low = _mm512_set1_epi8(b'a' as i8);
+    let range_a_low = _mm512_set1_epi8(b'a'.cast_signed());
     let range_z_low_len = _mm512_set1_epi8(25);
 
     // Packing Constants
-    let pack_l1 =
-        unsafe { _mm512_broadcast_i32x4(_mm_loadu_si128(PACK_L1.as_ptr() as *const __m128i)) };
-    let pack_l2 =
-        unsafe { _mm512_broadcast_i32x4(_mm_loadu_si128(PACK_L2.as_ptr() as *const __m128i)) };
-    let pack_shuffle =
-        unsafe { _mm512_broadcast_i32x4(_mm_loadu_si128(PACK_SHUFFLE.as_ptr() as *const __m128i)) };
+    let pack_l1 = unsafe { _mm512_broadcast_i32x4(_mm_loadu_si128(PACK_L1.as_ptr().cast::<__m128i>())) };
+    let pack_l2 = unsafe { _mm512_broadcast_i32x4(_mm_loadu_si128(PACK_L2.as_ptr().cast::<__m128i>())) };
+    let pack_shuffle = unsafe { _mm512_broadcast_i32x4(_mm_loadu_si128(PACK_SHUFFLE.as_ptr().cast::<__m128i>())) };
 
     // Masks for nibble extraction
     let mask_hi_nibble = _mm512_set1_epi8(0x0F);
+
+    DecodeConstantsAvx512 {
+        lut_hi_nibble,
+        sym_62,
+        sym_63,
+        delta_62,
+        delta_63,
+        range_0,
+        digit_span,
+        range_a,
+        upper_span,
+        range_a_low,
+        range_z_low_len,
+        pack_l1,
+        pack_l2,
+        pack_shuffle,
+        mask_hi_nibble,
+    }
+}
+
+#[target_feature(enable = "avx512f,avx512bw")]
+pub(crate) unsafe fn decode_slice_avx512(
+    config: &Config,
+    input: &[u8],
+    mut dst: *mut u8,
+) -> Result<usize, Error> {
+    let len = input.len();
+    let mut src = input.as_ptr();
+    let dst_start = dst;
+
+    let DecodeConstantsAvx512 {
+        lut_hi_nibble,
+        sym_62,
+        sym_63,
+        delta_62,
+        delta_63,
+        range_0,
+        digit_span,
+        range_a,
+        upper_span,
+        range_a_low,
+        range_z_low_len,
+        pack_l1,
+        pack_l2,
+        pack_shuffle,
+        mask_hi_nibble,
+    } = unsafe { decode_constants_avx512(config) };
 
     // Decode & Validate Single Vector
     // Computed using mask ops for zero-blend performance
@@ -234,10 +309,10 @@ pub unsafe fn decode_slice_avx512(
             let is_sym = _kor_mask64(mask_62, mask_63);
 
             let sub_0 = _mm512_sub_epi8($input, range_0);
-            let is_num = _mm512_cmple_epu8_mask(sub_0, range_9_len);
+            let is_num = _mm512_cmple_epu8_mask(sub_0, digit_span);
 
             let sub_a = _mm512_sub_epi8($input, range_a);
-            let is_upper = _mm512_cmple_epu8_mask(sub_a, range_z_len);
+            let is_upper = _mm512_cmple_epu8_mask(sub_a, upper_span);
 
             let sub_a_low = _mm512_sub_epi8($input, range_a_low);
             let is_lower = _mm512_cmple_epu8_mask(sub_a_low, range_z_low_len);
@@ -257,13 +332,13 @@ pub unsafe fn decode_slice_avx512(
             let out = _mm512_shuffle_epi8(p, pack_shuffle);
 
             let lane0 = _mm512_castsi512_si128(out);
-            unsafe { _mm_storeu_si128($dst_ptr as *mut __m128i, lane0) };
+            unsafe { _mm_storeu_si128($dst_ptr.cast::<__m128i>(), lane0) };
             let lane1 = _mm512_extracti32x4_epi32(out, 1);
-            unsafe { _mm_storeu_si128($dst_ptr.add(12) as *mut __m128i, lane1) };
+            unsafe { _mm_storeu_si128($dst_ptr.add(12).cast::<__m128i>(), lane1) };
             let lane2 = _mm512_extracti32x4_epi32(out, 2);
-            unsafe { _mm_storeu_si128($dst_ptr.add(24) as *mut __m128i, lane2) };
+            unsafe { _mm_storeu_si128($dst_ptr.add(24).cast::<__m128i>(), lane2) };
             let lane3 = _mm512_extracti32x4_epi32(out, 3);
-            unsafe { _mm_storeu_si128($dst_ptr.add(36) as *mut __m128i, lane3) };
+            unsafe { _mm_storeu_si128($dst_ptr.add(36).cast::<__m128i>(), lane3) };
         }};
     }
 
@@ -274,10 +349,10 @@ pub unsafe fn decode_slice_avx512(
 
     while src < src_end_256 {
         // Load 4 vectors
-        let v0 = unsafe { _mm512_loadu_si512(src as *const __m512i) };
-        let v1 = unsafe { _mm512_loadu_si512(src.add(64) as *const __m512i) };
-        let v2 = unsafe { _mm512_loadu_si512(src.add(128) as *const __m512i) };
-        let v3 = unsafe { _mm512_loadu_si512(src.add(192) as *const __m512i) };
+        let v0 = unsafe { _mm512_loadu_si512(src.cast::<__m512i>()) };
+        let v1 = unsafe { _mm512_loadu_si512(src.add(64).cast::<__m512i>()) };
+        let v2 = unsafe { _mm512_loadu_si512(src.add(128).cast::<__m512i>()) };
+        let v3 = unsafe { _mm512_loadu_si512(src.add(192).cast::<__m512i>()) };
 
         // Process
         let (i0, e0) = decode_vec!(v0);
@@ -306,7 +381,7 @@ pub unsafe fn decode_slice_avx512(
     let src_end_64 = unsafe { input.as_ptr().add(aligned_len_64) };
 
     while src < src_end_64 {
-        let v = unsafe { _mm512_loadu_si512(src as *const __m512i) };
+        let v = unsafe { _mm512_loadu_si512(src.cast::<__m512i>()) };
         let (idx, err_mask) = decode_vec!(v);
 
         if err_mask != 0 {
@@ -319,9 +394,24 @@ pub unsafe fn decode_slice_avx512(
         dst = unsafe { dst.add(48) };
     }
 
-    // Scalar Fallback
-    let processed_len = unsafe { src.offset_from(input.as_ptr()) } as usize;
-    if processed_len < len {
+    unsafe { decode_scalar_tail(config, input, src, dst, dst_start) }
+}
+
+/// Decodes any bytes left over after the vectorized main/tail loops via the
+/// scalar fallback, then returns the total number of bytes written.
+///
+/// # Safety
+/// `src` must point within `input`, and `dst`/`dst_start` must satisfy the
+/// same contract as [`scalar::decode_slice_unsafe`].
+unsafe fn decode_scalar_tail(
+    config: &Config,
+    input: &[u8],
+    src: *const u8,
+    mut dst: *mut u8,
+    dst_start: *mut u8,
+) -> Result<usize, Error> {
+    let processed_len = unsafe { src.offset_from(input.as_ptr()) }.cast_unsigned();
+    if processed_len < input.len() {
         dst = unsafe {
             dst.add(scalar::decode_slice_unsafe(
                 config,
@@ -331,7 +421,7 @@ pub unsafe fn decode_slice_avx512(
         };
     }
 
-    Ok(unsafe { dst.offset_from(dst_start) } as usize)
+    Ok(unsafe { dst.offset_from(dst_start) }.cast_unsigned())
 }
 
 // ======================================================================
@@ -339,7 +429,7 @@ pub unsafe fn decode_slice_avx512(
 // ======================================================================
 
 #[target_feature(enable = "avx512f,avx512bw,avx512vbmi")]
-pub unsafe fn encode_slice_avx512_vbmi(config: &Config, input: &[u8], mut dst: *mut u8) {
+pub(crate) unsafe fn encode_slice_avx512_vbmi(config: &Config, input: &[u8], mut dst: *mut u8) {
     let len = input.len();
     let mut src = input.as_ptr();
 
@@ -351,15 +441,15 @@ pub unsafe fn encode_slice_avx512_vbmi(config: &Config, input: &[u8], mut dst: *
     // Masks and multiplier
     let mask_lo_6bits = _mm512_set1_epi16(0x003F);
     let mask_hi_6bits = _mm512_set1_epi16(0x3F00);
-    let mul_right_shift = _mm512_set1_epi32(0x04000040);
-    let mul_left_shift = _mm512_set1_epi32(0x01000010);
+    let mul_right_shift = _mm512_set1_epi32(0x0400_0040);
+    let mul_left_shift = _mm512_set1_epi32(0x0100_0010);
 
     // VBMI: Load the full 64-byte alphabet into a single ZMM register.
     // vpermb uses bits [5:0] of each index byte to select from this table.
     let alphabet = if config.url_safe {
-        unsafe { _mm512_loadu_si512(VBMI_ENCODE_URL_SAFE.as_ptr() as *const _) }
+        unsafe { _mm512_loadu_si512(VBMI_ENCODE_URL_SAFE.as_ptr().cast()) }
     } else {
-        unsafe { _mm512_loadu_si512(VBMI_ENCODE_STANDARD.as_ptr() as *const _) }
+        unsafe { _mm512_loadu_si512(VBMI_ENCODE_STANDARD.as_ptr().cast()) }
     };
 
     macro_rules! encode_vec_vbmi {
@@ -386,7 +476,7 @@ pub unsafe fn encode_slice_avx512_vbmi(config: &Config, input: &[u8], mut dst: *
 
     macro_rules! load_48_bytes {
         ($ptr:expr) => {{
-            let v = unsafe { _mm512_loadu_si512($ptr as *const _) };
+            let v = unsafe { _mm512_loadu_si512($ptr.cast()) };
             _mm512_permutexvar_epi32(permute_idx, v)
         }};
     }
@@ -407,10 +497,10 @@ pub unsafe fn encode_slice_avx512_vbmi(config: &Config, input: &[u8], mut dst: *
         let i2 = encode_vec_vbmi!(v2);
         let i3 = encode_vec_vbmi!(v3);
 
-        unsafe { _mm512_storeu_si512(dst as *mut _, i0) };
-        unsafe { _mm512_storeu_si512(dst.add(64) as *mut _, i1) };
-        unsafe { _mm512_storeu_si512(dst.add(128) as *mut _, i2) };
-        unsafe { _mm512_storeu_si512(dst.add(192) as *mut _, i3) };
+        unsafe { _mm512_storeu_si512(dst.cast(), i0) };
+        unsafe { _mm512_storeu_si512(dst.add(64).cast(), i1) };
+        unsafe { _mm512_storeu_si512(dst.add(128).cast(), i2) };
+        unsafe { _mm512_storeu_si512(dst.add(192).cast(), i3) };
 
         src = unsafe { src.add(192) };
         dst = unsafe { dst.add(256) };
@@ -424,14 +514,14 @@ pub unsafe fn encode_slice_avx512_vbmi(config: &Config, input: &[u8], mut dst: *
     while src < src_end_single {
         let v = load_48_bytes!(src);
         let res = encode_vec_vbmi!(v);
-        unsafe { _mm512_storeu_si512(dst as *mut _, res) };
+        unsafe { _mm512_storeu_si512(dst.cast(), res) };
 
         src = unsafe { src.add(48) };
         dst = unsafe { dst.add(64) };
     }
 
     // Scalar Fallback
-    let processed_len = unsafe { src.offset_from(input.as_ptr()) } as usize;
+    let processed_len = unsafe { src.offset_from(input.as_ptr()) }.cast_unsigned();
     if processed_len < len {
         unsafe { scalar::encode_slice_unsafe(config, &input[processed_len..], dst) };
     }
@@ -442,7 +532,7 @@ pub unsafe fn encode_slice_avx512_vbmi(config: &Config, input: &[u8], mut dst: *
 // ======================================================================
 
 #[target_feature(enable = "avx512f,avx512bw,avx512vbmi")]
-pub unsafe fn decode_slice_avx512_vbmi(
+pub(crate) unsafe fn decode_slice_avx512_vbmi(
     config: &Config,
     input: &[u8],
     mut dst: *mut u8,
@@ -460,19 +550,16 @@ pub unsafe fn decode_slice_avx512_vbmi(
     } else {
         &VBMI_DECODE_STANDARD
     };
-    let lut_lo = unsafe { _mm512_loadu_si512(lut.as_ptr() as *const _) };
-    let lut_hi = unsafe { _mm512_loadu_si512(lut.as_ptr().add(64) as *const _) };
+    let lut_lo = unsafe { _mm512_loadu_si512(lut.as_ptr().cast()) };
+    let lut_hi = unsafe { _mm512_loadu_si512(lut.as_ptr().add(64).cast()) };
 
     // Sentinel for invalid characters
     let invalid = _mm512_set1_epi8(-1);
 
     // Packing Constants
-    let pack_l1 =
-        unsafe { _mm512_broadcast_i32x4(_mm_loadu_si128(PACK_L1.as_ptr() as *const __m128i)) };
-    let pack_l2 =
-        unsafe { _mm512_broadcast_i32x4(_mm_loadu_si128(PACK_L2.as_ptr() as *const __m128i)) };
-    let pack_shuffle =
-        unsafe { _mm512_broadcast_i32x4(_mm_loadu_si128(PACK_SHUFFLE.as_ptr() as *const __m128i)) };
+    let pack_l1 = unsafe { _mm512_broadcast_i32x4(_mm_loadu_si128(PACK_L1.as_ptr().cast::<__m128i>())) };
+    let pack_l2 = unsafe { _mm512_broadcast_i32x4(_mm_loadu_si128(PACK_L2.as_ptr().cast::<__m128i>())) };
+    let pack_shuffle = unsafe { _mm512_broadcast_i32x4(_mm_loadu_si128(PACK_SHUFFLE.as_ptr().cast::<__m128i>())) };
 
     // Decode & Validate Single Vector (VBMI path)
     macro_rules! decode_vec_vbmi {
@@ -499,13 +586,13 @@ pub unsafe fn decode_slice_avx512_vbmi(
             let out = _mm512_shuffle_epi8(p, pack_shuffle);
 
             let lane0 = _mm512_castsi512_si128(out);
-            unsafe { _mm_storeu_si128($dst_ptr as *mut __m128i, lane0) };
+            unsafe { _mm_storeu_si128($dst_ptr.cast::<__m128i>(), lane0) };
             let lane1 = _mm512_extracti32x4_epi32(out, 1);
-            unsafe { _mm_storeu_si128($dst_ptr.add(12) as *mut __m128i, lane1) };
+            unsafe { _mm_storeu_si128($dst_ptr.add(12).cast::<__m128i>(), lane1) };
             let lane2 = _mm512_extracti32x4_epi32(out, 2);
-            unsafe { _mm_storeu_si128($dst_ptr.add(24) as *mut __m128i, lane2) };
+            unsafe { _mm_storeu_si128($dst_ptr.add(24).cast::<__m128i>(), lane2) };
             let lane3 = _mm512_extracti32x4_epi32(out, 3);
-            unsafe { _mm_storeu_si128($dst_ptr.add(36) as *mut __m128i, lane3) };
+            unsafe { _mm_storeu_si128($dst_ptr.add(36).cast::<__m128i>(), lane3) };
         }};
     }
 
@@ -515,10 +602,10 @@ pub unsafe fn decode_slice_avx512_vbmi(
     let src_end_256 = unsafe { src.add(aligned_len_256) };
 
     while src < src_end_256 {
-        let v0 = unsafe { _mm512_loadu_si512(src as *const __m512i) };
-        let v1 = unsafe { _mm512_loadu_si512(src.add(64) as *const __m512i) };
-        let v2 = unsafe { _mm512_loadu_si512(src.add(128) as *const __m512i) };
-        let v3 = unsafe { _mm512_loadu_si512(src.add(192) as *const __m512i) };
+        let v0 = unsafe { _mm512_loadu_si512(src.cast::<__m512i>()) };
+        let v1 = unsafe { _mm512_loadu_si512(src.add(64).cast::<__m512i>()) };
+        let v2 = unsafe { _mm512_loadu_si512(src.add(128).cast::<__m512i>()) };
+        let v3 = unsafe { _mm512_loadu_si512(src.add(192).cast::<__m512i>()) };
 
         let (i0, e0) = decode_vec_vbmi!(v0);
         let (i1, e1) = decode_vec_vbmi!(v1);
@@ -544,7 +631,7 @@ pub unsafe fn decode_slice_avx512_vbmi(
     let src_end_64 = unsafe { input.as_ptr().add(aligned_len_64) };
 
     while src < src_end_64 {
-        let v = unsafe { _mm512_loadu_si512(src as *const __m512i) };
+        let v = unsafe { _mm512_loadu_si512(src.cast::<__m512i>()) };
         let (idx, err_mask) = decode_vec_vbmi!(v);
 
         if err_mask != 0 {
@@ -558,7 +645,7 @@ pub unsafe fn decode_slice_avx512_vbmi(
     }
 
     // Scalar Fallback
-    let processed_len = unsafe { src.offset_from(input.as_ptr()) } as usize;
+    let processed_len = unsafe { src.offset_from(input.as_ptr()) }.cast_unsigned();
     if processed_len < len {
         dst = unsafe {
             dst.add(scalar::decode_slice_unsafe(
@@ -569,7 +656,7 @@ pub unsafe fn decode_slice_avx512_vbmi(
         };
     }
 
-    Ok(unsafe { dst.offset_from(dst_start) } as usize)
+    Ok(unsafe { dst.offset_from(dst_start) }.cast_unsigned())
 }
 
 #[cfg(kani)]
@@ -577,6 +664,10 @@ mod kani_verification_avx512 {
     use super::*;
     use crate::{Config, STANDARD as TURBO_STANDARD, STANDARD_NO_PAD as TURBO_STANDARD_NO_PAD};
     use std::mem::transmute;
+    #[cfg(target_arch = "x86")]
+    use std::arch::x86::__mmask64;
+    #[cfg(target_arch = "x86_64")]
+    use std::arch::x86_64::__mmask64;
 
     // --- CONSTANTS ---
 

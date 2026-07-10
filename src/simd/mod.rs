@@ -4,14 +4,16 @@ mod avx2;
 mod avx512;
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-pub use avx2::*;
+pub(crate) use avx2::{decode_slice_avx2, encode_slice_avx2};
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-pub use avx512::*;
+pub(crate) use avx512::{
+    decode_slice_avx512, decode_slice_avx512_vbmi, encode_slice_avx512, encode_slice_avx512_vbmi,
+};
 
 #[cfg(target_arch = "aarch64")]
 mod neon;
 #[cfg(target_arch = "aarch64")]
-pub use neon::*;
+pub(crate) use neon::{decode_slice_neon, encode_slice_neon};
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 const PACK_L1: [i8; 32] = [

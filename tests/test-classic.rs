@@ -1,3 +1,6 @@
+//! Integration tests verifying `base64-turbo`'s output against the reference `base64` crate.
+#![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
+
 use base64_turbo::{Engine, Error, STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD};
 
 // Reference Crate for Oracle Verification
@@ -26,7 +29,7 @@ fn random_bytes(len: usize) -> Vec<u8> {
 #[track_caller]
 fn assert_oracle_match(
     input: &[u8],
-    turbo_engine: &Engine,
+    turbo_engine: Engine,
     ref_engine: &base64::engine::GeneralPurpose,
 ) {
     // 1. Reference Truth
@@ -69,7 +72,7 @@ fn test_oracle_standard_exhaustive_small() {
     // This implicitly covers `encoded_len` and `estimate_decoded_len` correctness via helpers.
     for i in 0..=92 {
         let data = random_bytes(i);
-        assert_oracle_match(&data, &STANDARD, &REF_STANDARD);
+        assert_oracle_match(&data, STANDARD, &REF_STANDARD);
     }
 }
 
@@ -81,7 +84,7 @@ fn test_oracle_fuzz_large() {
     for _ in 0..100 {
         let len = rng.random_range(1024..65536);
         let data = random_bytes(len);
-        assert_oracle_match(&data, &STANDARD, &REF_STANDARD);
+        assert_oracle_match(&data, STANDARD, &REF_STANDARD);
     }
 }
 
@@ -92,9 +95,9 @@ fn test_oracle_configs() {
     for _ in 0..25 {
         let len = rng.random_range(1..512);
         let data = random_bytes(len);
-        assert_oracle_match(&data, &STANDARD_NO_PAD, &REF_STANDARD_NO_PAD);
-        assert_oracle_match(&data, &URL_SAFE, &REF_URL_SAFE);
-        assert_oracle_match(&data, &URL_SAFE_NO_PAD, &REF_URL_SAFE_NO_PAD);
+        assert_oracle_match(&data, STANDARD_NO_PAD, &REF_STANDARD_NO_PAD);
+        assert_oracle_match(&data, URL_SAFE, &REF_URL_SAFE);
+        assert_oracle_match(&data, URL_SAFE_NO_PAD, &REF_URL_SAFE_NO_PAD);
     }
 }
 
@@ -173,8 +176,7 @@ fn test_estimate_decoded_len() {
     for n in 0..=50 {
         let data = random_bytes(n);
         let encoded = REF_STANDARD.encode(&data);
-        assert!(STANDARD.estimate_decoded_len(encoded.len()) >= n,
-            "Estimate too small for n={}", n);
+        assert!(STANDARD.estimate_decoded_len(encoded.len()) >= n, "Estimate too small for n={n}");
     }
 }
 
@@ -226,9 +228,9 @@ fn test_reject_invalid_chars() {
     for bad in bad_inputs {
         // STANDARD engine should reject '-' and '_'
         assert_eq!(
-            STANDARD.decode_into(bad, &mut buf), 
+            STANDARD.decode_into(bad, &mut buf),
             Err(Error::InvalidCharacter),
-            "Failed to reject: {:?}", bad,
+            "Failed to reject: {bad:?}",
         );
     }
 }
@@ -240,7 +242,7 @@ fn test_reject_invalid_length_padding() {
     for inp in inputs {
         let res = STANDARD.decode_into(inp, &mut buf);
         // Can be InvalidLength or InvalidCharacter depending on implementation specifics
-        assert!(res.is_err(), "Should fail on invalid padding/length: {}", inp);
+        assert!(res.is_err(), "Should fail on invalid padding/length: {inp}");
     }
 }
 
@@ -284,13 +286,13 @@ fn test_decode_errors_via_allocating_api() {
 fn test_error_display() {
     // Verify Display output for all Error variants
     let msg = format!("{}", Error::InvalidLength);
-    assert!(msg.contains("length"), "InvalidLength message: {}", msg);
+    assert!(msg.contains("length"), "InvalidLength message: {msg}");
 
     let msg = format!("{}", Error::InvalidCharacter);
-    assert!(msg.contains("character") || msg.contains("Character"), "InvalidCharacter message: {}", msg);
+    assert!(msg.contains("character") || msg.contains("Character"), "InvalidCharacter message: {msg}");
 
     let msg = format!("{}", Error::BufferTooSmall);
-    assert!(msg.contains("buffer") || msg.contains("Buffer"), "BufferTooSmall message: {}", msg);
+    assert!(msg.contains("buffer") || msg.contains("Buffer"), "BufferTooSmall message: {msg}");
 }
 
 #[test]
@@ -298,7 +300,7 @@ fn test_error_traits() {
     // Verify Debug, Clone, Copy, PartialEq, Eq
     let e1 = Error::InvalidCharacter;
     let e2 = e1; // Copy
-    let e3 = e1.clone(); // Clone
+    let e3 = e1; // Clone (also just a Copy, since Error is Copy)
     assert_eq!(e1, e2); // PartialEq + Eq
     assert_eq!(e2, e3);
     assert_ne!(Error::InvalidLength, Error::InvalidCharacter);
@@ -311,8 +313,8 @@ fn test_error_traits() {
     // std::error::Error trait
     #[cfg(feature = "std")]
     {
-        fn _assert_error<E: std::error::Error>() {}
-        _assert_error::<Error>();
+        fn assert_error<E: std::error::Error>() {}
+        assert_error::<Error>();
     }
 }
 
@@ -339,10 +341,10 @@ fn test_known_values_standard() {
     for (input, expected) in cases {
         if input.is_empty() { continue; }
         let len = STANDARD.encode_into(*input, &mut buf).unwrap();
-        assert_eq!(&buf[..len], expected.as_bytes(), "Encode {:?}", input);
+        assert_eq!(&buf[..len], expected.as_bytes(), "Encode {input:?}");
 
         let dec_len = STANDARD.decode_into(expected.as_bytes(), &mut dec).unwrap();
-        assert_eq!(&dec[..dec_len], *input, "Decode {:?}", expected);
+        assert_eq!(&dec[..dec_len], *input, "Decode {expected:?}");
     }
 }
 
@@ -372,10 +374,10 @@ fn test_all_byte_values() {
     let input: Vec<u8> = (0..=255).collect();
 
     for (turbo, reference) in [
-        (&STANDARD, &REF_STANDARD),
-        (&STANDARD_NO_PAD, &REF_STANDARD_NO_PAD),
-        (&URL_SAFE, &REF_URL_SAFE),
-        (&URL_SAFE_NO_PAD, &REF_URL_SAFE_NO_PAD),
+        (STANDARD, &REF_STANDARD),
+        (STANDARD_NO_PAD, &REF_STANDARD_NO_PAD),
+        (URL_SAFE, &REF_URL_SAFE),
+        (URL_SAFE_NO_PAD, &REF_URL_SAFE_NO_PAD),
     ] {
         assert_oracle_match(&input, turbo, reference);
     }
@@ -404,8 +406,8 @@ fn test_simd_threshold_boundaries() {
 
     for &size in &boundary_sizes {
         let data = random_bytes(size);
-        assert_oracle_match(&data, &STANDARD, &REF_STANDARD);
-        assert_oracle_match(&data, &URL_SAFE_NO_PAD, &REF_URL_SAFE_NO_PAD);
+        assert_oracle_match(&data, STANDARD, &REF_STANDARD);
+        assert_oracle_match(&data, URL_SAFE_NO_PAD, &REF_URL_SAFE_NO_PAD);
     }
 }
 

@@ -23,8 +23,8 @@ use crate::{
 /// This is a low-level primitive intended for internal use. Callers should prefer the 
 /// safe, higher-level APIs (e.g., `Engine::encode`) which automatically handle 
 /// buffer allocation and configuration logic.
-#[inline(always)]
-pub unsafe fn encode_slice_unsafe(config: &Config, input: &[u8], mut dst: *mut u8) {
+#[inline]
+pub(crate) unsafe fn encode_slice_unsafe(config: &Config, input: &[u8], mut dst: *mut u8) {
     let len = input.len();
     let mut src = input.as_ptr();
 
@@ -50,9 +50,9 @@ pub unsafe fn encode_slice_unsafe(config: &Config, input: &[u8], mut dst: *mut u
 
             let (n1, n2) = {
                 // Read 4 bytes, ensure Big Endian byte order in register
-                let reg_a = (src as *const u32).read_unaligned().to_be();
+                let reg_a = (src.cast::<u32>()).read_unaligned().to_be();
                 // Read next overlapping 4 bytes
-                let reg_b = (src.add(2) as *const u32).read_unaligned().to_be();
+                let reg_b = (src.add(2).cast::<u32>()).read_unaligned().to_be();
 
                 // Extract the specific 24 bits we need for each 4-char block
                 let n1 = (reg_a >> 8) as usize; // Bytes 0, 1, 2
@@ -62,17 +62,17 @@ pub unsafe fn encode_slice_unsafe(config: &Config, input: &[u8], mut dst: *mut u
 
             // Map indices to Base64 characters and pack into a single 64-bit register.
             // This writes 8 bytes to memory in a single instruction.
-            let pack = 
-                (*alphabet.get_unchecked((n1 >> 18) & 0x3F) as u64) |
-                ((*alphabet.get_unchecked((n1 >> 12) & 0x3F) as u64) << 8) |
-                ((*alphabet.get_unchecked((n1 >> 6) & 0x3F) as u64) << 16) |
-                ((*alphabet.get_unchecked(n1 & 0x3F) as u64) << 24) |
-                ((*alphabet.get_unchecked((n2 >> 18) & 0x3F) as u64) << 32) |
-                ((*alphabet.get_unchecked((n2 >> 12) & 0x3F) as u64) << 40) |
-                ((*alphabet.get_unchecked((n2 >> 6) & 0x3F) as u64) << 48) |
-                ((*alphabet.get_unchecked(n2 & 0x3F) as u64) << 56);
+            let pack =
+                u64::from(*alphabet.get_unchecked((n1 >> 18) & 0x3F)) |
+                (u64::from(*alphabet.get_unchecked((n1 >> 12) & 0x3F)) << 8) |
+                (u64::from(*alphabet.get_unchecked((n1 >> 6) & 0x3F)) << 16) |
+                (u64::from(*alphabet.get_unchecked(n1 & 0x3F)) << 24) |
+                (u64::from(*alphabet.get_unchecked((n2 >> 18) & 0x3F)) << 32) |
+                (u64::from(*alphabet.get_unchecked((n2 >> 12) & 0x3F)) << 40) |
+                (u64::from(*alphabet.get_unchecked((n2 >> 6) & 0x3F)) << 48) |
+                (u64::from(*alphabet.get_unchecked(n2 & 0x3F)) << 56);
 
-            (dst as *mut u64).write_unaligned(pack.to_le());
+            (dst.cast::<u64>()).write_unaligned(pack.to_le());
 
             src = src.add(6);
             dst = dst.add(8);
@@ -84,18 +84,18 @@ pub unsafe fn encode_slice_unsafe(config: &Config, input: &[u8], mut dst: *mut u
 
         // Handle a remaining 3-byte chunk (4 output chars)
         if len_remaining >= 3 {
-            let b0 = *src as usize;
-            let b1 = *src.add(1) as usize;
-            let b2 = *src.add(2) as usize;
+            let b0 = usize::from(*src);
+            let b1 = usize::from(*src.add(1));
+            let b2 = usize::from(*src.add(2));
             let n = (b0 << 16) | (b1 << 8) | b2;
 
-            let packed = 
-                (*alphabet.get_unchecked((n >> 18) & 0x3F) as u32) |
-                ((*alphabet.get_unchecked((n >> 12) & 0x3F) as u32) << 8) |
-                ((*alphabet.get_unchecked((n >> 6) & 0x3F) as u32) << 16) |
-                ((*alphabet.get_unchecked(n & 0x3F) as u32) << 24);
+            let packed =
+                u32::from(*alphabet.get_unchecked((n >> 18) & 0x3F)) |
+                (u32::from(*alphabet.get_unchecked((n >> 12) & 0x3F)) << 8) |
+                (u32::from(*alphabet.get_unchecked((n >> 6) & 0x3F)) << 16) |
+                (u32::from(*alphabet.get_unchecked(n & 0x3F)) << 24);
 
-            (dst as *mut u32).write_unaligned(packed.to_le());
+            (dst.cast::<u32>()).write_unaligned(packed.to_le());
             src = src.add(3);
             dst = dst.add(4);
         }
@@ -103,8 +103,8 @@ pub unsafe fn encode_slice_unsafe(config: &Config, input: &[u8], mut dst: *mut u
         // Handle final 1 or 2 bytes with padding logic
         let tail_len = len % 3;
         if tail_len > 0 {
-            let b0 = *src as usize;
-            let b1 = if tail_len == 2 { *src.add(1) as usize } else { 0 };
+            let b0 = usize::from(*src);
+            let b1 = if tail_len == 2 { usize::from(*src.add(1)) } else { 0 };
             let n = (b0 << 16) | (b1 << 8);
 
             // Write the first 2 characters (always present)
@@ -140,8 +140,8 @@ pub unsafe fn encode_slice_unsafe(config: &Config, input: &[u8], mut dst: *mut u
 /// This is a low-level primitive intended for internal use by the `Engine`.
 /// Callers should prefer the safe, higher-level APIs (e.g., `Engine::decode`), which
 /// automatically handle buffer sizing via `Engine::estimate_decoded_len`.
-#[inline(always)]
-pub unsafe fn decode_slice_unsafe(config: &Config, input: &[u8], mut dst: *mut u8) -> Result<usize, Error> {
+#[inline]
+pub(crate) unsafe fn decode_slice_unsafe(config: &Config, input: &[u8], mut dst: *mut u8) -> Result<usize, Error> {
     let len = input.len();
     if len == 0 { return Ok(0); }
 
@@ -170,14 +170,14 @@ pub unsafe fn decode_slice_unsafe(config: &Config, input: &[u8], mut dst: *mut u
         while src < src_end_fast {
             // 1. Scalar Loads & Lookups
             // We load 8 bytes and immediately look them up in the table.
-            let d0 = *table.add(*src as usize);
-            let d1 = *table.add(*src.add(1) as usize);
-            let d2 = *table.add(*src.add(2) as usize);
-            let d3 = *table.add(*src.add(3) as usize);
-            let d4 = *table.add(*src.add(4) as usize);
-            let d5 = *table.add(*src.add(5) as usize);
-            let d6 = *table.add(*src.add(6) as usize);
-            let d7 = *table.add(*src.add(7) as usize);
+            let d0 = *table.add(usize::from(*src));
+            let d1 = *table.add(usize::from(*src.add(1)));
+            let d2 = *table.add(usize::from(*src.add(2)));
+            let d3 = *table.add(usize::from(*src.add(3)));
+            let d4 = *table.add(usize::from(*src.add(4)));
+            let d5 = *table.add(usize::from(*src.add(5)));
+            let d6 = *table.add(usize::from(*src.add(6)));
+            let d7 = *table.add(usize::from(*src.add(7)));
 
             // 2. Fast Validation
             // Valid characters map to 0..63 (00xxxxxx).
@@ -190,16 +190,16 @@ pub unsafe fn decode_slice_unsafe(config: &Config, input: &[u8], mut dst: *mut u
 
             // 3. Fast Packing
             // Pack 4x 6-bit indices into a 24-bit integer (stored in u32).
-            let n1 = ((d0 as u32) << 18) | ((d1 as u32) << 12) | ((d2 as u32) << 6) | (d3 as u32);
-            let n2 = ((d4 as u32) << 18) | ((d5 as u32) << 12) | ((d6 as u32) << 6) | (d7 as u32);
+            let n1 = (u32::from(d0) << 18) | (u32::from(d1) << 12) | (u32::from(d2) << 6) | u32::from(d3);
+            let n2 = (u32::from(d4) << 18) | (u32::from(d5) << 12) | (u32::from(d6) << 6) | u32::from(d7);
 
             // 4. Overlapping Writes
             // We write 4 bytes (u32) to output 3 valid bytes.
             // The 4th byte is "garbage" that will be overwritten by the next write.
             // Using write_unaligned(u32) is faster than 3 individual byte writes.
             // We convert to big-endian to lay them out correctly in memory: [Byte0, Byte1, Byte2, Garbage]
-            (dst as *mut u32).write_unaligned((n1 << 8).to_be());
-            (dst.add(3) as *mut u32).write_unaligned((n2 << 8).to_be());
+            (dst.cast::<u32>()).write_unaligned((n1 << 8).to_be());
+            (dst.add(3).cast::<u32>()).write_unaligned((n2 << 8).to_be());
 
             src = src.add(8);
             dst = dst.add(6);
@@ -207,7 +207,7 @@ pub unsafe fn decode_slice_unsafe(config: &Config, input: &[u8], mut dst: *mut u
 
         // --- TAIL HANDLING ---
         // Handle the remaining bytes (including potential padding).
-        let current_offset = src.offset_from(input.as_ptr()) as usize;
+        let current_offset = src.offset_from(input.as_ptr()).cast_unsigned();
         let mut remaining = len - current_offset;
 
         while remaining > 0 {
@@ -218,42 +218,42 @@ pub unsafe fn decode_slice_unsafe(config: &Config, input: &[u8], mut dst: *mut u
                 let b2 = *src.add(2);
                 let b3 = *src.add(3);
 
-                let d0 = *table.add(b0 as usize);
-                let d1 = *table.add(b1 as usize);
+                let d0 = *table.add(usize::from(b0));
+                let d1 = *table.add(usize::from(b1));
 
                 // Check for Padding ('=')
                 if b3 == b'=' {
                     if b2 == b'=' {
                         // "XX==" -> 1 byte output
                         if (d0 | d1) & 0xC0 != 0 { return Err(Error::InvalidCharacter); }
-                        let n = ((d0 as u32) << 18) | ((d1 as u32) << 12);
-                        *dst = (n >> 16) as u8;
+                        let n = (u32::from(d0) << 18) | (u32::from(d1) << 12);
+                        *dst = ((n >> 16) & 0xFF) as u8;
                         dst = dst.add(1);
                     } else {
                         // "XXX=" -> 2 bytes output
-                        let d2 = *table.add(b2 as usize);
+                        let d2 = *table.add(usize::from(b2));
                         if (d0 | d1 | d2) & 0xC0 != 0 { return Err(Error::InvalidCharacter); }
-                        let n = ((d0 as u32) << 18) | ((d1 as u32) << 12) | ((d2 as u32) << 6);
-                        *dst = (n >> 16) as u8;
-                        *dst.add(1) = (n >> 8) as u8;
+                        let n = (u32::from(d0) << 18) | (u32::from(d1) << 12) | (u32::from(d2) << 6);
+                        *dst = ((n >> 16) & 0xFF) as u8;
+                        *dst.add(1) = ((n >> 8) & 0xFF) as u8;
                         dst = dst.add(2);
                     }
                     // Padding signals the end of the stream.
-                    return Ok(dst.offset_from(dst_start) as usize);
+                    return Ok(dst.offset_from(dst_start).cast_unsigned());
                 }
 
                 // No padding: "XXXX" -> 3 bytes output
-                let d2 = *table.add(b2 as usize);
-                let d3 = *table.add(b3 as usize);
+                let d2 = *table.add(usize::from(b2));
+                let d3 = *table.add(usize::from(b3));
 
                 if (d0 | d1 | d2 | d3) & 0xC0 != 0 {
                     return Err(Error::InvalidCharacter);
                 }
 
-                let n = ((d0 as u32) << 18) | ((d1 as u32) << 12) | ((d2 as u32) << 6) | (d3 as u32);
-                *dst = (n >> 16) as u8;
-                *dst.add(1) = (n >> 8) as u8;
-                *dst.add(2) = n as u8;
+                let n = (u32::from(d0) << 18) | (u32::from(d1) << 12) | (u32::from(d2) << 6) | u32::from(d3);
+                *dst = ((n >> 16) & 0xFF) as u8;
+                *dst.add(1) = ((n >> 8) & 0xFF) as u8;
+                *dst.add(2) = (n & 0xFF) as u8;
 
                 src = src.add(4);
                 dst = dst.add(3);
@@ -267,32 +267,32 @@ pub unsafe fn decode_slice_unsafe(config: &Config, input: &[u8], mut dst: *mut u
 
                 // Decode partial block without padding (e.g. "XY", "XYZ")
                 let b0 = *src;
-                let d0 = *table.add(b0 as usize);
+                let d0 = *table.add(usize::from(b0));
 
                 if remaining == 1 {
                     // A single byte is invalid in Base64 (cannot form a full byte)
-                    return Err(Error::InvalidLength); 
+                    return Err(Error::InvalidLength);
                 }
 
                 let b1 = *src.add(1);
-                let d1 = *table.add(b1 as usize);
+                let d1 = *table.add(usize::from(b1));
                 if (d0 | d1) & 0xC0 != 0 { return Err(Error::InvalidCharacter); }
 
-                let mut n = ((d0 as u32) << 18) | ((d1 as u32) << 12);
+                let mut n = (u32::from(d0) << 18) | (u32::from(d1) << 12);
 
                 if remaining == 2 {
                     // "XY" -> 1 byte output
-                    *dst = (n >> 16) as u8;
+                    *dst = ((n >> 16) & 0xFF) as u8;
                     dst = dst.add(1);
                 } else {
                     // "XYZ" -> 2 bytes output
                     let b2 = *src.add(2);
-                    let d2 = *table.add(b2 as usize);
+                    let d2 = *table.add(usize::from(b2));
                     if d2 & 0xC0 != 0 { return Err(Error::InvalidCharacter); }
 
-                    n |= (d2 as u32) << 6;
-                    *dst = (n >> 16) as u8;
-                    *dst.add(1) = (n >> 8) as u8;
+                    n |= u32::from(d2) << 6;
+                    *dst = ((n >> 16) & 0xFF) as u8;
+                    *dst.add(1) = ((n >> 8) & 0xFF) as u8;
                     dst = dst.add(2);
                 }
 
@@ -300,7 +300,7 @@ pub unsafe fn decode_slice_unsafe(config: &Config, input: &[u8], mut dst: *mut u
             }
         }
 
-        Ok(dst.offset_from(dst_start) as usize)
+        Ok(dst.offset_from(dst_start).cast_unsigned())
     }
 }
 
