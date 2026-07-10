@@ -7,10 +7,10 @@ use std::arch::x86::{
     _mm512_add_epi8, _mm512_and_si512, _mm512_broadcast_i32x4, _mm512_castsi512_si128,
     _mm512_cmpeq_epi8_mask, _mm512_cmpgt_epi8_mask, _mm512_cmple_epu8_mask,
     _mm512_extracti32x4_epi32, _mm512_loadu_si512, _mm512_madd_epi16, _mm512_maddubs_epi16,
-    _mm512_mask_add_epi8, _mm512_movepi8_mask, _mm512_mulhi_epu16, _mm512_mullo_epi16,
-    _mm512_or_si512, _mm512_permutexvar_epi32, _mm512_set1_epi8, _mm512_set1_epi16,
-    _mm512_set1_epi32, _mm512_setr_epi32, _mm512_shuffle_epi8, _mm512_srli_epi16,
-    _mm512_storeu_si512, _mm512_sub_epi8, _mm512_subs_epu8,
+    _mm512_mask_add_epi8, _mm512_mask_storeu_epi8, _mm512_movepi8_mask, _mm512_permutexvar_epi32,
+    _mm512_set1_epi8, _mm512_set1_epi32, _mm512_setr_epi32, _mm512_shuffle_epi8, _mm512_sllv_epi16,
+    _mm512_srli_epi16, _mm512_srlv_epi16, _mm512_storeu_si512, _mm512_sub_epi8, _mm512_subs_epu8,
+    _mm512_ternarylogic_epi32,
 };
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::{
@@ -18,10 +18,10 @@ use std::arch::x86_64::{
     _mm512_add_epi8, _mm512_and_si512, _mm512_broadcast_i32x4, _mm512_castsi512_si128,
     _mm512_cmpeq_epi8_mask, _mm512_cmpgt_epi8_mask, _mm512_cmple_epu8_mask,
     _mm512_extracti32x4_epi32, _mm512_loadu_si512, _mm512_madd_epi16, _mm512_maddubs_epi16,
-    _mm512_mask_add_epi8, _mm512_movepi8_mask, _mm512_mulhi_epu16, _mm512_mullo_epi16,
-    _mm512_or_si512, _mm512_permutexvar_epi32, _mm512_set1_epi8, _mm512_set1_epi16,
-    _mm512_set1_epi32, _mm512_setr_epi32, _mm512_shuffle_epi8, _mm512_srli_epi16,
-    _mm512_storeu_si512, _mm512_sub_epi8, _mm512_subs_epu8,
+    _mm512_mask_add_epi8, _mm512_mask_storeu_epi8, _mm512_movepi8_mask, _mm512_permutexvar_epi32,
+    _mm512_set1_epi8, _mm512_set1_epi32, _mm512_setr_epi32, _mm512_shuffle_epi8, _mm512_sllv_epi16,
+    _mm512_srli_epi16, _mm512_srlv_epi16, _mm512_storeu_si512, _mm512_sub_epi8, _mm512_subs_epu8,
+    _mm512_ternarylogic_epi32,
 };
 
 #[cfg(all(not(miri), target_arch = "x86"))]
@@ -82,12 +82,6 @@ pub(crate) unsafe fn encode_slice_avx512(config: &Config, input: &[u8], mut dst:
         1, 0, 2, 1, 4, 3, 5, 4, 7, 6, 8, 7, 10, 9, 11, 10,
     ));
 
-    // Masks and multiplier
-    let mask_lo_6bits = _mm512_set1_epi16(0x003F);
-    let mask_hi_6bits = _mm512_set1_epi16(0x3F00);
-    let mul_right_shift = _mm512_set1_epi32(0x0400_0040);
-    let mul_left_shift = _mm512_set1_epi32(0x0100_0010);
-
     // Character mapping
     let offset_base = _mm512_set1_epi8(65);
     let set_25 = _mm512_set1_epi8(25);
@@ -106,15 +100,15 @@ pub(crate) unsafe fn encode_slice_avx512(config: &Config, input: &[u8], mut dst:
 
     macro_rules! encode_vec {
         ($in_vec:expr) => {{
-            // Compute 3 bytes => 4 letters
+            // Compute 3 bytes => 4 letters using baseline AVX-512F/BW
+            // variable-shift instructions (no VBMI needed) instead of the
+            // mullo/mulhi trick.
             let v = _mm512_shuffle_epi8($in_vec, shuffle);
 
-            let lo = _mm512_mullo_epi16(v, mul_left_shift);
-            let hi = _mm512_mulhi_epu16(v, mul_right_shift);
-            let indices = _mm512_or_si512(
-                _mm512_and_si512(hi, mask_lo_6bits),
-                _mm512_and_si512(lo, mask_hi_6bits),
-            );
+            let t0 = _mm512_and_si512(v, _mm512_set1_epi32(0x0fc0_fc00));
+            let t1 = _mm512_srlv_epi16(t0, _mm512_set1_epi32(0x0006_000a));
+            let t2 = _mm512_sllv_epi16(v, _mm512_set1_epi32(0x0008_0004));
+            let indices = _mm512_ternarylogic_epi32::<0xca>(_mm512_set1_epi32(0x3f00_3f00), t2, t1);
 
             // Compute letters offsets
             let mut char_val = _mm512_add_epi8(indices, offset_base);
@@ -520,16 +514,28 @@ pub(crate) unsafe fn encode_slice_avx512_vbmi(config: &Config, input: &[u8], mut
     let len = input.len();
     let mut src = input.as_ptr();
 
-    // Shuffle bytes for mul
-    let shuffle = _mm512_broadcast_i32x4(_mm_setr_epi8(
-        1, 0, 2, 1, 4, 3, 5, 4, 7, 6, 8, 7, 10, 9, 11, 10,
-    ));
-
-    // Masks and multiplier
-    let mask_lo_6bits = _mm512_set1_epi16(0x003F);
-    let mask_hi_6bits = _mm512_set1_epi16(0x3F00);
-    let mul_right_shift = _mm512_set1_epi32(0x0400_0040);
-    let mul_left_shift = _mm512_set1_epi32(0x0100_0010);
+    // VBMI: single-instruction byte reorder directly from a raw 64-byte load,
+    // replacing the two-step permutexvar_epi32(dword gather) + shuffle_epi8
+    // (byte pick) used by the plain AVX-512F/BW path. Independently verified
+    // to equal that two-step composition byte-for-byte.
+    let shuffle_input = _mm512_setr_epi32(
+        0x0102_0001,
+        0x0405_0304,
+        0x0708_0607,
+        0x0a0b_090a,
+        0x0d0e_0c0d,
+        0x1011_0f10,
+        0x1314_1213,
+        0x1617_1516,
+        0x191a_1819,
+        0x1c1d_1b1c,
+        0x1f20_1e1f,
+        0x2223_2122,
+        0x2526_2425,
+        0x2829_2728,
+        0x2b2c_2a2b,
+        0x2e2f_2d2e,
+    );
 
     // VBMI: Load the full 64-byte alphabet into a single ZMM register.
     // vpermb uses bits [5:0] of each index byte to select from this table.
@@ -541,15 +547,12 @@ pub(crate) unsafe fn encode_slice_avx512_vbmi(config: &Config, input: &[u8], mut
 
     macro_rules! encode_vec_vbmi {
         ($in_vec:expr) => {{
-            // Extract 6-bit indices (identical to AVX-512 F+BW path)
-            let v = _mm512_shuffle_epi8($in_vec, shuffle);
-
-            let lo = _mm512_mullo_epi16(v, mul_left_shift);
-            let hi = _mm512_mulhi_epu16(v, mul_right_shift);
-            let indices = _mm512_or_si512(
-                _mm512_and_si512(hi, mask_lo_6bits),
-                _mm512_and_si512(lo, mask_hi_6bits),
-            );
+            // Extract 6-bit indices using baseline AVX-512F/BW variable-shift
+            // instructions (no VBMI needed) instead of the mullo/mulhi trick.
+            let t0 = _mm512_and_si512($in_vec, _mm512_set1_epi32(0x0fc0_fc00));
+            let t1 = _mm512_srlv_epi16(t0, _mm512_set1_epi32(0x0006_000a));
+            let t2 = _mm512_sllv_epi16($in_vec, _mm512_set1_epi32(0x0008_0004));
+            let indices = _mm512_ternarylogic_epi32::<0xca>(_mm512_set1_epi32(0x3f00_3f00), t2, t1);
 
             // VBMI: Single-instruction alphabet lookup replaces 8 instructions.
             // vpermb(idx, table): for each byte in idx, uses bits [5:0] to
@@ -558,13 +561,10 @@ pub(crate) unsafe fn encode_slice_avx512_vbmi(config: &Config, input: &[u8], mut
         }};
     }
 
-    // Permutation index for 48-byte distribution into 128-bit lanes
-    let permute_idx = _mm512_setr_epi32(0, 1, 2, 3, 3, 4, 5, 6, 6, 7, 8, 9, 9, 10, 11, 12);
-
     macro_rules! load_48_bytes {
         ($ptr:expr) => {{
             let v = unsafe { _mm512_loadu_si512($ptr.cast()) };
-            _mm512_permutexvar_epi32(permute_idx, v)
+            unsafe { zmm_permutexvar_epi8(shuffle_input, v) }
         }};
     }
 
@@ -648,8 +648,24 @@ pub(crate) unsafe fn decode_slice_avx512_vbmi(
         unsafe { _mm512_broadcast_i32x4(_mm_loadu_si128(PACK_L1.as_ptr().cast::<__m128i>())) };
     let pack_l2 =
         unsafe { _mm512_broadcast_i32x4(_mm_loadu_si128(PACK_L2.as_ptr().cast::<__m128i>())) };
-    let pack_shuffle =
-        unsafe { _mm512_broadcast_i32x4(_mm_loadu_si128(PACK_SHUFFLE.as_ptr().cast::<__m128i>())) };
+    let pack = _mm512_setr_epi32(
+        0x0600_0102,
+        0x090a_0405,
+        0x0c0d_0e08,
+        0x1610_1112,
+        0x191a_1415,
+        0x1c1d_1e18,
+        0x2620_2122,
+        0x292a_2425,
+        0x2c2d_2e28,
+        0x3630_3132,
+        0x393a_3435,
+        0x3c3d_3e38,
+        0x0000_0000,
+        0x0000_0000,
+        0x0000_0000,
+        0x0000_0000,
+    );
 
     // Decode & Validate Single Vector (VBMI path)
     macro_rules! decode_vec_vbmi {
@@ -673,16 +689,15 @@ pub(crate) unsafe fn decode_slice_avx512_vbmi(
         ($indices:expr, $dst_ptr:expr) => {{
             let m = _mm512_maddubs_epi16($indices, pack_l1);
             let p = _mm512_madd_epi16(m, pack_l2);
-            let out = _mm512_shuffle_epi8(p, pack_shuffle);
+            let packed = unsafe { zmm_permutexvar_epi8(pack, p) };
 
-            let lane0 = _mm512_castsi512_si128(out);
-            unsafe { _mm_storeu_si128($dst_ptr.cast::<__m128i>(), lane0) };
-            let lane1 = _mm512_extracti32x4_epi32(out, 1);
-            unsafe { _mm_storeu_si128($dst_ptr.add(12).cast::<__m128i>(), lane1) };
-            let lane2 = _mm512_extracti32x4_epi32(out, 2);
-            unsafe { _mm_storeu_si128($dst_ptr.add(24).cast::<__m128i>(), lane2) };
-            let lane3 = _mm512_extracti32x4_epi32(out, 3);
-            unsafe { _mm_storeu_si128($dst_ptr.add(36).cast::<__m128i>(), lane3) };
+            // Masked store: only the low 48 bytes are real output. A caller
+            // may pass a buffer sized exactly to the true decoded length, so
+            // an unmasked 64-byte store would write out of bounds; the mask
+            // makes AVX-512 suppress writes on the 16 masked-off high bytes.
+            unsafe {
+                _mm512_mask_storeu_epi8($dst_ptr.cast::<i8>(), 0x0000_FFFF_FFFF_FFFF, packed)
+            };
         }};
     }
 
@@ -1544,5 +1559,122 @@ mod miri_avx512_vbmi_coverage {
             padding: true,
         };
         verify_decode_avx512_vbmi(&config, &URL_SAFE, 100);
+    }
+
+    // ----------------------------------------------------------------------
+    // 5. Exact-Buffer Boundary Coverage (masked-store safety regression)
+    // ----------------------------------------------------------------------
+
+    /// Decodes into a buffer sized to the exact true output length only (no
+    /// safety margin), so Miri's precise out-of-bounds tracking can catch a
+    /// masked-store overrun by even a single byte.
+    fn verify_decode_avx512_vbmi_exact(config: &Config, oracle: &impl Engine, original_len: usize) {
+        let input_bytes = random_bytes(original_len);
+        let encoded = oracle.encode(&input_bytes);
+        let encoded_bytes = encoded.as_bytes();
+        let mut dst = vec![0u8; original_len];
+
+        let len = unsafe {
+            decode_slice_avx512_vbmi(config, encoded_bytes, dst.as_mut_ptr())
+                .expect("Valid input failed to decode")
+        };
+
+        assert_eq!(len, original_len, "Exact-buffer decode len {original_len}");
+        assert_eq!(
+            &dst[..len],
+            &input_bytes,
+            "Exact-buffer decode len {original_len}"
+        );
+    }
+
+    #[test]
+    fn miri_avx512_vbmi_decode_exact_buffer_boundaries() {
+        // Regression coverage for the vpermb-compaction + masked-store
+        // rewrite of `pack_and_store!`: every chunk-boundary length (tail,
+        // single-vector, quad-vector, and a long multi-quad-iteration
+        // buffer) must decode without writing past an exactly-sized output
+        // buffer, for both alphabets and padded/unpadded input.
+        let standard = Config {
+            url_safe: false,
+            padding: true,
+        };
+        let url_safe = Config {
+            url_safe: true,
+            padding: true,
+        };
+        let no_pad = Config {
+            url_safe: false,
+            padding: false,
+        };
+
+        for &len in &[3, 45, 48, 96, 192, 193, 240, 384, 1000, 1001] {
+            verify_decode_avx512_vbmi_exact(&standard, &STANDARD, len);
+            verify_decode_avx512_vbmi_exact(&url_safe, &URL_SAFE, len);
+            verify_decode_avx512_vbmi_exact(&no_pad, &STANDARD_NO_PAD, len);
+        }
+    }
+}
+
+#[cfg(all(test, not(miri)))]
+mod avx512_vbmi_hardware_coverage {
+    use super::*;
+    use base64::{
+        Engine,
+        engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE},
+    };
+    use rand::{RngExt, rng};
+
+    fn random_bytes(len: usize) -> Vec<u8> {
+        let mut rng = rng();
+        (0..len).map(|_| rng.random()).collect()
+    }
+
+    fn verify_decode_avx512_vbmi_exact(config: &Config, oracle: &impl Engine, original_len: usize) {
+        let input_bytes = random_bytes(original_len);
+        let encoded = oracle.encode(&input_bytes);
+        let encoded_bytes = encoded.as_bytes();
+        let mut dst = vec![0u8; original_len];
+
+        let len = unsafe {
+            decode_slice_avx512_vbmi(config, encoded_bytes, dst.as_mut_ptr())
+                .expect("Valid input failed to decode")
+        };
+
+        assert_eq!(len, original_len, "Exact-buffer decode len {original_len}");
+        assert_eq!(
+            &dst[..len],
+            &input_bytes,
+            "Exact-buffer decode len {original_len}"
+        );
+    }
+
+    #[test]
+    fn hw_avx512_vbmi_decode_exact_buffer_boundaries() {
+        if !(std::is_x86_feature_detected!("avx512f")
+            && std::is_x86_feature_detected!("avx512bw")
+            && std::is_x86_feature_detected!("avx512vbmi"))
+        {
+            eprintln!("skipping: host CPU lacks AVX-512-VBMI");
+            return;
+        }
+
+        let standard = Config {
+            url_safe: false,
+            padding: true,
+        };
+        let url_safe = Config {
+            url_safe: true,
+            padding: true,
+        };
+        let no_pad = Config {
+            url_safe: false,
+            padding: false,
+        };
+
+        for &len in &[3, 45, 48, 96, 192, 193, 240, 384, 1000, 1001] {
+            verify_decode_avx512_vbmi_exact(&standard, &STANDARD, len);
+            verify_decode_avx512_vbmi_exact(&url_safe, &URL_SAFE, len);
+            verify_decode_avx512_vbmi_exact(&no_pad, &STANDARD_NO_PAD, len);
+        }
     }
 }
