@@ -17,20 +17,44 @@ env:
   CARGO_BUILD_JOBS: 2 
 
 jobs:
-  kani-proofs:
-    name: Kani Model Checker
+  # Scalar + AVX2's smaller-tier harnesses. Kept together at low
+  # parallelism since none of these carry a fully-symbolic input over
+  # ~70 bytes.
+  kani-proofs-core:
+    name: Kani Model Checker (Core)
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # Run Kani
       - name: Run Kani
         uses: model-checking/kani-github-action@v1.1
         with:
-          args: '--jobs 4 --output-format=terse --unstable stubbing --harness kani_verification_scalar --harness kani_verification_avx2'
+          args: '--jobs 2 --output-format=terse --unstable stubbing --harness check_scalar_decode_robustness --harness check_scalar_roundtrip_safety --harness check_avx2_decode_robustness --harness check_avx2_roundtrip_correctness'
 
-      # Cleanup
+      - name: Cleanup Artifacts
+        if: always()
+        run: cargo clean
+
+  # AVX2's quad-tier proof carries 125 fully-symbolic input bytes through
+  # both encode and decode plus SIMD stub unrolling — it dominates CBMC's
+  # memory/time footprint. Running it alone (no --jobs contention with the
+  # other harnesses) avoids the OOM-driven runner cancellations seen when
+  # it shared a runner with the harnesses above.
+  kani-proofs-quad-tier:
+    name: Kani Model Checker (AVX2 Quad-Tier)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Kani
+        uses: model-checking/kani-github-action@v1.1
+        with:
+          args: '--jobs 1 --output-format=terse --unstable stubbing --harness check_avx2_quad_tier_roundtrip'
+
       - name: Cleanup Artifacts
         if: always()
         run: cargo clean
