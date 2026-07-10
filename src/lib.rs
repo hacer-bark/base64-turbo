@@ -572,7 +572,7 @@ impl Engine {
         }
 
         // Fallback: Scalar / Non-x86 / Short inputs
-        // Safety: Pointers verified by caller
+        // SAFETY: Pointers verified by caller
         unsafe {
             scalar::encode_slice_unsafe(&self.config, input, dst);
         }
@@ -614,7 +614,7 @@ impl Engine {
         }
 
         // Fallback: Scalar / Non-x86 / Short inputs
-        // Safety: Pointers verified by caller
+        // SAFETY: Pointers verified by caller
         unsafe { scalar::decode_slice_unsafe(&self.config, input, dst) }
     }
 
@@ -650,7 +650,7 @@ impl Engine {
     #[cfg(feature = "simd")]
     #[cfg(feature = "unstable")]
     pub unsafe fn encode_avx2(&self, input: &[u8], dst: &mut [u8]) {
-        // Safety: Caller must uphold the contracts documented on this function.
+        // SAFETY: Caller must uphold the contracts documented on this function.
         unsafe { simd::encode_slice_avx2(&self.config, input, dst.as_mut_ptr()) }
     }
 
@@ -688,7 +688,7 @@ impl Engine {
     #[cfg(feature = "simd")]
     #[cfg(feature = "unstable")]
     pub unsafe fn decode_avx2(&self, input: &[u8], dst: &mut [u8]) -> Result<usize, Error> {
-        // Safety: Caller must uphold the contracts documented on this function.
+        // SAFETY: Caller must uphold the contracts documented on this function.
         unsafe { simd::decode_slice_avx2(&self.config, input, dst.as_mut_ptr()) }
     }
 
@@ -714,7 +714,7 @@ impl Engine {
     /// (e.g., `Engine::encode`).
     #[cfg(feature = "unstable")]
     pub unsafe fn encode_scalar(&self, input: &[u8], dst: &mut [u8]) {
-        // Safety: Caller must uphold the contracts documented on this function.
+        // SAFETY: Caller must uphold the contracts documented on this function.
         unsafe { scalar::encode_slice_unsafe(&self.config, input, dst.as_mut_ptr()) }
     }
 
@@ -744,7 +744,7 @@ impl Engine {
     /// valid Base64.
     #[cfg(feature = "unstable")]
     pub unsafe fn decode_scalar(&self, input: &[u8], dst: &mut [u8]) -> Result<usize, Error> {
-        // Safety: Caller must uphold the contracts documented on this function.
+        // SAFETY: Caller must uphold the contracts documented on this function.
         unsafe { scalar::decode_slice_unsafe(&self.config, input, dst.as_mut_ptr()) }
     }
 
@@ -769,7 +769,7 @@ impl Engine {
     #[cfg(feature = "neon")]
     #[cfg(feature = "unstable")]
     pub unsafe fn encode_neon(&self, input: &[u8], dst: &mut [u8]) {
-        // Safety: Caller must uphold the contracts documented on this function.
+        // SAFETY: Caller must uphold the contracts documented on this function.
         unsafe { simd::encode_slice_neon(&self.config, input, dst.as_mut_ptr()) }
     }
 
@@ -799,7 +799,7 @@ impl Engine {
     #[cfg(feature = "neon")]
     #[cfg(feature = "unstable")]
     pub unsafe fn decode_neon(&self, input: &[u8], dst: &mut [u8]) -> Result<usize, Error> {
-        // Safety: Caller must uphold the contracts documented on this function.
+        // SAFETY: Caller must uphold the contracts documented on this function.
         unsafe { simd::decode_slice_neon(&self.config, input, dst.as_mut_ptr()) }
     }
 }

@@ -1,10 +1,10 @@
-# ⚡ Benchmarks & Methodology
+# Benchmarks & Methodology
 
 This directory contains detailed performance reports for `base64-turbo` across various hardware architectures.
 
-## 📊 Benchmark Reports
+## Benchmark Reports
 
-### ☁️ Server / Data Center (HFT & Cloud)
+### Server / Data Center (HFT & Cloud)
 High-performance environments where AVX512 and AVX2 are typically available.
 
 *   **[Intel Xeon Platinum 8488C](./intel_xeon_8488c.md)**
@@ -17,8 +17,8 @@ High-performance environments where AVX512 and AVX2 are typically available.
     *   **Features:** AVX512, AVX2
     *   **Context:** Modern AMD Cloud.
 
-### 💻 Consumer / Runtime Scaling Analysis
-To demonstrate our **Runtime Dispatch** system, we ran benchmarks on the *same* Intel i7 processor while forcibly disabling instruction sets. This shows exactly how the library scales down from AVX2 to Scalar.
+### Consumer / Runtime Scaling Analysis
+To demonstrate the **runtime dispatch** system, we ran benchmarks on the *same* Intel i7 processor while forcibly disabling instruction sets. This shows how the library scales down from AVX2 to Scalar.
 
 *   **[Intel Core i7-8750H (AVX2 Mode)](./intel_i7_avx2.md)**
     *   **Mode:** Normal operation (Best available).
@@ -28,7 +28,7 @@ To demonstrate our **Runtime Dispatch** system, we ran benchmarks on the *same* 
     *   **Mode:** All SIMD disabled.
     *   **Context:** Simulates non-x86 fallback or embedded targets without vector units.
 
-## 🧪 Methodology
+## Methodology
 
 All benchmarks were conducted using [criterion.rs](https://github.com/bheisler/criterion.rs) to ensure statistical significance, utilizing a rigorous configuration to filter out OS noise.
 
@@ -55,7 +55,7 @@ We benchmark against a logarithmic spread of data sizes to capture performance c
 | **1 MB** | Data streams. |
 | **10 MB** | Heavy bulk processing. |
 
-> **Note:** Benchmark plots use a **Logarithmic Scale** on the X-axis to visualize the massive range between 32B and 10MB.
+> **Note:** Benchmark plots use a logarithmic scale on the X-axis to visualize the range between 32B and 10MB.
 
 ### 3. Comparison Targets (`BENCH_TARGET`)
 Our benchmark suite is controlled via the `BENCH_TARGET` environment variable. This allows isolated comparisons between specific implementations. You can provide a comma-separated list of targets.

@@ -82,21 +82,18 @@ pub(crate) unsafe fn encode_slice_avx512(config: &Config, input: &[u8], mut dst:
         1, 0, 2, 1, 4, 3, 5, 4, 7, 6, 8, 7, 10, 9, 11, 10,
     ));
 
-    // Character mapping
-    let offset_base = _mm512_set1_epi8(65);
     let set_25 = _mm512_set1_epi8(25);
-    let delta_lower = _mm512_set1_epi8(6);
     let set_51 = _mm512_set1_epi8(51);
-
-    // LUT Table for numbers and special chars
-    let (sym_plus, sym_slash) = if config.url_safe {
-        (-88, -39)
+    let one = _mm512_set1_epi8(1);
+    let translate_lut = if config.url_safe {
+        _mm512_broadcast_i32x4(_mm_setr_epi8(
+            65, 71, -4, -4, -4, -4, -4, -4, -4, -4, -4, -4, -17, 32, 0, 0,
+        ))
     } else {
-        (-90, -87)
+        _mm512_broadcast_i32x4(_mm_setr_epi8(
+            65, 71, -4, -4, -4, -4, -4, -4, -4, -4, -4, -4, -19, -16, 0, 0,
+        ))
     };
-    let lut_offsets = _mm512_broadcast_i32x4(_mm_setr_epi8(
-        0, -75, -75, -75, -75, -75, -75, -75, -75, -75, -75, sym_plus, sym_slash, 0, 0, 0,
-    ));
 
     macro_rules! encode_vec {
         ($in_vec:expr) => {{
@@ -110,16 +107,11 @@ pub(crate) unsafe fn encode_slice_avx512(config: &Config, input: &[u8], mut dst:
             let t2 = _mm512_sllv_epi16(v, _mm512_set1_epi32(0x0008_0004));
             let indices = _mm512_ternarylogic_epi32::<0xca>(_mm512_set1_epi32(0x3f00_3f00), t2, t1);
 
-            // Compute letters offsets
-            let mut char_val = _mm512_add_epi8(indices, offset_base);
+            let sub_base = _mm512_subs_epu8(indices, set_51);
             let m_gt25 = _mm512_cmpgt_epi8_mask(indices, set_25);
-            char_val = _mm512_mask_add_epi8(char_val, m_gt25, char_val, delta_lower);
+            let lut_idx = _mm512_mask_add_epi8(sub_base, m_gt25, sub_base, one);
 
-            // Compute special chars offset
-            let offset_special =
-                _mm512_shuffle_epi8(lut_offsets, _mm512_subs_epu8(indices, set_51));
-
-            _mm512_add_epi8(char_val, offset_special)
+            _mm512_add_epi8(indices, _mm512_shuffle_epi8(translate_lut, lut_idx))
         }};
     }
 
@@ -776,11 +768,38 @@ mod kani_verification_avx512 {
 
     // --- CONSTANTS ---
 
-    // Encoder Induction Size: 52 (1 AVX512 Loop) + 1 (Scalar Transition)
-    const ENC_INDUCTION_LEN: usize = 53;
+    // Kani/CBMC is a bounded model checker: a proof at one fixed input
+    // length only generalizes to "true for all N" if that length exercises
+    // (a) the loop body at least twice, so the state one iteration hands
+    // off (the advanced `src`/`dst` pointers) is proven to be a valid entry
+    // state for the next iteration, and (b) a non-empty, non-aligned scalar
+    // remainder, so the SIMD -> scalar handoff is covered too.
+    //
+    // `encode_slice_avx512`/`decode_slice_avx512` each have two independent
+    // loop tiers: an outer quad-vector loop (192B/256B chunks, unrolled 4x)
+    // that only triggers on large inputs, and an inner single-vector loop
+    // (48B/64B chunks) that both the quad loop and short inputs fall
+    // through to. `ENC_INDUCTION_LEN`/`DEC_INDUCTION_LEN` below hit exactly
+    // 2 passes of the single-vector tier and 0 passes of the quad tier,
+    // since that tier shares its per-block macro (`encode_vec!`/
+    // `decode_vec!`) with the quad tier. The quad tier's own concern — its
+    // 4x-unrolled pointer arithmetic and inter-tier handoff — is covered
+    // separately by `check_avx512_quad_tier_roundtrip` below.
 
-    // Decoder Induction Size: 68 (1 AVX512 Loop) + 1 (Scalar Transition)
-    const DEC_INDUCTION_LEN: usize = 69;
+    // Encoder induction size: 96 (2x 48-byte AVX512 single-vector passes) +
+    // 17 (scalar transition). The +17 (not +1) accounts for the loop's own
+    // 16-byte safety margin, which guarantees at least a 16-byte scalar
+    // remainder whenever the loop runs at all.
+    const ENC_INDUCTION_LEN: usize = 113;
+
+    // Decoder induction size: 128 (2x 64-byte AVX512 single-vector passes) +
+    // 5 (scalar transition); decode's safety margin is 4 bytes.
+    const DEC_INDUCTION_LEN: usize = 133;
+
+    // Quad-tier induction size: smallest length that triggers exactly 1 pass
+    // of the 192-byte quad-vector loop (0 single-vector-loop passes) plus a
+    // scalar remainder. Used only by `check_avx512_quad_tier_roundtrip`.
+    const QUAD_ENC_INDUCTION_LEN: usize = 209;
 
     // --- HELPERS ---
 
@@ -906,6 +925,26 @@ mod kani_verification_avx512 {
         unsafe { transmute(dst) }
     }
 
+    // STUB: _mm512_permutexvar_epi32
+    // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm512_permutexvar_epi32
+    unsafe fn _mm512_permutexvar_epi32_stub(idx: __m512i, a: __m512i) -> __m512i {
+        let idx: [u32; 16] = unsafe { transmute(idx) };
+        let a: [u32; 16] = unsafe { transmute(a) };
+        let mut dst = [0u32; 16];
+
+        // FOR j := 0 to 15
+        for j in 0..16 {
+            // id := idx[j*32+3:j*32]
+            let id = (idx[j] & 0xF) as usize;
+            // dst[j*32+31:j*32] := a[id*32+31:id*32]
+            dst[j] = a[id];
+        }
+        // ENDFOR
+        // dst[MAX:512] := 0
+
+        unsafe { transmute(dst) }
+    }
+
     // STUB: _mm512_sub_epi8
     // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm512_sub_epi8
     unsafe fn _mm512_sub_epi8_stub(a: __m512i, b: __m512i) -> __m512i {
@@ -937,6 +976,7 @@ mod kani_verification_avx512 {
     #[kani::stub(_mm512_maddubs_epi16, _mm512_maddubs_epi16_stub)]
     #[kani::stub(_mm512_madd_epi16, _mm512_madd_epi16_stub)]
     #[kani::stub(_mm512_sub_epi8, _mm512_sub_epi8_stub)]
+    #[kani::stub(_mm512_permutexvar_epi32, _mm512_permutexvar_epi32_stub)]
     fn check_avx512_roundtrip_correctness() {
         let config = Config {
             url_safe: kani::any(),
@@ -995,6 +1035,65 @@ mod kani_verification_avx512 {
             // We ignore the Result. We only care that this function call
             // returns safely (Ok or Err) and does not crash.
             let _ = decode_slice_avx512(&config, &input, output.as_mut_ptr());
+        }
+    }
+
+    /// **Proof 3: Quad-Tier Loop Coverage**
+    ///
+    /// Proofs 1 and 2 are sized to trigger the single-vector loop tier only
+    /// (0 quad-tier passes), since that tier's per-block macro
+    /// (`encode_vec!`/`decode_vec!`) is shared with the quad tier. What
+    /// that leaves uncovered is the quad tier's own concern: its
+    /// 4x-unrolled body's fixed pointer offsets (`src.add(48)`,
+    /// `dst.add(64)`, etc.) and its handoff to the next stage (the
+    /// single-vector tier, or the scalar fallback). `QUAD_ENC_INDUCTION_LEN`
+    /// triggers exactly 1 quad-tier pass — 1 suffices here (not 2) because
+    /// the quad loop's per-iteration pointer arithmetic
+    /// (`src += 192; dst += 256`) is a fixed-stride increment with no
+    /// per-iteration branching, and the loop's own state-handoff is already
+    /// proven by the single-vector tier's 2-pass proof, since both loops
+    /// are built from the same primitives.
+    ///
+    /// Verifies that `Decode(Encode(X)) == X` still holds when the quad
+    /// tier runs. This checks logical correctness rather than just
+    /// crash-safety: `decode_slice_avx512` validates all 4 quad-loop
+    /// sub-blocks before storing any of them (see `decode_vec!`'s call
+    /// sites), so a separate garbage-input quad-tier robustness proof would
+    /// be redundant with Proof 2's already-exhaustive coverage of
+    /// `decode_vec!`'s validation logic.
+    #[kani::proof]
+    #[kani::stub(_mm512_shuffle_epi8, _mm512_shuffle_epi8_stub)]
+    #[kani::stub(_mm512_mask_add_epi8, _mm512_mask_add_epi8_stub)]
+    #[kani::stub(_mm512_maddubs_epi16, _mm512_maddubs_epi16_stub)]
+    #[kani::stub(_mm512_madd_epi16, _mm512_madd_epi16_stub)]
+    #[kani::stub(_mm512_sub_epi8, _mm512_sub_epi8_stub)]
+    #[kani::stub(_mm512_permutexvar_epi32, _mm512_permutexvar_epi32_stub)]
+    fn check_avx512_quad_tier_roundtrip() {
+        let config = Config {
+            url_safe: kani::any(),
+            padding: true,
+        };
+        let input: [u8; QUAD_ENC_INDUCTION_LEN] = kani::any();
+
+        // Buffers: encoded_size(209, true) = 280, sized with margin.
+        let mut enc_buf = [0u8; 320];
+        let mut dec_buf = [0u8; 320];
+
+        unsafe {
+            // 1. Encode (exercises the quad-tier encode loop: 1 pass)
+            encode_slice_avx512(&config, &input, enc_buf.as_mut_ptr());
+
+            let enc_len = encoded_size(QUAD_ENC_INDUCTION_LEN, config.padding);
+            let encoded_slice = &enc_buf[..enc_len];
+
+            // 2. Decode (this encoded_len also happens to land in the
+            // decode quad tier: 1 pass, 0 single-vector passes)
+            let dec_len = decode_slice_avx512(&config, encoded_slice, dec_buf.as_mut_ptr())
+                .expect("Valid encoding failed to decode");
+
+            // 3. Verify
+            assert_eq!(dec_len, QUAD_ENC_INDUCTION_LEN);
+            assert_eq!(&dec_buf[..dec_len], &input, "Quad-tier roundtrip mismatch");
         }
     }
 }
@@ -1085,14 +1184,20 @@ mod miri_avx512_coverage {
             url_safe: false,
             padding: true,
         };
-        // AVX512 Batch Loop processes 192 input bytes (4 * 48).
-        // Exactly 1 Quad Loop
+        // The quad loop needs `aligned_len_192 >= 192`, i.e. `len >= 208`
+        // (the 16-byte safety margin means 192 alone isn't enough); 192 and
+        // 193 resolve to 0 quad-loop iterations and are handled by the
+        // single-vector loop instead.
         verify_encode_avx512(&config, &STANDARD, 192);
-        // Exactly 2 Quad Loops
-        verify_encode_avx512(&config, &STANDARD, 384);
-        // 1 Quad Loop + 0 Single + 1 byte Scalar
         verify_encode_avx512(&config, &STANDARD, 193);
-        // 1 Quad Loop + 1 Single Loop + 0 Scalar (192 + 48)
+        // 208: smallest length that triggers exactly 1 quad-loop iteration
+        // (0 single-loop iterations, 16-byte scalar remainder).
+        verify_encode_avx512(&config, &STANDARD, 208);
+        // 384: 2 quad-loop iterations (proves inter-iteration pointer
+        // arithmetic — src/dst advancing correctly for a 2nd pass).
+        verify_encode_avx512(&config, &STANDARD, 384);
+        // 240: 1 quad-loop iteration (192) + 1 single-loop iteration (48),
+        // 0 scalar remainder.
         verify_encode_avx512(&config, &STANDARD, 240);
     }
 
@@ -1142,13 +1247,18 @@ mod miri_avx512_coverage {
             url_safe: false,
             padding: true,
         };
-        // AVX512 Batch Loop processes 256 input bytes (4 * 64).
-        // Exactly 1 Quad Loop
+        // The quad loop needs `aligned_len_256 >= 256`, i.e. encoded input
+        // >= 260 bytes (the 4-byte safety margin means 256 alone isn't
+        // enough). raw=192 encodes to exactly 256 bytes, so it does not
+        // reach the quad loop (all 3 rounds run via the single-vector tail
+        // loop).
         verify_decode_avx512(&config, &STANDARD, 192); // 256 bytes encoded
-        // Exactly 2 Quad Loops
+        // raw=193 encodes to 260 bytes: exactly 1 quad-loop iteration, 0
+        // single-loop iterations, 4-byte scalar remainder.
+        verify_decode_avx512(&config, &STANDARD, 193); // 260 bytes encoded
+        // raw=384 encodes to 512 bytes: 1 quad-loop iteration + 3 more via
+        // the single-vector tail loop (proves inter-tier pointer handoff).
         verify_decode_avx512(&config, &STANDARD, 384); // 512 bytes encoded
-        // 1 Quad Loop + Scalar Remainder
-        verify_decode_avx512(&config, &STANDARD, 193); // 256 bytes + extra
     }
 
     #[test]
@@ -1364,10 +1474,16 @@ mod miri_avx512_vbmi_coverage {
             url_safe: false,
             padding: true,
         };
-        // Quad Loop processes 192 input bytes (4 * 48).
+        // Same tier thresholds as `encode_slice_avx512` (see
+        // `miri_avx512_encode_quad_vector_loop`). 192/193 miss the quad loop
+        // (single-loop only).
         verify_encode_avx512_vbmi(&config, &STANDARD, 192);
-        verify_encode_avx512_vbmi(&config, &STANDARD, 384);
         verify_encode_avx512_vbmi(&config, &STANDARD, 193);
+        // 208: smallest length hitting exactly 1 quad-loop iteration.
+        verify_encode_avx512_vbmi(&config, &STANDARD, 208);
+        // 384: 2 quad-loop iterations.
+        verify_encode_avx512_vbmi(&config, &STANDARD, 384);
+        // 240: 1 quad-loop iteration + 1 single-loop iteration.
         verify_encode_avx512_vbmi(&config, &STANDARD, 240);
     }
 
@@ -1413,10 +1529,13 @@ mod miri_avx512_vbmi_coverage {
             url_safe: false,
             padding: true,
         };
-        // Quad Loop processes 256 input bytes (4 * 64).
+        // Same tier thresholds as `decode_slice_avx512` — see
+        // `miri_avx512_decode_quad_vector_loop`'s comments for the derived
+        // boundaries. raw=192 (256B encoded) misses the quad loop (0
+        // iterations); raw=193 (260B encoded) hits it exactly once.
         verify_decode_avx512_vbmi(&config, &STANDARD, 192);
-        verify_decode_avx512_vbmi(&config, &STANDARD, 384);
         verify_decode_avx512_vbmi(&config, &STANDARD, 193);
+        verify_decode_avx512_vbmi(&config, &STANDARD, 384);
     }
 
     #[test]

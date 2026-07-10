@@ -1,4 +1,4 @@
-# ☁️ Benchmark: AMD EPYC Genoa (Zen 4)
+# Benchmark: AMD EPYC Genoa (Zen 4)
 
 **Context:** Benchmarks executed on a high-performance AMD EPYC "Genoa" processor. This represents the current generation of AMD server capability, featuring full AVX512 support.
 
@@ -6,16 +6,16 @@
 *   **Architecture:** Zen 4 (AVX512 supported)
 *   **OS:** Debian 13
 
-## 📈 Performance Snapshot
+## Performance Snapshot
 
 ![Benchmark Graph](https://github.com/hacer-bark/base64-turbo/blob/main/benches/img/base64_amd.png?raw=true)
 
 **Key Findings:**
-1.  **Massive Decode Lead:** `base64-turbo` provides **~15.4 GiB/s** decoding throughput, outperforming `base64-simd` by **+45%**.
-2.  **Lowest Latency:** The zero-allocation API (`TurboBuff`) achieves **10.5ns** encoding latency, compared to ~18.4ns for the competitor.
-3.  **Encoding Parity:** On this specific micro-architecture, encoding throughput is highly competitive, with `base64-simd` holding a slight margin (~4%) in raw streaming speed, while `base64-turbo` wins on small-input latency.
+1.  **Decode throughput:** `base64-turbo` reaches **~15.4 GiB/s** decoding, 45% higher than `base64-simd`.
+2.  **Small-payload latency:** The zero-allocation API (`TurboBuff`) achieves 10.5ns encoding latency, versus ~18.4ns for `base64-simd`.
+3.  **Encoding throughput:** On this micro-architecture, `base64-simd` holds a small (~4%) lead in raw streaming encode speed, while `base64-turbo` remains ahead on small-input latency.
 
-## 🏎️ Detailed Results
+## Detailed Results
 
 ### 1. Small Payloads (32 Bytes)
 **Focus:** Latency & Branch Prediction.
@@ -28,7 +28,7 @@
 | `base64-simd` | `Standard` | 18.42 ns | 1.62 GiB/s | 15.14 ns | 2.71 GiB/s |
 | `base64` (std) | `Standard` | 36.96 ns | 0.82 GiB/s | 31.90 ns | 1.28 GiB/s |
 
-> **Analysis:** `base64-turbo` (TurboBuff) is **1.75x faster** than `base64-simd` regarding encoding latency. This confirms that our scalar fallback logic is highly optimized for Zen 4's pipeline.
+> **Analysis:** `base64-turbo` (TurboBuff) is 1.75x faster than `base64-simd` on encoding latency at this size, consistent with the scalar-fallback path being well-tuned for Zen 4's pipeline.
 
 ### 2. Medium Payloads (64 KB)
 **Focus:** L1 Cache Saturation & AVX512 Implementation.
@@ -40,8 +40,8 @@
 | `base64` (std) | 2.02 GiB/s | -82% | 2.51 GiB/s | -76% |
 
 > **Analysis:**
-> *   **Decoding:** The "Logic > Memory" approach works exceptionally well on Zen 4, yielding a massive 45% lead. AMD's robust AVX512 implementation handles our register-heavy logic effortlessly.
-> *   **Encoding:** `base64-simd` is slightly faster here. This suggests that for *writing* capability, Zen 4 might prefer the specific shuffle pattern used by `base64-simd` over our port-balancing strategy, though the difference is marginal.
+> *   **Decoding:** The register-heavy decode approach works well on Zen 4's AVX512 implementation, yielding a 45% lead over `base64-simd`.
+> *   **Encoding:** `base64-simd` is marginally faster here (~4%), suggesting Zen 4 may favor its specific shuffle pattern slightly over our port-balancing strategy for encode workloads.
 
 ### 3. Large Payloads (10 MB)
 **Focus:** RAM Bandwidth & Prefetching.
@@ -52,9 +52,9 @@
 | `base64-simd` | **11.32 GiB/s** | 10.46 GiB/s |
 | `base64` (std) | 2.00 GiB/s | 2.45 GiB/s |
 
-> **Analysis:** Results scale linearly from 64KB, indicating no thermal throttling or cache-thrashing issues. `base64-turbo` remains the clear choice for read-heavy workloads (Decoding), while being effectively tied for write-heavy workloads.
+> **Analysis:** Results scale linearly from 64KB, indicating no thermal throttling or cache-thrashing effects. `base64-turbo` holds a clear lead for read-heavy (decode) workloads, and is effectively tied with `base64-simd` for write-heavy (encode) workloads.
 
-## 📝 Raw Data Log
+## Raw Data Log
 <details>
 <summary>Click to view raw Criterion output</summary>
 

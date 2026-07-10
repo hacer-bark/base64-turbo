@@ -1,10 +1,8 @@
-# 🛡️ Safety & Verification
+# Safety & Verification
 
 **Philosophy:** `Safety > Performance > Convenience`
 
-At `base64-turbo`, we believe that speed is meaningless if it compromises stability. While this library achieves extreme performance by leveraging `unsafe` SIMD intrinsics and pointer arithmetic, we do not rely on "hope" or "good practices" to prevent crashes.
-
-Instead, we rely on **Mathematical Proofs**, **Strict Formal Audits**, and **Deterministic Analysis**.
+This library achieves its performance through `unsafe` SIMD intrinsics and raw pointer arithmetic. Rather than relying on manual review alone to justify that tradeoff, every `unsafe` code path is checked by multiple independent verification layers: Kani's formal model checker, MIRI's Undefined Behavior interpreter, MemorySanitizer, and continuous fuzzing.
 
 ## Verification Status Matrix
 
@@ -54,70 +52,61 @@ cargo kani --unstable stubbing --harness kani_verification_avx512
 
 ## Deep Dive: The Kani Proofs (Proof by Induction)
 
-The most distinctive part of `base64-turbo`'s verification is the use of the **Kani Model Checker** to mathematically prove the correctness of our SIMD logic, rather than relying on test cases alone.
+The most distinctive part of `base64-turbo`'s verification is the use of the **Kani Model Checker** to prove the correctness of our SIMD logic for entire classes of input, rather than relying on individual test cases.
 
 ### The Challenge
-It is impossible to verify an input of "infinite length" using standard testing. Even symbolic execution engines cannot check a 1GB buffer because the state space is too large.
+It is impossible to verify an input of "infinite length" using standard testing, and even a bounded model checker like Kani/CBMC cannot exhaustively explore arbitrarily large buffers — the state space grows too fast.
 
 ### The Solution: Structural Induction
-Since Base64 encoding/decoding is a linear, block-based operation, we do not need to check infinite lengths. We only need to prove that the logic holds for **one full cycle + the boundaries**.
+Base64 encoding/decoding is a linear, block-based operation, so we do not need to check every length. It is enough to prove the logic holds for a single fixed length that is chosen to exercise:
+1.  **The loop body, at least twice:** proving that the pointer/state one iteration hands off is itself a valid entry state for the next iteration.
+2.  **The transition:** the handover from the SIMD loop to the Scalar fallback.
+3.  **The tail:** a non-empty, non-aligned scalar remainder, so the SIMD-to-scalar handoff is exercised too.
 
-If we prove:
-1.  **The Loop Body:** One full SIMD vector iteration is correct and memory-safe.
-2.  **The Transition:** The handover from the SIMD loop to the Scalar fallback is correct.
-3.  **The Tail:** The Scalar fallback handles the remaining 0-3 bytes correctly.
-
-Then, by **Mathematical Induction**, we have proven safety for **all** inputs from length `0` to `usize::MAX`.
+If Kani proves those properties hold for one such length with fully symbolic input, the result generalizes by induction to all inputs from length `0` to `usize::MAX`.
 
 ### The Proof Harness
-We utilize a "Magic Number" constant for verification: `ENC_INDUCTION_LEN = 29`.
+`encode_slice_avx2` only enters its SIMD path once `len >= 32`, and then processes input in 24-byte rounds; `decode_slice_avx2` processes input in 32-byte single-vector passes, with a separate, faster 128-byte "quad" tier used for larger inputs. The induction-length constants in `src/simd/avx2.rs` are derived directly from that structure:
 
-*   **28 Bytes:** Ensures we trigger exactly one full AVX2 Loop iteration.
-*   **+1 Byte:** Forces the code to break out of the SIMD loop and execute the **Scalar Transition** logic.
+*   `ENC_INDUCTION_LEN = 53` — two 24-byte AVX2 rounds (48 bytes) plus a 5-byte scalar remainder.
+*   `DEC_INDUCTION_LEN = 69` — two 32-byte AVX2 single-vector passes (64 bytes) plus a 5-byte scalar remainder.
+*   `QUAD_ENC_INDUCTION_LEN = 125` — the smallest length that triggers exactly one pass of the decoder's 4x-unrolled quad tier. This is checked by a separate harness, `check_avx2_quad_tier_roundtrip`, since the quad tier's own unrolled pointer arithmetic is a distinct concern from the single-vector loop's.
 
-By making the input **Symbolic** (using `kani::any()`), Kani explores **every possible bit combination** (2^(29*8) possibilities) for that length.
+An earlier version of this proof used `ENC_INDUCTION_LEN = 29`. That value was incorrect: `encode_slice_avx2`'s `len >= 32` guard means any length below 32, including 29, skips the SIMD path entirely, so the proof was silently exercising only the scalar fallback and never touched the AVX2 encoder it was meant to verify.
 
-#### Actual Verification Code
-Here is the harness that proves the AVX2 Roundtrip (`encode -> decode == input`):
+By making the input **symbolic** (`kani::any()`), Kani explores every possible bit combination for that fixed length — 2^(53*8) possibilities for the encoder proof — rather than sampling individual cases.
+
+#### Proof Harness (Encode -> Decode Roundtrip)
+Simplified from the actual harness in `src/simd/avx2.rs` (which also stubs several AVX2 intrinsics for Kani — see the FAQ below for why that's a valid substitution):
 
 ```rust
 #[kani::proof]
 fn check_avx2_roundtrip_correctness() {
-    // 1. Create Symbolic Input
-    // `kani::any()` represents ANY possible byte sequence of this length.
-    // It is not a random generator; it is a mathematical symbol.
+    // `kani::any()` represents ANY possible byte sequence of this length —
+    // a symbolic value, not a random sample.
     let config = Config { url_safe: kani::any(), padding: true };
     let input: [u8; ENC_INDUCTION_LEN] = kani::any();
 
-    // 2. Setup Buffers
     let mut enc_buf = [0u8; 128];
     let mut dec_buf = [0u8; 128];
 
     unsafe {
-        // 3. Execute AVX2 Encode (Unsafe Intrinsic)
-        // Kani verifies that this POINTER write never goes out of bounds.
+        // Kani verifies this pointer write never goes out of bounds.
         encode_slice_avx2(&config, &input, enc_buf.as_mut_ptr());
 
-        // Calculate expected length
         let enc_len = encoded_size(ENC_INDUCTION_LEN, config.padding);
         let encoded_slice = &enc_buf[..enc_len];
 
-        // 4. Execute AVX2 Decode
-        // We assert that for ANY valid encoded output, decoding MUST succeed.
+        // For ANY valid encoded output, decoding must succeed.
         let dec_len = decode_slice_avx2(&config, encoded_slice, dec_buf.as_mut_ptr())
             .expect("Valid encoding failed to decode");
 
-        // 5. Verify Logic
-        // If this assertion passes, it is mathematically impossible for
-        // the algorithm to produce the wrong result for this block size.
         assert_eq!(dec_len, ENC_INDUCTION_LEN);
         assert_eq!(&dec_buf[..dec_len], &input, "Roundtrip mismatch");
     }
 }
 
-// Why 29?
-// Encoder Induction Size: 28 (Satisfies 1 AVX2 Loop) + 1 (Forces Scalar Transition)
-const ENC_INDUCTION_LEN: usize = 29;
+const ENC_INDUCTION_LEN: usize = 53;
 ```
 
 ## The Toolchain
@@ -136,19 +125,13 @@ While MIRI checks for validity, **MemorySanitizer (MSan)** checks for **Initiali
 *   **The Check:** We recompile the **entire Rust Standard Library** from source with MSan instrumentation (`-Z build-std -Z sanitizer=memory`). This allows us to track the "definedness" of every single bit of memory.
 *   **Guarantee:** We ensure that our SIMD algorithms (including AVX512's extensive masking operations) never perform logic on garbage data derived from uninitialized buffers.
 
-## ❓ FAQ
+## FAQ
 
-**Q: Does this crate use `unsafe` Rust?**
-**A:** Yes, extensively. We use pointers and SIMD intrinsics to achieve speed. However, all `unsafe` blocks are encapsulated behind a Safe API and have been formally audited.
+### Q: Does this crate use `unsafe` Rust?
+**A:** Yes, extensively. We use pointers and SIMD intrinsics to achieve speed. All `unsafe` blocks are encapsulated behind a Safe API and covered by the verification layers described above.
 
-**Q: Is it safe to use in Production?**
-**A:** For Scalar, AVX2, and (plain) AVX512, yes — those paths are Kani-proven (symbolic
-execution, not just testing) in addition to passing MIRI and MSan; note that the AVX512
-proof runs locally rather than in CI (see
-[Kani Coverage: AVX512 vs. AVX512-VBMI](#kani-coverage-avx512-vs-avx512-vbmi)). AVX512-VBMI
-and NEON currently have MIRI + fuzzing coverage but no Kani proof (see the matrix above);
-we consider both production-ready based on that coverage, but it is a strictly lower bar
-than the Kani-proven paths.
+### Q: Is it safe to use in production?
+**A:** For Scalar, AVX2, and plain AVX512, yes — those paths are Kani-proven in addition to passing MIRI and MSan (see [CI vs. local Kani execution](#ci-vs-local-kani-execution) for the AVX512 caveat). AVX512-VBMI and NEON have MIRI and fuzzing coverage but no Kani proof; we consider both production-ready on that basis, though it is a lower bar than the Kani-proven paths.
 
-**Q: How do I know your SIMD stubs are correct?**
-**A:** We use **"Literal Translation."** We copy the exact variable names and logic flow from the [Intel Intrinsics Guide](https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html), replicating specific hardware behaviors (saturation, masking) exactly as documented, allowing side-by-side verification.
+### Q: How do I know your SIMD stubs are correct?
+**A:** We use literal translation: stub implementations copy the exact variable names and logic flow from the [Intel Intrinsics Guide](https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html), replicating documented hardware behaviors (saturation, masking) exactly, so they can be checked side-by-side against the reference.

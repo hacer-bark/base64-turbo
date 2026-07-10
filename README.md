@@ -100,10 +100,10 @@ The public API (traits, structs, and error types) is considered **Stable**.
 
 Achieving maximum throughput must not cost memory safety. We leverage `unsafe` intrinsics for SIMD, so instead of relying on manual review alone, we run every `unsafe` path through multiple independent verification layers. Each layer proves or checks a specific, narrow property — see the matrix below for exactly which layers cover which architecture.
 
-*   **Kani Verified:** For the architectures marked below, Kani mathematically proves the encode/decode kernels never read or write out of bounds and never panic, for all possible inputs of the induction length (see [Safety & Verification](docs/verification.md) for the proof strategy).
-*   **MIRI Verified:** MIRI's interpreter checks that no Undefined Behavior (UB) — invalid pointer provenance, misaligned access, data races, etc. — occurs on the test inputs it's run against.
-*   **MSan Audited:** MemorySanitizer confirms our test runs never branch on or output uninitialized memory.
-*   **Fuzz Tested:** Over 2.5 billion `cargo-fuzz` iterations across all code paths with zero crashes found to date.
+*   **Kani-proven:** For the architectures marked below, Kani mathematically proves the encode/decode kernels never read or write out of bounds and never panic, for all possible inputs of the induction length (see [Safety & Verification](docs/verification.md) for the proof strategy).
+*   **MIRI-checked:** MIRI's interpreter checks that no Undefined Behavior (UB) — invalid pointer provenance, misaligned access, data races, etc. — occurs on the test inputs it's run against.
+*   **MSan-audited:** MemorySanitizer confirms our test runs never branch on or output uninitialized memory.
+*   **Fuzz-tested:** Over 2.5 billion `cargo-fuzz` iterations across all code paths with zero crashes found to date.
 
 **Verified Architectures:**
 

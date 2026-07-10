@@ -1,8 +1,8 @@
-# ⚖️ Ecosystem Comparison
+# Ecosystem Comparison
 
 This project references and benchmarks against several external Base64 libraries. Below is an objective analysis of the current landscape, detailing performance characteristics, implementation details, and safety guarantees.
 
-## 📊 Quick Feature Matrix
+## Quick Feature Matrix
 
 | Library | Language | SIMD | Verified Safety | Est. Throughput (AVX2) | Source |
 | :--- | :---: | :---: | :---: | :--- | :--- |
@@ -29,7 +29,7 @@ A well-established SIMD-accelerated Base64 crate for Rust.
 *   **Verdict:** A strong library. `base64-turbo` measured faster in our benchmarks and additionally carries Kani/MIRI verification, which we could not find published for `base64-simd`.
 
 ### 3. [vb64](https://crates.io/crates/vb64) (Experimental)
-*   **Status:** ⚠️ Broken / Unmaintained.
+*   **Status:** Broken / Unmaintained.
 *   **Details:** Relies on the unstable `core::simd` nightly API. Because the nightly API changes frequently, this crate currently fails to compile on modern Rust versions. Benchmarks (when it worked) indicated it was slower than `base64-simd`.
 
 ### 4. [base-d](https://crates.io/crates/base-d)
@@ -49,7 +49,7 @@ A well-established SIMD-accelerated Base64 crate for Rust.
 
 ### 1. [Turbo-Base64](https://github.com/powturbo/Turbo-Base64) (PowTurbo)
 One of the fastest Base64 implementations available in any language.
-*   **Pros:** Extreme velocity — the project's own benchmarks report ~29 GiB/s on AVX2. We have not independently benchmarked it ourselves (it isn't wired into our `cargo bench` suite), so treat that figure as vendor-reported, not verified by us.
+*   **Pros:** Very high throughput — the project's own benchmarks report ~29 GiB/s on AVX2. We have not independently benchmarked it ourselves (it isn't wired into our `cargo bench` suite), so treat that figure as vendor-reported, not verified by us.
 *   **Cons:** **Unsafe.** Written in C. Relies on unchecked pointer arithmetic and memory manipulation, with no published formal verification. Harder to build in Rust toolchains (requires a C toolchain).
 *   **Verdict:** Use only if you need the theoretical maximum speed and are willing to own the risk of segfaults/buffer overflows and C build complexity yourself.
 
@@ -65,5 +65,5 @@ A highly optimized C library by Alfred Klomp.
 
 ---
 
-> **🛡️ Final Safety Note:**
+> **Final Safety Note:**
 > With the exception of the standard `base64` crate (which uses Safe Rust with zero `unsafe`), none of the alternative libraries listed above publish Kani or MIRI verification for their `unsafe`/SIMD code, as far as we could find. To our knowledge, `base64-turbo` is the only crate in this comparison that pairs SIMD-accelerated (AVX512-class) throughput with Kani + MIRI formal verification of its `unsafe` paths — if you know of one we've missed, please open an issue so we can correct this.

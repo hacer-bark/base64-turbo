@@ -1,4 +1,4 @@
-# 💻 Benchmark: Intel i7-8750H (AVX2)
+# Benchmark: Intel i7-8750H (AVX2)
 
 **Context:** This benchmark runs on a standard consumer-grade laptop CPU (Intel Coffee Lake). It demonstrates how `base64-turbo` optimizes for the most common instruction set currently in use (AVX2).
 
@@ -6,16 +6,16 @@
 *   **Instruction Set:** **AVX2** (Enabled)
 *   **Competitor:** `base64-simd` (The current high-performance standard)
 
-## 📈 Performance Snapshot
+## Performance Snapshot
 
 ![Benchmark Graph](https://github.com/hacer-bark/base64-turbo/blob/main/benches/img/base64_i7_avx2.png?raw=true)
 
 **Key Findings:**
-1.  **Decoding Domination:** `base64-turbo` crushes the competition in decoding, reaching **~12.1 GiB/s** compared to `base64-simd`'s 8.0 GiB/s. That is a **+51% speedup**.
-2.  **Latency Leader:** For small payloads (32B), the zero-allocation API is **~1.5x faster** (17ns vs 26ns), reducing overhead for micro-services.
-3.  **Efficiency:** Even on older hardware, the library extracts significantly more throughput per clock cycle than competitors.
+1.  **Decode throughput:** `base64-turbo` reaches **~12.1 GiB/s** decoding, versus `base64-simd`'s 8.0 GiB/s — a 51% improvement.
+2.  **Small-payload latency:** For 32B payloads, the zero-allocation API is ~1.5x faster than `base64-simd` (17ns vs 26ns).
+3.  **Efficiency:** Even on this older-generation CPU, the library sustains a meaningfully higher throughput-per-clock than the comparison points below.
 
-## 🏎️ Detailed Results
+## Detailed Results
 
 ### 1. Small Payloads (32 Bytes)
 **Focus:** API Overhead & Branch Prediction.
@@ -27,7 +27,7 @@
 | `base64-simd` | `Standard` | 26.78 ns | 1.11 GiB/s | 23.74 ns | 1.73 GiB/s |
 | `base64` (std) | `Standard` | 49.62 ns | 0.62 GiB/s | 51.45 ns | 0.82 GiB/s |
 
-> **Analysis:** `base64-turbo` (TurboBuff) is the clear winner here. By removing allocation overhead and utilizing efficient scalar fallback for small inputs, we achieve sub-20ns latency, which is critical for high-frequency messaging.
+> **Analysis:** `base64-turbo` (TurboBuff) leads at this size. Removing allocation overhead and using an efficient scalar fallback for small inputs keeps latency under 20ns, which matters for high-frequency messaging workloads.
 
 ### 2. Medium Payloads (64 KB)
 **Focus:** AVX2 Implementation & L1 Cache.
@@ -39,8 +39,8 @@
 | `base64` (std) | 1.66 GiB/s | -80% | 1.66 GiB/s | -79% |
 
 > **Analysis:**
-> *   **Decoding:** This is a massive gap. `base64-turbo`'s "Lane Stitching" technique allows it to consume data much faster than standard AVX2 implementations.
-> *   **Encoding:** The gap is tighter (~4%), but `base64-turbo` consistently holds the lead, proving better pipeline saturation.
+> *   **Decoding:** `base64-turbo`'s lane-stitching technique lets it consume data at a substantially higher rate than `base64-simd` at this size (+51.7%).
+> *   **Encoding:** The gap is narrower (~4%), with `base64-turbo` consistently ahead, indicating better pipeline saturation.
 
 ### 3. Large Payloads (10 MB)
 **Focus:** Memory Bandwidth & Thermal Throttling.
@@ -51,9 +51,9 @@
 | `base64-simd` | 6.45 GiB/s | 6.48 GiB/s |
 | `base64` (std) | 1.49 GiB/s | 1.59 GiB/s |
 
-> **Analysis:** Even when limited by the laptop's RAM bandwidth and thermal limits, `base64-turbo` maintains a **27% lead** in decoding. This efficiency implies that for the same amount of data, `base64-turbo` keeps the CPU active for less time, potentially saving battery life on some devices.
+> **Analysis:** Even when limited by the laptop's RAM bandwidth and thermal limits, `base64-turbo` maintains a 27% lead in decoding. Since it processes the same data in less CPU time, this can also translate to lower energy use on battery-powered devices.
 
-## 📝 Raw Data Log
+## Raw Data Log
 <details>
 <summary>Click to view raw Criterion output</summary>
 

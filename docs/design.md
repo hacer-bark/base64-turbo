@@ -1,4 +1,4 @@
-# 🏗️ Architecture & Design
+# Architecture & Design
 
 This document details the internal engineering of `base64-turbo`. The design goal is to maximize throughput for **Memory-Safe Rust** by leveraging SIMD (Single Instruction, Multiple Data) and minimizing CPU pipeline stalls, while acknowledging the inherent performance gap compared to unchecked C/Assembly.
 

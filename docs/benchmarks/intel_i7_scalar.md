@@ -1,4 +1,4 @@
-# 💻 Benchmark: Intel i7-8750H (Scalar / No-SIMD)
+# Benchmark: Intel i7-8750H (Scalar / No-SIMD)
 
 **Context:** This test forcibly disables all SIMD instructions (AVX2). It measures the raw efficiency of our custom fallback algorithm against the standard `base64` crate.
 
@@ -6,15 +6,15 @@
 *   **Mode:** **Scalar Only**
 *   **Competitor:** `base64` (Standard crate, referred to as "Std")
 
-## 📈 Performance Snapshot
+## Performance Snapshot
 
 ![Benchmark Graph](https://github.com/hacer-bark/base64-turbo/blob/main/benches/img/base64_i7_scalar.png?raw=true)
 
 **Key Findings:**
-1.  **Latency King (No-Alloc):** The `TurboBuff` (no-allocation) implementation obliterates overhead for small payloads (32B), achieving **~20ns** latency vs **~45ns** for Std (>2x faster).
-2.  **Sustained Throughput:** While encoding speeds are competitive in the medium range, `base64-turbo` pulls ahead significantly in decoding for large files, proving the effectiveness of 64-bit register processing.
+1.  **Small-payload latency (no-alloc):** The `TurboBuff` (no-allocation) implementation cuts overhead for small payloads (32B) to ~20ns latency vs ~45ns for `std` — over 2x faster.
+2.  **Sustained throughput:** Encoding speeds are close in the medium range, but `base64-turbo` pulls ahead significantly in decoding for large files, consistent with the benefit of 64-bit register processing in the scalar fallback.
 
-## 🏎️ Detailed Results
+## Detailed Results
 
 ### 1. Small Payloads (32 Bytes)
 **Focus:** Embedded Logging, Serial Comms, Zero-Allocation targets.
@@ -24,7 +24,7 @@
 | **base64-turbo** | `No-Alloc` | **20.80 ns** | **1.43 GiB/s** | **24.93 ns** | **1.64 GiB/s** |
 | `base64` (std) | `Scalar` | 45.01 ns | 0.66 GiB/s | 52.41 ns | 0.78 GiB/s |
 
-> **Analysis:** The `base64-turbo` (TurboBuff) implementation is **~54% faster** in encoding latency and **~52% faster** in decoding latency compared to Std. This makes it the superior choice for high-frequency, small-packet operations where CPU cycles are precious.
+> **Analysis:** The `base64-turbo` (TurboBuff) implementation is ~54% faster in encoding latency and ~52% faster in decoding latency compared to `std`, making it well suited to high-frequency, small-packet operations where CPU cycles are scarce.
 
 ### 2. Medium Payloads (64 KB)
 **Focus:** L1 Cache Efficiency (Scalar).
@@ -35,8 +35,8 @@
 | `base64` (std) | **1.81 GiB/s** | - | 1.50 GiB/s | - |
 
 > **Analysis:**
-> *   **Decoding:** Custom algorithm shines brilliantly here, delivering a massive **~63% speedup**. By reading `u64` chunks, we minimize memory access overhead.
-> *   **Encoding:** The standard library edges out `base64-turbo` slightly (~2%) in this specific cache window, likely due to compiler optimizations favoring the standard loop structure in L1 cache, though the difference is negligible.
+> *   **Decoding:** The scalar decoder delivers a ~63% speedup here. Reading `u64` chunks instead of individual bytes reduces memory access overhead.
+> *   **Encoding:** The standard library edges out `base64-turbo` slightly (~2%) in this cache window, likely due to compiler optimizations favoring the standard loop structure in L1 cache; the difference is within noise.
 
 ### 3. Large Payloads (10 MB)
 **Focus:** Sustained Throughput (RAM/L3 Bottlenecks).
@@ -46,9 +46,9 @@
 | **base64-turbo** | **1.71 GiB/s** | **2.33 GiB/s** |
 | `base64` (std) | 1.57 GiB/s | 1.43 GiB/s |
 
-> **Analysis:** On large files, `base64-turbo` reasserts its dominance. It maintains a **~9% lead in encoding** and a massive **~63% lead in decoding**. This suggests that as data exceeds L1 cache sizes, our loop unrolling and custom strategies handle memory bandwidth much more efficiently than the standard implementation.
+> **Analysis:** On large files, `base64-turbo` maintains a ~9% lead in encoding and a ~63% lead in decoding. As data exceeds L1 cache size, the loop unrolling and 64-bit chunked reads in the scalar fallback handle memory bandwidth more efficiently than the standard implementation.
 
-## 📝 Raw Data Log
+## Raw Data Log
 <details>
 <summary>Click to view raw Criterion output</summary>
 

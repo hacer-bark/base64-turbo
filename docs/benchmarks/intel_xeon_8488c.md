@@ -1,26 +1,26 @@
-# ☁️ Benchmark: Intel Xeon Platinum 8488C (AWS)
+# Benchmark: Intel Xeon Platinum 8488C (AWS)
 
-**Context:** This benchmark represents the **"State of the Art"** for cloud computing. The tests were executed on an AWS `c7i.large` instance powered by Intel Sapphire Rapids.
+**Context:** This benchmark represents a current-generation cloud instance type. The tests were executed on an AWS `c7i.large` instance powered by Intel Sapphire Rapids.
 
 *   **Processor:** Intel(R) Xeon(R) Platinum 8488C
 *   **Instruction Set:** AVX512 (Enabled)
 *   **Environment:** AWS Nitro Hypervisor
 *   **OS:** Ubuntu latest (Minimal, `cargo` only)
 
-## 📈 Performance Snapshot
+## Performance Snapshot
 
 ![Benchmark Graph](https://github.com/hacer-bark/base64-turbo/blob/main/benches/img/base64_intel.png?raw=true)
 
 **Key Findings:**
-1.  **Decode Domination:** `base64-turbo` achieves **21.04 GiB/s** in decoding, more than **2x faster** than the previous Rust standard.
-2.  **Low Latency:** For small inputs (32B), the zero-allocation API (`TurboBuff`) offers **~10ns** latency, critical for HFT messaging.
-3.  **Memory Saturation:** On large payloads (10MB+), the library effectively saturates the memory bandwidth.
+1.  **Decode throughput:** `base64-turbo` reaches 21.04 GiB/s decoding, more than 2x the `base64` (std) baseline.
+2.  **Low latency:** For small inputs (32B), the zero-allocation API (`TurboBuff`) offers ~10ns latency, relevant for HFT messaging.
+3.  **Memory saturation:** On large payloads (10MB+), the library approaches the memory bandwidth ceiling of the test instance.
 
-## 🏎️ Detailed Results
+## Detailed Results
 
 ### 1. Small Payloads (32 Bytes)
 **Focus:** Latency & Branch Prediction.
-*Crucial for:** FIX Messages, API Keys, Headers.*
+**Crucial for:** FIX Messages, API Keys, Headers.
 
 | Crate | Mode | Encode Latency | Encode Throughput | Decode Latency | Decode Throughput |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -29,11 +29,11 @@
 | `base64-simd` | `Standard` | 18.12 ns | 1.64 GiB/s | 15.11 ns | 2.71 GiB/s |
 | `base64` (std) | `Standard` | 56.51 ns | 0.54 GiB/s | 49.65 ns | 0.85 GiB/s |
 
-> **Analysis:** `base64-turbo` (TurboBuff) is **1.8x faster** than `base64-simd` on encoding latency. This confirms the efficiency of our runtime feature detection and hot-path optimization.
+> **Analysis:** `base64-turbo` (TurboBuff) is 1.8x faster than `base64-simd` on encoding latency at this size, reflecting the low overhead of the runtime feature detection and hot-path design.
 
 ### 2. Medium Payloads (64 KB)
 **Focus:** L1/L2 Cache Saturation & AVX Efficiency.
-*Crucial for:** JSON blobs, Binary responses, Images.*
+**Crucial for:** JSON blobs, Binary responses, Images.
 
 | Crate | Encode Speed | vs `base64-simd` | Decode Speed | vs `base64-simd` |
 | :--- | :--- | :--- | :--- | :--- |
@@ -41,13 +41,13 @@
 | `base64-simd` | 10.57 GiB/s | - | 10.01 GiB/s | - |
 | `base64` (std) | 2.42 GiB/s | -77% | 2.78 GiB/s | -72% |
 
-> **Analysis:** This is where AVX512 shines.
-> *   **Decoding:** The massive **2.1x speedup** comes from our "Logic > Memory" approach, utilizing the full width of AVX512 registers.
-> *   **Encoding:** We see a solid ~20% gain, largely due to better port saturation (offloading shuffle operations).
+> **Analysis:** This is where AVX512 provides the largest benefit.
+> *   **Decoding:** The 2.1x speedup comes from utilizing the full width of AVX512 registers for the decode logic.
+> *   **Encoding:** The ~18% gain is largely due to better port saturation from offloading shuffle operations onto other execution ports.
 
 ### 3. Large Payloads (10 MB)
 **Focus:** RAM Bandwidth & Prefetching.
-*Crucial for:** File uploads, Video streams, Backups.*
+**Crucial for:** File uploads, Video streams, Backups.
 
 | Crate | Encode Speed | Decode Speed |
 | :--- | :--- | :--- |
@@ -55,9 +55,9 @@
 | `base64-simd` | 10.27 GiB/s | 9.98 GiB/s |
 | `base64` (std) | 2.16 GiB/s | 2.60 GiB/s |
 
-> **Analysis:** Even when bottlenecked by main system RAM, `base64-turbo` maintains a significant lead in decoding (`+57%`), proving that our loop unrolling and prefetching strategies effectively hide memory latency.
+> **Analysis:** Even when bottlenecked by main system RAM, `base64-turbo` maintains a significant lead in decoding (+57%), consistent with the loop unrolling and prefetching strategies effectively hiding memory latency at this scale.
 
-## 📝 Raw Data Log
+## Raw Data Log
 <details>
 <summary>Click to view raw Criterion output</summary>
 
