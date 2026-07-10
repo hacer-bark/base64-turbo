@@ -1,20 +1,25 @@
 //! Throughput benchmarks comparing `base64-turbo` against the `base64` and `base64-simd` crates.
-#![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    missing_docs,
+    clippy::too_many_lines
+)]
 
 use criterion::{
-    criterion_group, criterion_main, AxisScale, BenchmarkId, Criterion,
-    PlotConfiguration, Throughput,
+    AxisScale, BenchmarkId, Criterion, PlotConfiguration, Throughput, criterion_group,
+    criterion_main,
 };
-use std::hint::black_box;
 use rand::RngExt;
 use std::env;
+use std::hint::black_box;
 use std::time::Duration;
 
 // 1. The Base64-turbo
 use base64_turbo::STANDARD as TURBO_ENGINE;
 
 // 2. Competitor 1: The standard 'base64' crate
-use base64::{prelude::BASE64_STANDARD as STD_ENGINE, Engine as _};
+use base64::{Engine as _, prelude::BASE64_STANDARD as STD_ENGINE};
 
 // 3. Competitor 2: The 'base64-simd' crate
 use base64_simd::STANDARD as SIMD_ENGINE;
@@ -72,9 +77,13 @@ fn bench_comparison(c: &mut Criterion) {
 
         // 1a. Base64 Turbo (Allocating)
         if should_run("turbo") {
-            group.bench_with_input(BenchmarkId::new("Encode/Turbo", size), &input_data, |b, d| {
-                b.iter(|| TURBO_ENGINE.encode(black_box(d)));
-            });
+            group.bench_with_input(
+                BenchmarkId::new("Encode/Turbo", size),
+                &input_data,
+                |b, d| {
+                    b.iter(|| TURBO_ENGINE.encode(black_box(d)));
+                },
+            );
         }
 
         // 1b. Base64 Turbo (Buff / No-Alloc)
@@ -82,9 +91,15 @@ fn bench_comparison(c: &mut Criterion) {
             let encoded_len = TURBO_ENGINE.encoded_len(*size);
             let mut output_buffer = vec![0u8; encoded_len];
 
-            group.bench_with_input(BenchmarkId::new("Encode/TurboBuff", size), &input_data, |b, d| {
-                b.iter(|| TURBO_ENGINE.encode_into(black_box(d), black_box(&mut output_buffer)));
-            });
+            group.bench_with_input(
+                BenchmarkId::new("Encode/TurboBuff", size),
+                &input_data,
+                |b, d| {
+                    b.iter(|| {
+                        TURBO_ENGINE.encode_into(black_box(d), black_box(&mut output_buffer))
+                    });
+                },
+            );
         }
 
         // 2. Base64 Standard
@@ -96,9 +111,13 @@ fn bench_comparison(c: &mut Criterion) {
 
         // 3. Base64 SIMD
         if should_run("simd") {
-            group.bench_with_input(BenchmarkId::new("Encode/Simd", size), &input_data, |b, d| {
-                b.iter(|| SIMD_ENGINE.encode_to_string(black_box(d)));
-            });
+            group.bench_with_input(
+                BenchmarkId::new("Encode/Simd", size),
+                &input_data,
+                |b, d| {
+                    b.iter(|| SIMD_ENGINE.encode_to_string(black_box(d)));
+                },
+            );
         }
 
         // ======================================================================
@@ -113,9 +132,13 @@ fn bench_comparison(c: &mut Criterion) {
 
         // 1a. Base64 Turbo Decode (Allocating)
         if should_run("turbo") {
-            group.bench_with_input(BenchmarkId::new("Decode/Turbo", size), &encoded_str, |b, s| {
-                b.iter(|| TURBO_ENGINE.decode(black_box(s)));
-            });
+            group.bench_with_input(
+                BenchmarkId::new("Decode/Turbo", size),
+                &encoded_str,
+                |b, s| {
+                    b.iter(|| TURBO_ENGINE.decode(black_box(s)));
+                },
+            );
         }
 
         // 1b. Base64 Turbo Decode (Buff / No-Alloc)
@@ -123,23 +146,38 @@ fn bench_comparison(c: &mut Criterion) {
             let decoded_len = TURBO_ENGINE.estimate_decoded_len(encoded_str.len());
             let mut output_buffer = vec![0u8; decoded_len];
 
-            group.bench_with_input(BenchmarkId::new("Decode/TurboBuff", size), &encoded_str, |b, s| {
-                b.iter(|| TURBO_ENGINE.decode_into(black_box(s.as_bytes()), black_box(&mut output_buffer)));
-            });
+            group.bench_with_input(
+                BenchmarkId::new("Decode/TurboBuff", size),
+                &encoded_str,
+                |b, s| {
+                    b.iter(|| {
+                        TURBO_ENGINE
+                            .decode_into(black_box(s.as_bytes()), black_box(&mut output_buffer))
+                    });
+                },
+            );
         }
 
         // 2. Base64 Standard Decode
         if should_run("std") || should_run("base64") {
-            group.bench_with_input(BenchmarkId::new("Decode/Std", size), &encoded_str, |b, s| {
-                b.iter(|| STD_ENGINE.decode(black_box(s)));
-            });
+            group.bench_with_input(
+                BenchmarkId::new("Decode/Std", size),
+                &encoded_str,
+                |b, s| {
+                    b.iter(|| STD_ENGINE.decode(black_box(s)));
+                },
+            );
         }
 
         // 3. Base64 SIMD Decode
         if should_run("simd") {
-            group.bench_with_input(BenchmarkId::new("Decode/Simd", size), &encoded_str, |b, s| {
-                b.iter(|| SIMD_ENGINE.decode_to_vec(black_box(s)));
-            });
+            group.bench_with_input(
+                BenchmarkId::new("Decode/Simd", size),
+                &encoded_str,
+                |b, s| {
+                    b.iter(|| SIMD_ENGINE.decode_to_vec(black_box(s)));
+                },
+            );
         }
     }
 

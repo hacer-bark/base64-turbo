@@ -1,27 +1,23 @@
 use crate::{
-    Error,
-    Config,
-    STANDARD_ALPHABET,
-    URL_SAFE_ALPHABET,
-    STANDARD_DECODE_TABLE,
+    Config, Error, STANDARD_ALPHABET, STANDARD_DECODE_TABLE, URL_SAFE_ALPHABET,
     URL_SAFE_DECODE_TABLE,
 };
 
 /// Encodes a byte slice into Base64 using a highly optimized scalar algorithm.
-/// 
+///
 /// # Safety
-/// This function is **unsafe** and requires the caller to uphold strict memory contracts. 
+/// This function is **unsafe** and requires the caller to uphold strict memory contracts.
 /// Failure to do so will result in **Undefined Behavior** (buffer overflow).
 ///
-/// * **Output Capacity**: The memory region pointed to by `dst` must have sufficient capacity 
+/// * **Output Capacity**: The memory region pointed to by `dst` must have sufficient capacity
 ///   to store the encoded output. The required minimum size depends on `config.padding`:
 ///     * If `padding` is **true**: `input.len().div_ceil(3) * 4`
 ///     * If `padding` is **false**: `(input.len() * 4).div_ceil(3)`
 /// * **Pointer Validity**: `dst` must point to a valid, mutable memory region.
 ///
 /// # Internal Use Only
-/// This is a low-level primitive intended for internal use. Callers should prefer the 
-/// safe, higher-level APIs (e.g., `Engine::encode`) which automatically handle 
+/// This is a low-level primitive intended for internal use. Callers should prefer the
+/// safe, higher-level APIs (e.g., `Engine::encode`) which automatically handle
 /// buffer allocation and configuration logic.
 #[inline]
 pub(crate) unsafe fn encode_slice_unsafe(config: &Config, input: &[u8], mut dst: *mut u8) {
@@ -62,15 +58,14 @@ pub(crate) unsafe fn encode_slice_unsafe(config: &Config, input: &[u8], mut dst:
 
             // Map indices to Base64 characters and pack into a single 64-bit register.
             // This writes 8 bytes to memory in a single instruction.
-            let pack =
-                u64::from(*alphabet.get_unchecked((n1 >> 18) & 0x3F)) |
-                (u64::from(*alphabet.get_unchecked((n1 >> 12) & 0x3F)) << 8) |
-                (u64::from(*alphabet.get_unchecked((n1 >> 6) & 0x3F)) << 16) |
-                (u64::from(*alphabet.get_unchecked(n1 & 0x3F)) << 24) |
-                (u64::from(*alphabet.get_unchecked((n2 >> 18) & 0x3F)) << 32) |
-                (u64::from(*alphabet.get_unchecked((n2 >> 12) & 0x3F)) << 40) |
-                (u64::from(*alphabet.get_unchecked((n2 >> 6) & 0x3F)) << 48) |
-                (u64::from(*alphabet.get_unchecked(n2 & 0x3F)) << 56);
+            let pack = u64::from(*alphabet.get_unchecked((n1 >> 18) & 0x3F))
+                | (u64::from(*alphabet.get_unchecked((n1 >> 12) & 0x3F)) << 8)
+                | (u64::from(*alphabet.get_unchecked((n1 >> 6) & 0x3F)) << 16)
+                | (u64::from(*alphabet.get_unchecked(n1 & 0x3F)) << 24)
+                | (u64::from(*alphabet.get_unchecked((n2 >> 18) & 0x3F)) << 32)
+                | (u64::from(*alphabet.get_unchecked((n2 >> 12) & 0x3F)) << 40)
+                | (u64::from(*alphabet.get_unchecked((n2 >> 6) & 0x3F)) << 48)
+                | (u64::from(*alphabet.get_unchecked(n2 & 0x3F)) << 56);
 
             (dst.cast::<u64>()).write_unaligned(pack.to_le());
 
@@ -89,11 +84,10 @@ pub(crate) unsafe fn encode_slice_unsafe(config: &Config, input: &[u8], mut dst:
             let b2 = usize::from(*src.add(2));
             let n = (b0 << 16) | (b1 << 8) | b2;
 
-            let packed =
-                u32::from(*alphabet.get_unchecked((n >> 18) & 0x3F)) |
-                (u32::from(*alphabet.get_unchecked((n >> 12) & 0x3F)) << 8) |
-                (u32::from(*alphabet.get_unchecked((n >> 6) & 0x3F)) << 16) |
-                (u32::from(*alphabet.get_unchecked(n & 0x3F)) << 24);
+            let packed = u32::from(*alphabet.get_unchecked((n >> 18) & 0x3F))
+                | (u32::from(*alphabet.get_unchecked((n >> 12) & 0x3F)) << 8)
+                | (u32::from(*alphabet.get_unchecked((n >> 6) & 0x3F)) << 16)
+                | (u32::from(*alphabet.get_unchecked(n & 0x3F)) << 24);
 
             (dst.cast::<u32>()).write_unaligned(packed.to_le());
             src = src.add(3);
@@ -104,7 +98,11 @@ pub(crate) unsafe fn encode_slice_unsafe(config: &Config, input: &[u8], mut dst:
         let tail_len = len % 3;
         if tail_len > 0 {
             let b0 = usize::from(*src);
-            let b1 = if tail_len == 2 { usize::from(*src.add(1)) } else { 0 };
+            let b1 = if tail_len == 2 {
+                usize::from(*src.add(1))
+            } else {
+                0
+            };
             let n = (b0 << 16) | (b1 << 8);
 
             // Write the first 2 characters (always present)
@@ -128,11 +126,11 @@ pub(crate) unsafe fn encode_slice_unsafe(config: &Config, input: &[u8], mut dst:
 /// Decodes a Base64 byte slice using a highly optimized scalar algorithm.
 ///
 /// # Safety
-/// This function is **unsafe** and requires the caller to uphold strict memory contracts. 
+/// This function is **unsafe** and requires the caller to uphold strict memory contracts.
 /// Failure to do so will result in **Undefined Behavior** (buffer overflow).
 ///
-/// * **Output Capacity**: The memory region pointed to by `dst` must have sufficient capacity 
-///   to store the decoded output. Due to SIMD optimizations performing overlapping writes, 
+/// * **Output Capacity**: The memory region pointed to by `dst` must have sufficient capacity
+///   to store the decoded output. Due to SIMD optimizations performing overlapping writes,
 ///   the destination buffer **must** be at least `(input.len() / 4 + 1) * 3` bytes.
 /// * **Pointer Validity**: `dst` must point to a valid, mutable memory region.
 ///
@@ -141,9 +139,15 @@ pub(crate) unsafe fn encode_slice_unsafe(config: &Config, input: &[u8], mut dst:
 /// Callers should prefer the safe, higher-level APIs (e.g., `Engine::decode`), which
 /// automatically handle buffer sizing via `Engine::estimate_decoded_len`.
 #[inline]
-pub(crate) unsafe fn decode_slice_unsafe(config: &Config, input: &[u8], mut dst: *mut u8) -> Result<usize, Error> {
+pub(crate) unsafe fn decode_slice_unsafe(
+    config: &Config,
+    input: &[u8],
+    mut dst: *mut u8,
+) -> Result<usize, Error> {
     let len = input.len();
-    if len == 0 { return Ok(0); }
+    if len == 0 {
+        return Ok(0);
+    }
 
     let mut src = input.as_ptr();
     let dst_start = dst;
@@ -182,7 +186,7 @@ pub(crate) unsafe fn decode_slice_unsafe(config: &Config, input: &[u8], mut dst:
             // 2. Fast Validation
             // Valid characters map to 0..63 (00xxxxxx).
             // Invalid characters map to 0xFF (11111111).
-            // OR-ing them together accumulates the high bits. 
+            // OR-ing them together accumulates the high bits.
             // If any character was invalid, the 0x80 or 0x40 bits will be set.
             if (d0 | d1 | d2 | d3 | d4 | d5 | d6 | d7) & 0xC0 != 0 {
                 return Err(Error::InvalidCharacter);
@@ -190,8 +194,14 @@ pub(crate) unsafe fn decode_slice_unsafe(config: &Config, input: &[u8], mut dst:
 
             // 3. Fast Packing
             // Pack 4x 6-bit indices into a 24-bit integer (stored in u32).
-            let n1 = (u32::from(d0) << 18) | (u32::from(d1) << 12) | (u32::from(d2) << 6) | u32::from(d3);
-            let n2 = (u32::from(d4) << 18) | (u32::from(d5) << 12) | (u32::from(d6) << 6) | u32::from(d7);
+            let n1 = (u32::from(d0) << 18)
+                | (u32::from(d1) << 12)
+                | (u32::from(d2) << 6)
+                | u32::from(d3);
+            let n2 = (u32::from(d4) << 18)
+                | (u32::from(d5) << 12)
+                | (u32::from(d6) << 6)
+                | u32::from(d7);
 
             // 4. Overlapping Writes
             // We write 4 bytes (u32) to output 3 valid bytes.
@@ -208,8 +218,30 @@ pub(crate) unsafe fn decode_slice_unsafe(config: &Config, input: &[u8], mut dst:
         // --- TAIL HANDLING ---
         // Handle the remaining bytes (including potential padding).
         let current_offset = src.offset_from(input.as_ptr()).cast_unsigned();
-        let mut remaining = len - current_offset;
+        let remaining = len - current_offset;
 
+        decode_tail(config, table, src, dst, dst_start, remaining)
+    }
+}
+
+/// Decodes the final `remaining` (< 8) input bytes of a scalar decode pass, including
+/// any padding logic. Split out of [`decode_slice_unsafe`] purely to keep that function
+/// under the `clippy::too_many_lines` threshold; behavior is unchanged.
+///
+/// # Safety
+/// Same pointer-validity contract as [`decode_slice_unsafe`]: `src` must have at least
+/// `remaining` readable bytes, and `dst` must have enough writable capacity for the
+/// decoded output of those bytes.
+#[inline]
+unsafe fn decode_tail(
+    config: &Config,
+    table: *const u8,
+    mut src: *const u8,
+    mut dst: *mut u8,
+    dst_start: *mut u8,
+    mut remaining: usize,
+) -> Result<usize, Error> {
+    unsafe {
         while remaining > 0 {
             // Case A: Full 4-byte block (possibly containing padding at the end)
             if remaining >= 4 {
@@ -225,15 +257,20 @@ pub(crate) unsafe fn decode_slice_unsafe(config: &Config, input: &[u8], mut dst:
                 if b3 == b'=' {
                     if b2 == b'=' {
                         // "XX==" -> 1 byte output
-                        if (d0 | d1) & 0xC0 != 0 { return Err(Error::InvalidCharacter); }
+                        if (d0 | d1) & 0xC0 != 0 {
+                            return Err(Error::InvalidCharacter);
+                        }
                         let n = (u32::from(d0) << 18) | (u32::from(d1) << 12);
                         *dst = ((n >> 16) & 0xFF) as u8;
                         dst = dst.add(1);
                     } else {
                         // "XXX=" -> 2 bytes output
                         let d2 = *table.add(usize::from(b2));
-                        if (d0 | d1 | d2) & 0xC0 != 0 { return Err(Error::InvalidCharacter); }
-                        let n = (u32::from(d0) << 18) | (u32::from(d1) << 12) | (u32::from(d2) << 6);
+                        if (d0 | d1 | d2) & 0xC0 != 0 {
+                            return Err(Error::InvalidCharacter);
+                        }
+                        let n =
+                            (u32::from(d0) << 18) | (u32::from(d1) << 12) | (u32::from(d2) << 6);
                         *dst = ((n >> 16) & 0xFF) as u8;
                         *dst.add(1) = ((n >> 8) & 0xFF) as u8;
                         dst = dst.add(2);
@@ -250,7 +287,10 @@ pub(crate) unsafe fn decode_slice_unsafe(config: &Config, input: &[u8], mut dst:
                     return Err(Error::InvalidCharacter);
                 }
 
-                let n = (u32::from(d0) << 18) | (u32::from(d1) << 12) | (u32::from(d2) << 6) | u32::from(d3);
+                let n = (u32::from(d0) << 18)
+                    | (u32::from(d1) << 12)
+                    | (u32::from(d2) << 6)
+                    | u32::from(d3);
                 *dst = ((n >> 16) & 0xFF) as u8;
                 *dst.add(1) = ((n >> 8) & 0xFF) as u8;
                 *dst.add(2) = (n & 0xFF) as u8;
@@ -276,7 +316,9 @@ pub(crate) unsafe fn decode_slice_unsafe(config: &Config, input: &[u8], mut dst:
 
                 let b1 = *src.add(1);
                 let d1 = *table.add(usize::from(b1));
-                if (d0 | d1) & 0xC0 != 0 { return Err(Error::InvalidCharacter); }
+                if (d0 | d1) & 0xC0 != 0 {
+                    return Err(Error::InvalidCharacter);
+                }
 
                 let mut n = (u32::from(d0) << 18) | (u32::from(d1) << 12);
 
@@ -288,7 +330,9 @@ pub(crate) unsafe fn decode_slice_unsafe(config: &Config, input: &[u8], mut dst:
                     // "XYZ" -> 2 bytes output
                     let b2 = *src.add(2);
                     let d2 = *table.add(usize::from(b2));
-                    if d2 & 0xC0 != 0 { return Err(Error::InvalidCharacter); }
+                    if d2 & 0xC0 != 0 {
+                        return Err(Error::InvalidCharacter);
+                    }
 
                     n |= u32::from(d2) << 6;
                     *dst = ((n >> 16) & 0xFF) as u8;
@@ -320,13 +364,17 @@ mod kani_verification_scalar {
     // --- HELPERS ---
 
     fn encoded_size(len: usize, padding: bool) -> usize {
-        if padding { TURBO_STANDARD.encoded_len(len) } else { TURBO_STANDARD_NO_PAD.encoded_len(len) }
+        if padding {
+            TURBO_STANDARD.encoded_len(len)
+        } else {
+            TURBO_STANDARD_NO_PAD.encoded_len(len)
+        }
     }
 
     // --- PROOFS ---
 
     /// **Proof 1: Roundtrip Correctness & Safety**
-    /// 
+    ///
     /// Verifies that `Decode(Encode(X)) == X` for the critical induction length.
     /// Since this length triggers all unique logic branches (Loop, Tail-Block, Tail-Partial),
     /// proving this implies safety for any N.
@@ -362,7 +410,7 @@ mod kani_verification_scalar {
     }
 
     /// **Proof 2: Decoder Robustness**
-    /// 
+    ///
     /// Verifies that the Scalar Decoder is unbreakable against garbage input.
     /// It must returns Ok/Err but NEVER Panic or Segfault.
     #[kani::proof]
@@ -380,7 +428,7 @@ mod kani_verification_scalar {
         let mut dec_buf = [0u8; 64];
 
         unsafe {
-            // We ignore the Result. We only care that this function call 
+            // We ignore the Result. We only care that this function call
             // returns safely (Ok or Err) and does not crash.
             let _ = decode_slice_unsafe(&config, &input, dec_buf.as_mut_ptr());
         }
@@ -390,7 +438,10 @@ mod kani_verification_scalar {
 #[cfg(all(test, miri))]
 mod scalar_miri_coverage {
     use super::*;
-    use base64::{engine::general_purpose::{STANDARD, STANDARD_NO_PAD}, Engine};
+    use base64::{
+        Engine,
+        engine::general_purpose::{STANDARD, STANDARD_NO_PAD},
+    };
     use rand::{RngExt, rng};
 
     // --- Mock Infrastructure ---
@@ -405,12 +456,23 @@ mod scalar_miri_coverage {
         let expected = oracle.encode(&input);
 
         // Calculate exact required size
-        let len_required = if config.padding { input_len.div_ceil(3) * 4 } else { (input_len * 4).div_ceil(3) };
+        let len_required = if config.padding {
+            input_len.div_ceil(3) * 4
+        } else {
+            (input_len * 4).div_ceil(3)
+        };
         let mut dst = vec![0u8; len_required];
 
-        unsafe { encode_slice_unsafe(config, &input, dst.as_mut_ptr()); }
+        unsafe {
+            encode_slice_unsafe(config, &input, dst.as_mut_ptr());
+        }
 
-        assert_eq!(std::str::from_utf8(&dst).unwrap(), expected, "Encode len {}", input_len);
+        assert_eq!(
+            std::str::from_utf8(&dst).unwrap(),
+            expected,
+            "Encode len {}",
+            input_len
+        );
     }
 
     /// Helper to verify Scalar decoding against the 'base64' crate oracle
@@ -427,7 +489,8 @@ mod scalar_miri_coverage {
 
         // 3. Run
         let len = unsafe {
-            decode_slice_unsafe(config, encoded_bytes, dst.as_mut_ptr()).expect("Valid input failed to decode")
+            decode_slice_unsafe(config, encoded_bytes, dst.as_mut_ptr())
+                .expect("Valid input failed to decode")
         };
 
         // 4. Verify
@@ -440,7 +503,10 @@ mod scalar_miri_coverage {
 
     #[test]
     fn miri_scalar_encode_fast_loop() {
-        let config = Config { url_safe: false, padding: true };
+        let config = Config {
+            url_safe: false,
+            padding: true,
+        };
         // The loop processes 6 bytes at a time.
         verify_encode(&config, &STANDARD, 6); // Exactly 1 loop
         verify_encode(&config, &STANDARD, 12); // Exactly 2 loops
@@ -448,7 +514,10 @@ mod scalar_miri_coverage {
 
     #[test]
     fn miri_scalar_encode_tail_logic() {
-        let config = Config { url_safe: false, padding: true };
+        let config = Config {
+            url_safe: false,
+            padding: true,
+        };
         // 3 bytes -> handled by `if len_remaining >= 3`
         verify_encode(&config, &STANDARD, 3);
         // 4 bytes -> 3 byte block + 1 byte tail (Padding: "==")
@@ -469,7 +538,10 @@ mod scalar_miri_coverage {
 
     #[test]
     fn miri_scalar_encode_no_padding() {
-        let config = Config { url_safe: false, padding: false };
+        let config = Config {
+            url_safe: false,
+            padding: false,
+        };
         // Verify `if config.padding` checks in tail logic
         verify_encode(&config, &STANDARD_NO_PAD, 1);
         verify_encode(&config, &STANDARD_NO_PAD, 2);
@@ -483,8 +555,11 @@ mod scalar_miri_coverage {
     #[test]
     fn miri_scalar_encode_url_safe() {
         // Verify alphabet switch
-        let config = Config { url_safe: true, padding: false };
-        let input = vec![0xFB, 0xFF, 0xFF]; 
+        let config = Config {
+            url_safe: true,
+            padding: false,
+        };
+        let input = vec![0xFB, 0xFF, 0xFF];
         let mut dst = vec![0u8; 4];
         unsafe { encode_slice_unsafe(&config, &input, dst.as_mut_ptr()) };
         assert_eq!(&dst, b"-___");
@@ -496,15 +571,21 @@ mod scalar_miri_coverage {
 
     #[test]
     fn miri_scalar_decode_fast_loop() {
-        let config = Config { url_safe: false, padding: true };
+        let config = Config {
+            url_safe: false,
+            padding: true,
+        };
         // Fast loop processes 8 bytes (2 blocks).
-        verify_decode(&config, &STANDARD, 6);  // 8 chars encoded
+        verify_decode(&config, &STANDARD, 6); // 8 chars encoded
         verify_decode(&config, &STANDARD, 12); // 16 chars encoded (2 loops)
     }
 
     #[test]
     fn miri_scalar_decode_tail_padded() {
-        let config = Config { url_safe: false, padding: true };
+        let config = Config {
+            url_safe: false,
+            padding: true,
+        };
         // Logic: if b3 == '=' and if b2 == '='
 
         // "XX==" case (1 output byte)
@@ -519,7 +600,10 @@ mod scalar_miri_coverage {
 
     #[test]
     fn miri_scalar_decode_tail_no_pad() {
-        let config = Config { url_safe: false, padding: false };
+        let config = Config {
+            url_safe: false,
+            padding: false,
+        };
         // Logic: `Case B: Partial block`
 
         // "XY" (2 chars -> 1 byte)
@@ -534,14 +618,20 @@ mod scalar_miri_coverage {
 
     #[test]
     fn miri_scalar_decode_url_safe() {
-        let config = Config { url_safe: true, padding: false };
+        let config = Config {
+            url_safe: true,
+            padding: false,
+        };
         // Verify table selection
         let mut dst = [0u8; 3];
         // '-' (62) and '_' (63)
         let len = unsafe { decode_slice_unsafe(&config, b"-_", dst.as_mut_ptr()).unwrap() };
         assert_eq!(len, 1);
         // URL-safe with padding
-        let config_pad = Config { url_safe: true, padding: true };
+        let config_pad = Config {
+            url_safe: true,
+            padding: true,
+        };
         let len = unsafe { decode_slice_unsafe(&config_pad, b"-_8=", dst.as_mut_ptr()).unwrap() };
         assert_eq!(len, 2);
     }
@@ -552,21 +642,30 @@ mod scalar_miri_coverage {
 
     #[test]
     fn miri_scalar_errors() {
-        let config = Config { url_safe: false, padding: true };
+        let config = Config {
+            url_safe: false,
+            padding: true,
+        };
         let mut dst = [0u8; 10];
 
         // 1. Invalid Char in Fast Loop
         // "A" maps to 0, "!" maps to 0xFF. 0xFF | 0x... has high bit set.
-        let bad_fast = b"AAAAAA!A"; 
+        let bad_fast = b"AAAAAA!A";
         unsafe {
-            assert_eq!(decode_slice_unsafe(&config, bad_fast, dst.as_mut_ptr()), Err(Error::InvalidCharacter));
+            assert_eq!(
+                decode_slice_unsafe(&config, bad_fast, dst.as_mut_ptr()),
+                Err(Error::InvalidCharacter)
+            );
         }
 
         // 2. Invalid Char in Tail (Full Block)
         // "AA!A"
         let bad_tail = b"AA!A";
         unsafe {
-            assert_eq!(decode_slice_unsafe(&config, bad_tail, dst.as_mut_ptr()), Err(Error::InvalidCharacter));
+            assert_eq!(
+                decode_slice_unsafe(&config, bad_tail, dst.as_mut_ptr()),
+                Err(Error::InvalidCharacter)
+            );
         }
 
         // 3. Invalid Padding Position
@@ -574,35 +673,55 @@ mod scalar_miri_coverage {
         let bad_pad = b"A==A";
         unsafe {
             // This falls through to standard decode of '=', which is 0xFF (invalid)
-            assert_eq!(decode_slice_unsafe(&config, bad_pad, dst.as_mut_ptr()), Err(Error::InvalidCharacter));
+            assert_eq!(
+                decode_slice_unsafe(&config, bad_pad, dst.as_mut_ptr()),
+                Err(Error::InvalidCharacter)
+            );
         }
 
         // 4. Missing Padding when Config Requires It
         let short_input = b"QQ"; // valid chars, but length 2
         unsafe {
-            assert_eq!(decode_slice_unsafe(&config, short_input, dst.as_mut_ptr()), Err(Error::InvalidLength));
+            assert_eq!(
+                decode_slice_unsafe(&config, short_input, dst.as_mut_ptr()),
+                Err(Error::InvalidLength)
+            );
         }
 
         // 5. Single Byte (Impossible in Base64)
         let single = b"A";
         // Check with padding=false to hit the specific branch in `Case B`
-        let config_no_pad = Config { url_safe: false, padding: false };
+        let config_no_pad = Config {
+            url_safe: false,
+            padding: false,
+        };
         unsafe {
-            assert_eq!(decode_slice_unsafe(&config_no_pad, single, dst.as_mut_ptr()), Err(Error::InvalidLength));
+            assert_eq!(
+                decode_slice_unsafe(&config_no_pad, single, dst.as_mut_ptr()),
+                Err(Error::InvalidLength)
+            );
         }
     }
 
     #[test]
     fn miri_scalar_encode_empty() {
-        let config = Config { url_safe: false, padding: true };
+        let config = Config {
+            url_safe: false,
+            padding: true,
+        };
         let mut dst = [0u8; 4];
-        unsafe { encode_slice_unsafe(&config, &[], dst.as_mut_ptr()); }
+        unsafe {
+            encode_slice_unsafe(&config, &[], dst.as_mut_ptr());
+        }
         assert_eq!(dst, [0u8; 4]);
     }
 
     #[test]
     fn miri_scalar_decode_empty() {
-        let config = Config { url_safe: false, padding: true };
+        let config = Config {
+            url_safe: false,
+            padding: true,
+        };
         let mut dst = [0u8; 3];
         let len = unsafe { decode_slice_unsafe(&config, b"", dst.as_mut_ptr()).unwrap() };
         assert_eq!(len, 0);
@@ -610,40 +729,73 @@ mod scalar_miri_coverage {
 
     #[test]
     fn miri_scalar_decode_full_blocks_in_tail() {
-        let config = Config { url_safe: false, padding: true };
+        let config = Config {
+            url_safe: false,
+            padding: true,
+        };
         verify_decode(&config, &STANDARD, 6);
         verify_decode(&config, &STANDARD, 9);
     }
 
     #[test]
     fn miri_scalar_errors_padding_chars() {
-        let config = Config { url_safe: false, padding: true };
+        let config = Config {
+            url_safe: false,
+            padding: true,
+        };
         let mut dst = [0u8; 10];
         // Invalid char in "XX==" path (d0 or d1 invalid)
         unsafe {
-            assert_eq!(decode_slice_unsafe(&config, b"!Q==", dst.as_mut_ptr()), Err(Error::InvalidCharacter));
-            assert_eq!(decode_slice_unsafe(&config, b"Q!==", dst.as_mut_ptr()), Err(Error::InvalidCharacter));
+            assert_eq!(
+                decode_slice_unsafe(&config, b"!Q==", dst.as_mut_ptr()),
+                Err(Error::InvalidCharacter)
+            );
+            assert_eq!(
+                decode_slice_unsafe(&config, b"Q!==", dst.as_mut_ptr()),
+                Err(Error::InvalidCharacter)
+            );
         }
         // Invalid char in "XXX=" path (d0, d1, or d2 invalid)
         unsafe {
-            assert_eq!(decode_slice_unsafe(&config, b"!QQ=", dst.as_mut_ptr()), Err(Error::InvalidCharacter));
-            assert_eq!(decode_slice_unsafe(&config, b"Q!Q=", dst.as_mut_ptr()), Err(Error::InvalidCharacter));
-            assert_eq!(decode_slice_unsafe(&config, b"QQ!=", dst.as_mut_ptr()), Err(Error::InvalidCharacter));
+            assert_eq!(
+                decode_slice_unsafe(&config, b"!QQ=", dst.as_mut_ptr()),
+                Err(Error::InvalidCharacter)
+            );
+            assert_eq!(
+                decode_slice_unsafe(&config, b"Q!Q=", dst.as_mut_ptr()),
+                Err(Error::InvalidCharacter)
+            );
+            assert_eq!(
+                decode_slice_unsafe(&config, b"QQ!=", dst.as_mut_ptr()),
+                Err(Error::InvalidCharacter)
+            );
         }
     }
 
     #[test]
     fn miri_scalar_errors_no_pad_partial() {
-        let config_no_pad = Config { url_safe: false, padding: false };
+        let config_no_pad = Config {
+            url_safe: false,
+            padding: false,
+        };
         let mut dst = [0u8; 10];
         // Invalid char in 2-char no-pad partial
         unsafe {
-            assert_eq!(decode_slice_unsafe(&config_no_pad, b"!Q", dst.as_mut_ptr()), Err(Error::InvalidCharacter));
-            assert_eq!(decode_slice_unsafe(&config_no_pad, b"Q!", dst.as_mut_ptr()), Err(Error::InvalidCharacter));
+            assert_eq!(
+                decode_slice_unsafe(&config_no_pad, b"!Q", dst.as_mut_ptr()),
+                Err(Error::InvalidCharacter)
+            );
+            assert_eq!(
+                decode_slice_unsafe(&config_no_pad, b"Q!", dst.as_mut_ptr()),
+                Err(Error::InvalidCharacter)
+            );
         }
         // Invalid char in 3-char no-pad partial (d2 invalid)
         unsafe {
-            assert_eq!(decode_slice_unsafe(&config_no_pad, b"QQ!", dst.as_mut_ptr()), Err(Error::InvalidCharacter));
+            assert_eq!(
+                decode_slice_unsafe(&config_no_pad, b"QQ!", dst.as_mut_ptr()),
+                Err(Error::InvalidCharacter)
+            );
         }
     }
 }

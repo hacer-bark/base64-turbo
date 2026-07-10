@@ -29,6 +29,37 @@ jobs:
         with:
           components: rust-src
 
+      - name: Report actual CPU SIMD coverage for this run
+        # The MSan job below dispatches through the crate's real runtime CPU
+        # detection (no forced RUSTFLAGS), unlike the Miri legs. That means the
+        # AVX512 / AVX512-VBMI branches only actually get exercised here if this
+        # specific runner's CPU happens to support them, which GitHub-hosted
+        # x86_64 runners do not guarantee. Surface that as a loud, visible
+        # annotation instead of letting it pass silently as a green checkmark.
+        run: |
+          HAS_AVX2=0; HAS_AVX512F=0; HAS_AVX512BW=0; HAS_AVX512VBMI=0
+          grep -qw avx2 /proc/cpuinfo && HAS_AVX2=1
+          grep -qw avx512f /proc/cpuinfo && HAS_AVX512F=1
+          grep -qw avx512bw /proc/cpuinfo && HAS_AVX512BW=1
+          grep -qw avx512vbmi /proc/cpuinfo && HAS_AVX512VBMI=1
+
+          echo "Detected runner CPU features: avx2=$HAS_AVX2 avx512f=$HAS_AVX512F avx512bw=$HAS_AVX512BW avx512vbmi=$HAS_AVX512VBMI"
+
+          if [ "$HAS_AVX512F" = "1" ] && [ "$HAS_AVX512BW" = "1" ]; then
+            if [ "$HAS_AVX512VBMI" = "1" ]; then
+              echo "SIMD tier under MSan this run: AVX512-VBMI"
+            else
+              echo "SIMD tier under MSan this run: AVX512 (no VBMI)"
+              echo "**WARNING** :This runner lacks AVX512-VBMI; the encode_slice_avx512_vbmi/decode_slice_avx512_vbmi paths get zero MSan coverage on this run. They are still covered by the Kani proofs and by the dedicated Miri AVX512-VBMI leg."
+            fi
+          elif [ "$HAS_AVX2" = "1" ]; then
+            echo "SIMD tier under MSan this run: AVX2"
+            echo "**WARNING** This runner lacks AVX512; the AVX512 and AVX512-VBMI paths get zero MSan coverage on this run. They are still covered by the Kani proofs and by the dedicated Miri AVX512/AVX512-VBMI legs."
+          else
+            echo "SIMD tier under MSan this run: Scalar fallback"
+            echo "**WARNING** This runner lacks AVX2 and AVX512; only the scalar path gets MSan coverage on this run. The SIMD paths are still covered by the Kani proofs and the dedicated Miri legs."
+          fi
+
       - name: Run Parallel Logic + MSan Tests (x86_64)
         run: |
           set +e

@@ -3,19 +3,21 @@ use crate::{Config, Error, scalar};
 
 #[cfg(target_arch = "x86")]
 use std::arch::x86::{
-    __m128i, __m256i, _mm256_add_epi8, _mm256_and_si256, _mm256_castsi256_si128,
-    _mm256_cmpeq_epi8, _mm256_cmpgt_epi8, _mm256_extracti128_si256, _mm256_loadu_si256, _mm256_madd_epi16,
-    _mm256_maddubs_epi16, _mm256_mulhi_epu16, _mm256_mullo_epi16, _mm256_or_si256,
-    _mm256_permutevar8x32_epi32, _mm256_set1_epi32, _mm256_set1_epi8, _mm256_setr_epi32,
-    _mm256_setr_epi8, _mm256_shuffle_epi8, _mm256_srli_epi16, _mm256_storeu_si256, _mm256_sub_epi8, _mm256_subs_epu8, _mm256_testz_si256, _mm256_set_epi8, _mm_storeu_si128,
+    __m128i, __m256i, _mm_storeu_si128, _mm256_add_epi8, _mm256_and_si256, _mm256_castsi256_si128,
+    _mm256_cmpeq_epi8, _mm256_cmpgt_epi8, _mm256_extracti128_si256, _mm256_loadu_si256,
+    _mm256_madd_epi16, _mm256_maddubs_epi16, _mm256_mulhi_epu16, _mm256_mullo_epi16,
+    _mm256_or_si256, _mm256_permutevar8x32_epi32, _mm256_set_epi8, _mm256_set1_epi8,
+    _mm256_set1_epi32, _mm256_setr_epi8, _mm256_setr_epi32, _mm256_shuffle_epi8, _mm256_srli_epi16,
+    _mm256_storeu_si256, _mm256_sub_epi8, _mm256_subs_epu8, _mm256_testz_si256,
 };
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::{
-    __m128i, __m256i, _mm256_add_epi8, _mm256_and_si256, _mm256_castsi256_si128,
-    _mm256_cmpeq_epi8, _mm256_cmpgt_epi8, _mm256_extracti128_si256, _mm256_loadu_si256, _mm256_madd_epi16,
-    _mm256_maddubs_epi16, _mm256_mulhi_epu16, _mm256_mullo_epi16, _mm256_or_si256,
-    _mm256_permutevar8x32_epi32, _mm256_set1_epi32, _mm256_set1_epi8, _mm256_setr_epi32,
-    _mm256_setr_epi8, _mm256_shuffle_epi8, _mm256_srli_epi16, _mm256_storeu_si256, _mm256_sub_epi8, _mm256_subs_epu8, _mm256_testz_si256, _mm256_set_epi8, _mm_storeu_si128,
+    __m128i, __m256i, _mm_storeu_si128, _mm256_add_epi8, _mm256_and_si256, _mm256_castsi256_si128,
+    _mm256_cmpeq_epi8, _mm256_cmpgt_epi8, _mm256_extracti128_si256, _mm256_loadu_si256,
+    _mm256_madd_epi16, _mm256_maddubs_epi16, _mm256_mulhi_epu16, _mm256_mullo_epi16,
+    _mm256_or_si256, _mm256_permutevar8x32_epi32, _mm256_set_epi8, _mm256_set1_epi8,
+    _mm256_set1_epi32, _mm256_setr_epi8, _mm256_setr_epi32, _mm256_shuffle_epi8, _mm256_srli_epi16,
+    _mm256_storeu_si256, _mm256_sub_epi8, _mm256_subs_epu8, _mm256_testz_si256,
 };
 
 /// Encodes 32 raw input bytes (of which only the low 24 bytes, byte-shifted
@@ -71,8 +73,8 @@ pub(crate) unsafe fn encode_slice_avx2(config: &Config, input: &[u8], mut dst: *
         )
     } else {
         _mm256_setr_epi8(
-            65, 71, -4, -4, -4, -4, -4, -4, -4, -4, -4, -4, -19, -16, 0, 0, 65, 71, -4, -4, -4,
-            -4, -4, -4, -4, -4, -4, -4, -19, -16, 0, 0,
+            65, 71, -4, -4, -4, -4, -4, -4, -4, -4, -4, -4, -19, -16, 0, 0, 65, 71, -4, -4, -4, -4,
+            -4, -4, -4, -4, -4, -4, -19, -16, 0, 0,
         )
     };
 
@@ -973,7 +975,11 @@ mod avx2_decode_lut_exhaustive {
                     let avx2_len = avx2_result.expect("checked above");
                     // avx2_len covers all 36 input bytes (32 vectorized + 4
                     // scalar-tail bytes "AAAA" -> 3 more decoded bytes).
-                    assert_eq!(avx2_len, scalar_len + 3, "byte {candidate:#04x}: length mismatch");
+                    assert_eq!(
+                        avx2_len,
+                        scalar_len + 3,
+                        "byte {candidate:#04x}: length mismatch"
+                    );
                     assert_eq!(
                         &avx2_out[..scalar_len],
                         &scalar_out[..scalar_len],

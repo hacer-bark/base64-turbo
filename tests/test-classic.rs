@@ -7,11 +7,9 @@ use base64_turbo::{Engine, Error, STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_
 use base64::{
     Engine as _,
     engine::general_purpose::{
-        STANDARD as REF_STANDARD,
-        STANDARD_NO_PAD as REF_STANDARD_NO_PAD,
-        URL_SAFE as REF_URL_SAFE,
+        STANDARD as REF_STANDARD, STANDARD_NO_PAD as REF_STANDARD_NO_PAD, URL_SAFE as REF_URL_SAFE,
         URL_SAFE_NO_PAD as REF_URL_SAFE_NO_PAD,
-    }
+    },
 };
 use rand::{RngExt, rng};
 
@@ -37,8 +35,14 @@ fn assert_oracle_match(
 
     // 2. Test Zero-Allocation API (Slice)
     let mut enc_buf = vec![0u8; turbo_engine.encoded_len(input.len())];
-    let enc_len = turbo_engine.encode_into(input, &mut enc_buf).expect("encode_into failed");
-    assert_eq!(&enc_buf[..enc_len], expected_encoded.as_bytes(), "Slice Encode mismatch");
+    let enc_len = turbo_engine
+        .encode_into(input, &mut enc_buf)
+        .expect("encode_into failed");
+    assert_eq!(
+        &enc_buf[..enc_len],
+        expected_encoded.as_bytes(),
+        "Slice Encode mismatch"
+    );
 
     // 3. Test Allocating API (String) [If std enabled]
     #[cfg(feature = "std")]
@@ -50,14 +54,17 @@ fn assert_oracle_match(
     // 4. Test Zero-Allocation Decode (Slice)
     // Note: We allocate based on estimate, but verify exact write length
     let mut dec_buf = vec![0u8; turbo_engine.estimate_decoded_len(expected_encoded.len())];
-    let dec_len = turbo_engine.decode_into(expected_encoded.as_bytes(), &mut dec_buf)
+    let dec_len = turbo_engine
+        .decode_into(expected_encoded.as_bytes(), &mut dec_buf)
         .expect("decode_into failed");
     assert_eq!(&dec_buf[..dec_len], input, "Slice Decode mismatch");
 
     // 5. Test Allocating Decode (Vec) [If std enabled]
     #[cfg(feature = "std")]
     {
-        let alloc_vec = turbo_engine.decode(&expected_encoded).expect("decode failed");
+        let alloc_vec = turbo_engine
+            .decode(&expected_encoded)
+            .expect("decode failed");
         assert_eq!(alloc_vec, input, "Allocating Decode mismatch");
     }
 }
@@ -161,7 +168,10 @@ fn test_encoded_len_correctness() {
 
     // URL_SAFE uses same math as STANDARD (just different alphabet)
     assert_eq!(URL_SAFE.encoded_len(10), STANDARD.encoded_len(10));
-    assert_eq!(URL_SAFE_NO_PAD.encoded_len(10), STANDARD_NO_PAD.encoded_len(10));
+    assert_eq!(
+        URL_SAFE_NO_PAD.encoded_len(10),
+        STANDARD_NO_PAD.encoded_len(10)
+    );
 }
 
 #[test]
@@ -176,7 +186,10 @@ fn test_estimate_decoded_len() {
     for n in 0..=50 {
         let data = random_bytes(n);
         let encoded = REF_STANDARD.encode(&data);
-        assert!(STANDARD.estimate_decoded_len(encoded.len()) >= n, "Estimate too small for n={n}");
+        assert!(
+            STANDARD.estimate_decoded_len(encoded.len()) >= n,
+            "Estimate too small for n={n}"
+        );
     }
 }
 
@@ -289,10 +302,16 @@ fn test_error_display() {
     assert!(msg.contains("length"), "InvalidLength message: {msg}");
 
     let msg = format!("{}", Error::InvalidCharacter);
-    assert!(msg.contains("character") || msg.contains("Character"), "InvalidCharacter message: {msg}");
+    assert!(
+        msg.contains("character") || msg.contains("Character"),
+        "InvalidCharacter message: {msg}"
+    );
 
     let msg = format!("{}", Error::BufferTooSmall);
-    assert!(msg.contains("buffer") || msg.contains("Buffer"), "BufferTooSmall message: {msg}");
+    assert!(
+        msg.contains("buffer") || msg.contains("Buffer"),
+        "BufferTooSmall message: {msg}"
+    );
 }
 
 #[test]
@@ -339,7 +358,9 @@ fn test_known_values_standard() {
     ];
 
     for (input, expected) in cases {
-        if input.is_empty() { continue; }
+        if input.is_empty() {
+            continue;
+        }
         let len = STANDARD.encode_into(*input, &mut buf).unwrap();
         assert_eq!(&buf[..len], expected.as_bytes(), "Encode {input:?}");
 

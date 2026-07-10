@@ -3,23 +3,25 @@ use crate::{Config, Error, scalar};
 
 #[cfg(target_arch = "x86")]
 use std::arch::x86::{
-    __m128i, __m512i, _kor_mask64, _knot_mask64, _mm512_add_epi8, _mm512_and_si512, _mm512_broadcast_i32x4,
-    _mm512_castsi512_si128, _mm512_cmpeq_epi8_mask, _mm512_cmpgt_epi8_mask, _mm512_cmple_epu8_mask,
+    __m128i, __m512i, _knot_mask64, _kor_mask64, _mm_loadu_si128, _mm_setr_epi8, _mm_storeu_si128,
+    _mm512_add_epi8, _mm512_and_si512, _mm512_broadcast_i32x4, _mm512_castsi512_si128,
+    _mm512_cmpeq_epi8_mask, _mm512_cmpgt_epi8_mask, _mm512_cmple_epu8_mask,
     _mm512_extracti32x4_epi32, _mm512_loadu_si512, _mm512_madd_epi16, _mm512_maddubs_epi16,
-    _mm512_mask_add_epi8, _mm512_movepi8_mask, _mm512_mulhi_epu16, _mm512_mullo_epi16, _mm512_or_si512,
-    _mm512_permutex2var_epi8, _mm512_permutexvar_epi32, _mm512_permutexvar_epi8, _mm512_set1_epi16,
-    _mm512_set1_epi32, _mm512_set1_epi8, _mm512_setr_epi32, _mm512_shuffle_epi8, _mm512_srli_epi16,
-    _mm512_storeu_si512, _mm512_sub_epi8, _mm512_subs_epu8, _mm_loadu_si128, _mm_setr_epi8, _mm_storeu_si128,
+    _mm512_mask_add_epi8, _mm512_movepi8_mask, _mm512_mulhi_epu16, _mm512_mullo_epi16,
+    _mm512_or_si512, _mm512_permutex2var_epi8, _mm512_permutexvar_epi8, _mm512_permutexvar_epi32,
+    _mm512_set1_epi8, _mm512_set1_epi16, _mm512_set1_epi32, _mm512_setr_epi32, _mm512_shuffle_epi8,
+    _mm512_srli_epi16, _mm512_storeu_si512, _mm512_sub_epi8, _mm512_subs_epu8,
 };
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::{
-    __m128i, __m512i, _kor_mask64, _knot_mask64, _mm512_add_epi8, _mm512_and_si512, _mm512_broadcast_i32x4,
-    _mm512_castsi512_si128, _mm512_cmpeq_epi8_mask, _mm512_cmpgt_epi8_mask, _mm512_cmple_epu8_mask,
+    __m128i, __m512i, _knot_mask64, _kor_mask64, _mm_loadu_si128, _mm_setr_epi8, _mm_storeu_si128,
+    _mm512_add_epi8, _mm512_and_si512, _mm512_broadcast_i32x4, _mm512_castsi512_si128,
+    _mm512_cmpeq_epi8_mask, _mm512_cmpgt_epi8_mask, _mm512_cmple_epu8_mask,
     _mm512_extracti32x4_epi32, _mm512_loadu_si512, _mm512_madd_epi16, _mm512_maddubs_epi16,
-    _mm512_mask_add_epi8, _mm512_movepi8_mask, _mm512_mulhi_epu16, _mm512_mullo_epi16, _mm512_or_si512,
-    _mm512_permutex2var_epi8, _mm512_permutexvar_epi32, _mm512_permutexvar_epi8, _mm512_set1_epi16,
-    _mm512_set1_epi32, _mm512_set1_epi8, _mm512_setr_epi32, _mm512_shuffle_epi8, _mm512_srli_epi16,
-    _mm512_storeu_si512, _mm512_sub_epi8, _mm512_subs_epu8, _mm_loadu_si128, _mm_setr_epi8, _mm_storeu_si128,
+    _mm512_mask_add_epi8, _mm512_movepi8_mask, _mm512_mulhi_epu16, _mm512_mullo_epi16,
+    _mm512_or_si512, _mm512_permutex2var_epi8, _mm512_permutexvar_epi8, _mm512_permutexvar_epi32,
+    _mm512_set1_epi8, _mm512_set1_epi16, _mm512_set1_epi32, _mm512_setr_epi32, _mm512_shuffle_epi8,
+    _mm512_srli_epi16, _mm512_storeu_si512, _mm512_sub_epi8, _mm512_subs_epu8,
 };
 
 // ======================================================================
@@ -238,9 +240,12 @@ unsafe fn decode_constants_avx512(config: &Config) -> DecodeConstantsAvx512 {
     let range_z_low_len = _mm512_set1_epi8(25);
 
     // Packing Constants
-    let pack_l1 = unsafe { _mm512_broadcast_i32x4(_mm_loadu_si128(PACK_L1.as_ptr().cast::<__m128i>())) };
-    let pack_l2 = unsafe { _mm512_broadcast_i32x4(_mm_loadu_si128(PACK_L2.as_ptr().cast::<__m128i>())) };
-    let pack_shuffle = unsafe { _mm512_broadcast_i32x4(_mm_loadu_si128(PACK_SHUFFLE.as_ptr().cast::<__m128i>())) };
+    let pack_l1 =
+        unsafe { _mm512_broadcast_i32x4(_mm_loadu_si128(PACK_L1.as_ptr().cast::<__m128i>())) };
+    let pack_l2 =
+        unsafe { _mm512_broadcast_i32x4(_mm_loadu_si128(PACK_L2.as_ptr().cast::<__m128i>())) };
+    let pack_shuffle =
+        unsafe { _mm512_broadcast_i32x4(_mm_loadu_si128(PACK_SHUFFLE.as_ptr().cast::<__m128i>())) };
 
     // Masks for nibble extraction
     let mask_hi_nibble = _mm512_set1_epi8(0x0F);
@@ -557,9 +562,12 @@ pub(crate) unsafe fn decode_slice_avx512_vbmi(
     let invalid = _mm512_set1_epi8(-1);
 
     // Packing Constants
-    let pack_l1 = unsafe { _mm512_broadcast_i32x4(_mm_loadu_si128(PACK_L1.as_ptr().cast::<__m128i>())) };
-    let pack_l2 = unsafe { _mm512_broadcast_i32x4(_mm_loadu_si128(PACK_L2.as_ptr().cast::<__m128i>())) };
-    let pack_shuffle = unsafe { _mm512_broadcast_i32x4(_mm_loadu_si128(PACK_SHUFFLE.as_ptr().cast::<__m128i>())) };
+    let pack_l1 =
+        unsafe { _mm512_broadcast_i32x4(_mm_loadu_si128(PACK_L1.as_ptr().cast::<__m128i>())) };
+    let pack_l2 =
+        unsafe { _mm512_broadcast_i32x4(_mm_loadu_si128(PACK_L2.as_ptr().cast::<__m128i>())) };
+    let pack_shuffle =
+        unsafe { _mm512_broadcast_i32x4(_mm_loadu_si128(PACK_SHUFFLE.as_ptr().cast::<__m128i>())) };
 
     // Decode & Validate Single Vector (VBMI path)
     macro_rules! decode_vec_vbmi {
@@ -663,11 +671,11 @@ pub(crate) unsafe fn decode_slice_avx512_vbmi(
 mod kani_verification_avx512 {
     use super::*;
     use crate::{Config, STANDARD as TURBO_STANDARD, STANDARD_NO_PAD as TURBO_STANDARD_NO_PAD};
-    use std::mem::transmute;
     #[cfg(target_arch = "x86")]
     use std::arch::x86::__mmask64;
     #[cfg(target_arch = "x86_64")]
     use std::arch::x86_64::__mmask64;
+    use std::mem::transmute;
 
     // --- CONSTANTS ---
 

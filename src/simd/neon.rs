@@ -1,13 +1,13 @@
 use crate::{Config, Error, scalar};
 
 use core::arch::aarch64::{
-    int16x8_t, int32x4_t, int8x16_t, uint16x8_t, uint8x16_t, vaddq_s8, vandq_s8, vandq_u16,
-    vandq_u8, vceqq_u8, vcgeq_u8, vcgtq_s8, vcleq_u8, vcombine_u16, vdupq_n_s8, vdupq_n_u16,
-    vdupq_n_u8, vget_low_s16, vget_low_s8, vget_low_u16, vget_low_u8, vld1q_s16, vld1q_s8,
-    vld1q_u16, vld1q_u8, vmaxvq_u8, vmulq_u16, vmull_high_s16, vmull_high_s8, vmull_high_u16,
-    vmull_s16, vmull_s8, vmull_u16, vmvnq_u8, vorrq_s8, vorrq_u16, vorrq_u8, vpaddq_s16,
+    int8x16_t, int16x8_t, int32x4_t, uint8x16_t, uint16x8_t, vaddq_s8, vandq_s8, vandq_u8,
+    vandq_u16, vceqq_u8, vcgeq_u8, vcgtq_s8, vcleq_u8, vcombine_u16, vdupq_n_s8, vdupq_n_u8,
+    vdupq_n_u16, vget_low_s8, vget_low_s16, vget_low_u8, vget_low_u16, vld1q_s8, vld1q_s16,
+    vld1q_u8, vld1q_u16, vmaxvq_u8, vmull_high_s8, vmull_high_s16, vmull_high_u16, vmull_s8,
+    vmull_s16, vmull_u16, vmulq_u16, vmvnq_u8, vorrq_s8, vorrq_u8, vorrq_u16, vpaddq_s16,
     vpaddq_s32, vqsubq_u8, vqtbl1q_s8, vqtbl1q_u8, vreinterpret_s8_u8, vreinterpretq_s8_u8,
-    vreinterpretq_u16_u8, vreinterpretq_u8_s32, vreinterpretq_u8_s8, vreinterpretq_u8_u16,
+    vreinterpretq_u8_s8, vreinterpretq_u8_s32, vreinterpretq_u8_u16, vreinterpretq_u16_u8,
     vshrn_n_u32, vshrq_n_u8, vst1q_u8,
 };
 
