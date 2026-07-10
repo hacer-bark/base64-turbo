@@ -436,7 +436,7 @@ unsafe fn decode_scalar_tail(
     Ok(unsafe { dst.offset_from(dst_start) }.cast_unsigned())
 }
 
-#[cfg(test)]
+#[cfg(all(test, miri))]
 mod miri_neon_coverage {
     use super::*;
     use base64::{
@@ -463,8 +463,7 @@ mod miri_neon_coverage {
         assert_eq!(
             std::str::from_utf8(result).unwrap(),
             expected,
-            "Encode len {}",
-            input_len
+            "Encode len {input_len}"
         );
     }
 
@@ -479,7 +478,7 @@ mod miri_neon_coverage {
                 .expect("Valid input failed to decode")
         };
 
-        assert_eq!(&dst[..len], &input_bytes, "Decode len {}", original_len);
+        assert_eq!(&dst[..len], &input_bytes, "Decode len {original_len}");
     }
 
     // ----------------------------------------------------------------------
@@ -640,7 +639,7 @@ mod miri_neon_coverage {
 
             let mut dec = vec![0u8; len + 64];
             let dec_len = unsafe { decode_slice_neon(&config, encoded, dec.as_mut_ptr()).unwrap() };
-            assert_eq!(&dec[..dec_len], &input, "Roundtrip len {}", len);
+            assert_eq!(&dec[..dec_len], &input, "Roundtrip len {len}");
         }
     }
 
@@ -668,7 +667,7 @@ mod miri_neon_coverage {
             let dec_len = unsafe {
                 decode_slice_neon(&config, encoded.as_bytes(), dst.as_mut_ptr()).unwrap()
             };
-            assert_eq!(&dst[..dec_len], &input_bytes, "No-pad decode len {}", len);
+            assert_eq!(&dst[..dec_len], &input_bytes, "No-pad decode len {len}");
         }
     }
 

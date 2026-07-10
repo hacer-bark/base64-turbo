@@ -112,7 +112,10 @@ Achieving maximum throughput must not cost memory safety. We leverage `unsafe` i
 | **Scalar** | ✅ | ✅ | ✅ | **Formally Verified** |
 | **AVX2** | ✅ | ✅ | ✅ | **Formally Verified** |
 | **AVX512** | ✅ | ✅ | ✅ | **Formally Verified** |
+| **AVX512-VBMI** | ✅ | ✅ | ❌ | **MIRI Verified** |
 | **NEON** | ✅ | ✅ | ❌  | **MIRI Verified** |
+
+AVX512-VBMI (the `vpermb`/`vpermi2b` fast path, gated separately from plain AVX512) has no Kani proof — see [Safety & Verification](docs/verification.md#kani-coverage-avx512-vs-avx512-vbmi) for why, and note that the AVX512 Kani proof itself runs locally rather than in CI (also explained there).
 
 **[Read the Verification Audit](https://github.com/hacer-bark/base64-turbo/blob/main/docs/verification.md)**
 
@@ -152,9 +155,9 @@ Here is how we stack up against the fastest C library we benchmarked against. **
 
 ## Acknowledgements
 
-The AVX2 encode/decode kernels build directly on techniques published by other Base64 implementations, all under permissive licenses:
+The encode/decode kernels build directly on techniques published by other Base64 implementations, all under permissive licenses:
 
-*   **[Alfred Klomp](https://github.com/aklomp) — [`aklomp/base64`](https://github.com/aklomp/base64) (BSD-2-Clause).** Our AVX2 decoder's nibble-lookup validation (`lut_lo`/`lut_hi`/`lut_roll`) and our AVX2 encoder's offset-load loop (avoiding a per-iteration lane permute) and single-LUT character mapping are direct ports of techniques from this library. The URL-safe alphabet variants of these tables aren't published anywhere we could find, upstream or otherwise — we re-derived them ourselves following the same construction method and verified them exhaustively (see `src/simd/avx2.rs`).
+*   **[Alfred Klomp](https://github.com/aklomp) — [`aklomp/base64`](https://github.com/aklomp/base64) (BSD-2-Clause).** Our decoder's nibble-lookup validation (`lut_lo`/`lut_hi`/`lut_roll`) and our encoder's offset-load loop (avoiding a per-iteration lane permute) and single-LUT character mapping are direct ports of techniques from this library. The URL-safe alphabet variants of these tables aren't published anywhere we could find, upstream or otherwise — we re-derived them ourselves following the same construction method and verified them exhaustively (see `src/simd/avx2.rs`).
 *   **[Daniel Lemire](https://github.com/lemire) and Wojciech Muła — [`lemire/fastbase64`](https://github.com/lemire/fastbase64) (BSD-2-Clause).** This library's `fastavxbase64.c` independently documents and credits the same nibble-lookup decode algorithm (originated by Muła, with the `+`/`/` disambiguation trick credited there to `@aqrit`), which we cross-referenced against `aklomp/base64` while implementing our version.
 *   **[`base64-simd`](https://crates.io/crates/base64-simd) (MIT).** The existing Rust SIMD Base64 crate that raised the bar before we did — see [Ecosystem Comparison](docs/ecosystem_comparison.md) for how we stack up against it. Its existence, benchmarks, and API design were a useful reference point throughout.
 

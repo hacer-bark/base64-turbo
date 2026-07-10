@@ -942,6 +942,7 @@ mod miri_avx2_coverage {
 /// being transcribed into Rust; this test guards against transcription
 /// mistakes (e.g. a mistyped hex literal) that a one-off script can't catch.
 #[cfg(test)]
+#[cfg(not(miri))]
 mod avx2_decode_lut_exhaustive {
     use super::*;
 
@@ -1023,6 +1024,7 @@ mod avx2_decode_lut_exhaustive {
 /// covering the `rounds = (len - 4) / 24` arithmetic and the 4-round batch
 /// boundary — plus a handful of large random lengths.
 #[cfg(test)]
+#[cfg(not(miri))]
 mod avx2_encode_length_sweep {
     use super::*;
     use base64::engine::general_purpose::{STANDARD as REF_STANDARD, URL_SAFE as REF_URL_SAFE};

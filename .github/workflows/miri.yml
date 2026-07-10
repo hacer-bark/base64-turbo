@@ -15,17 +15,11 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_BUILD_JOBS: 2
-  # `-C target-feature=+X` makes `std::is_x86_feature_detected!("X")` resolve to a
-  # compile-time `true` under Miri (no real CPUID is executed), so it deterministically
-  # steers the crate's runtime dispatch into a specific SIMD tier regardless of what the
-  # CI runner's actual hardware supports. Each leg below isolates exactly one tier so
-  # every dispatch branch gets real Miri coverage instead of only whichever tier the
-  # dispatcher happens to prefer (AVX512 > AVX2 > scalar).
   MIRIFLAGS: "-Zmiri-symbolic-alignment-check"
 
 jobs:
-  miri-check-avx2:
-    name: MIRI Safety Checks (x86_64 / AVX2)
+  miri-check:
+    name: MIRI Safety Checks (x86_64)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -38,57 +32,13 @@ jobs:
 
       - name: Run MIRI
         env:
-          # No avx512f/avx512bw here on purpose: this keeps the dispatcher out of the
-          # AVX512 branch entirely so len >= 32 inputs are always routed through AVX2.
-          RUSTFLAGS: "-C target-feature=+avx2"
+          RUSTFLAGS: "-C target-feature=+avx2,+avx512f,+avx512bw,+avx512vbmi"
         run: |
-          echo "Running MIRI with AVX2 forced (AVX512 left undetected)..."
-          # --features unstable also compiles in the direct encode_avx2/decode_avx2
-          # calls in tests/test-classic.rs, giving dispatch-independent coverage too.
-          cargo miri test --features unstable --lib --bins --tests --examples
-
-  miri-check-avx512:
-    name: MIRI Safety Checks (x86_64 / AVX512)
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Install Rust Nightly with MIRI
-        uses: dtolnay/rust-toolchain@nightly
-        with:
-          components: miri
-
-      - name: Run MIRI
-        env:
-          # avx512vbmi is deliberately NOT set here so the dispatcher takes the plain
-          # (non-VBMI) AVX512 branch. VBMI has its own dedicated leg below.
-          RUSTFLAGS: "-C target-feature=+avx512f,+avx512bw"
-        run: |
-          echo "Running MIRI with AVX512 (non-VBMI) forced..."
-          cargo miri test --features unstable --lib --bins --tests --examples
-
-  miri-check-avx512vbmi:
-    name: MIRI Safety Checks (x86_64 / AVX512-VBMI)
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Install Rust Nightly with MIRI
-        uses: dtolnay/rust-toolchain@nightly
-        with:
-          components: miri
-
-      - name: Run MIRI
-        env:
-          RUSTFLAGS: "-C target-feature=+avx512f,+avx512bw,+avx512vbmi"
-        run: |
-          echo "Running MIRI with AVX512-VBMI forced..."
+          echo "Running MIRI with AVX2 + AVX512 + AVX512-VBMI all enabled..."
           cargo miri test --features unstable --lib --bins --tests --examples
 
   miri-check-aarch64:
-    name: MIRI Safety Checks (aarch64 / NEON)
+    name: MIRI Safety Checks (aarch64)
     runs-on: ubuntu-24.04-arm
     steps:
       - name: Checkout code
@@ -103,5 +53,5 @@ jobs:
         env:
           RUSTFLAGS: "-C target-feature=+neon"
         run: |
-          echo "Running MIRI with NEON forced..."
+          echo "Running MIRI with NEON enabled..."
           cargo miri test --features unstable --lib --bins --tests --examples

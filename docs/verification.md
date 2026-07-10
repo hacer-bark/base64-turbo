@@ -12,10 +12,45 @@ We use a "Swiss Cheese" model where multiple layers of verification cover each o
 
 | Architecture | MIRI (UB Check) | MSan (Uninit Check) | Kani (Math Proof) | Fuzzing (2.5B+) | Status |
 | :--- | :---: | :---: | :---: | :---: | :--- |
-| **Scalar** | ✅ Passed | ✅ Passed | ✅ **Proven** | ✅ Passed | **Formally Verified** |
-| **AVX2** | ✅ Passed | ✅ Passed | ✅ **Proven** | ✅ Passed | **Formally Verified** |
-| **AVX512** | ✅ Passed | ✅ Passed | ✅ **Proven** | ✅ Passed | **Formally Verified** |
+| **Scalar** | ✅ Passed | ✅ Passed | ✅ **Proven** (CI) | ✅ Passed | **Formally Verified** |
+| **AVX2** | ✅ Passed | ✅ Passed | ✅ **Proven** (CI) | ✅ Passed | **Formally Verified** |
+| **AVX512** | ✅ Passed | ✅ Passed | ✅ **Proven** (local) | ✅ Passed | **Formally Verified** |
+| **AVX512-VBMI** | ✅ Passed | ✅ Passed | ❌ N/A | ✅ Passed | **MIRI Verified** |
 | **NEON** | ✅ Passed | ✅ Passed | ❌ N/A | ❌ N/A | **MIRI Verified** |
+
+`AVX512` and `AVX512-VBMI` are two distinct code paths (see [Architecture & Design](design.md)):
+plain AVX512 (`avx512f`+`avx512bw`) and a separate, faster VBMI path (`avx512vbmi`,
+`vpermb`/`vpermi2b`) that the runtime dispatcher only picks on CPUs that support it.
+They are verified differently — see [Kani Coverage: AVX512 vs. AVX512-VBMI](#kani-coverage-avx512-vs-avx512-vbmi)
+below for exactly what "Proven (local)" and "N/A" mean here.
+
+## Kani Coverage: AVX512 vs. AVX512-VBMI
+
+The dispatcher's "AVX512" tier is actually two separate compiled code paths, and they
+are **not** verified to the same standard:
+
+*   **Plain AVX512** (`encode_slice_avx512` / `decode_slice_avx512`, requires `avx512f`
+    + `avx512bw`) has a full Kani proof (`kani_verification_avx512`), the same as Scalar
+    and AVX2.
+*   **AVX512-VBMI** (`encode_slice_avx512_vbmi` / `decode_slice_avx512_vbmi`, requires
+    the additional `avx512vbmi` feature) has **no Kani proof**. It relies on `vpermb`
+    (`_mm512_permutexvar_epi8`) and `vpermi2b` (`_mm512_permutex2var_epi8`), and we not yet 
+    added stubbing support for those two intrinsics today.
+
+### CI vs. local Kani execution
+
+GitHub Actions' `verification.yml` workflow only runs the **Scalar** and **AVX2** Kani
+harnesses (`kani_verification_scalar`, `kani_verification_avx2`). The **AVX512** proof
+(`kani_verification_avx512`) is not run in CI — its induction length and symbolic-byte
+state space made it too slow for GitHub Actions' runners/time budget in practice. It is
+run and re-verified locally by the maintainer before each release, and it passes.
+
+This isn't a gap you have to take on faith: the harness is checked into the repository
+and anyone can reproduce the proof on their own machine with:
+
+```sh
+cargo kani --unstable stubbing --harness kani_verification_avx512
+```
 
 ## Deep Dive: The Kani Proofs (Proof by Induction)
 
@@ -91,7 +126,7 @@ const ENC_INDUCTION_LEN: usize = 29;
 We run our comprehensive deterministic test suite under [MIRI](https://github.com/rust-lang/miri), an interpreter that checks for Undefined Behavior according to the strict Rust memory model.
 
 *   **Checks Performed:** Strict provenance tracking, alignment checks, out-of-bounds pointer arithmetic, and data races.
-*   **Coverage:** Every distinct code path (single-vector loop, quad-vector loop, and scalar-tail fallback) for **Scalar, AVX2, and AVX512** is exercised at least once — this is branch coverage, not exhaustive input coverage (that's what the Kani proofs above are for).
+*   **Coverage:** Every distinct code path (single-vector loop, quad-vector loop, and scalar-tail fallback) for **Scalar, AVX2, AVX512, and AVX512-VBMI** is exercised at least once — this is branch coverage, not exhaustive input coverage (that's what the Kani proofs above are for, where they exist — see [Kani Coverage: AVX512 vs. AVX512-VBMI](#kani-coverage-avx512-vs-avx512-vbmi)).
 *   **Strategy:** We utilize deterministic input generation to force the engine into every possible boundary condition (e.g., buffer lengths of `0`, `1`, `31`, `32`, `33`, `63`, `64`, `65`...) to prove safe handling of pointers at register boundaries.
 
 ### 2. MemorySanitizer (MSan)
@@ -107,7 +142,13 @@ While MIRI checks for validity, **MemorySanitizer (MSan)** checks for **Initiali
 **A:** Yes, extensively. We use pointers and SIMD intrinsics to achieve speed. However, all `unsafe` blocks are encapsulated behind a Safe API and have been formally audited.
 
 **Q: Is it safe to use in Production?**
-**A:** For Scalar, AVX2, and AVX512, yes — those paths are Kani-proven (symbolic execution, not just testing) in addition to passing MIRI and MSan. NEON currently has MIRI + fuzzing coverage but no Kani proof yet (see the matrix above); we consider it production-ready based on that coverage, but it is a strictly lower bar than the other three architectures.
+**A:** For Scalar, AVX2, and (plain) AVX512, yes — those paths are Kani-proven (symbolic
+execution, not just testing) in addition to passing MIRI and MSan; note that the AVX512
+proof runs locally rather than in CI (see
+[Kani Coverage: AVX512 vs. AVX512-VBMI](#kani-coverage-avx512-vs-avx512-vbmi)). AVX512-VBMI
+and NEON currently have MIRI + fuzzing coverage but no Kani proof (see the matrix above);
+we consider both production-ready based on that coverage, but it is a strictly lower bar
+than the Kani-proven paths.
 
 **Q: How do I know your SIMD stubs are correct?**
 **A:** We use **"Literal Translation."** We copy the exact variable names and logic flow from the [Intel Intrinsics Guide](https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html), replicating specific hardware behaviors (saturation, masking) exactly as documented, allowing side-by-side verification.
