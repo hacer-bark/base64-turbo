@@ -77,10 +77,12 @@
 //!
 //! *   **Model checking (Kani):** For the Scalar, AVX2 and plain AVX512 kernels, Kani explores
 //!     *every possible input byte value* at lengths chosen to exercise each loop tier and the
-//!     scalar-tail handoff, proving the kernel does not panic, does not read out of bounds, and
-//!     round-trips exactly. Generalizing from those lengths to arbitrary `N` rests on a documented
-//!     human argument about the loop stride, not on a machine-checked induction — the README
-//!     spells this out, along with the AVX512-VBMI/NEON gaps and the harnesses' own limits.
+//!     scalar-tail handoff, proving the kernel does not panic, does not read or write out of
+//!     bounds, and round-trips exactly. On AVX2 a second layer of proofs takes the loop
+//!     arithmetic on its own, over an unbounded symbolic length and an arbitrary iteration, so
+//!     the in-bounds result there is a machine-checked induction covering every length rather
+//!     than the ones a harness happens to pin. The README spells out what that does and does not
+//!     buy you, along with the AVX512-VBMI and NEON gaps.
 //! *   **MIRI Audited:** All SIMD paths (AVX512, AVX2, NEON) and Scalar fallbacks are run under
 //!     **MIRI** (Undefined Behavior checker) in CI, covering every distinct code path at least once.
 //! *   **`MemorySanitizer`:** The codebase is audited with `MSan` to prevent logic errors derived from reading uninitialized memory.

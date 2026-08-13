@@ -321,10 +321,17 @@ pub(crate) unsafe fn decode_slice_avx2(
         }};
     }
 
-    // Process 128 bytes (4 chunks) at a time
-    let safe_len_128 = len.saturating_sub(4);
-    let aligned_len_128 = safe_len_128 - (safe_len_128 % 128);
+    // Both loops read a full 32-byte vector per 32 bytes they consume, so
+    // neither may start within 4 bytes of the end: `safe_len` is how much
+    // input the SIMD path is allowed to look at, and each tier rounds it
+    // down to its own block size.
+    let safe_len = len.saturating_sub(4);
+    let aligned_len_128 = safe_len - (safe_len % 128);
+    let aligned_len_32 = safe_len - (safe_len % 32);
     let src_end_128 = unsafe { src.add(aligned_len_128) };
+    let src_end_32 = unsafe { src.add(aligned_len_32) };
+
+    // Process 128 bytes (4 chunks) at a time
 
     while src < src_end_128 {
         // Load 4 vectors
@@ -357,10 +364,6 @@ pub(crate) unsafe fn decode_slice_avx2(
     }
 
     // Process remaining 32-byte chunks
-    let safe_len_32 = len.saturating_sub(4);
-    let aligned_len_32 = safe_len_32 - (safe_len_32 % 32);
-    let src_end_32 = unsafe { input.as_ptr().add(aligned_len_32) };
-
     while src < src_end_32 {
         let v = unsafe { _mm256_loadu_si256(src.cast::<__m256i>()) };
         let (idx, err) = decode_vec!(v);
@@ -394,40 +397,32 @@ pub(crate) unsafe fn decode_slice_avx2(
 mod kani_verification_avx2 {
     use super::*;
     use crate::{Config, STANDARD as TURBO_STANDARD, STANDARD_NO_PAD as TURBO_STANDARD_NO_PAD};
-    use std::mem::transmute;
 
-    // --- CONSTANTS ---
+    use super::intrinsic_models as m;
 
-    // Kani/CBMC is a bounded model checker: a proof at one fixed input
-    // length only generalizes to "true for all N" if that length exercises
-    // (a) the loop body at least twice, proving the state one iteration
-    // hands off (the advanced `src`/`dst` pointers) is itself a valid entry
-    // state for the next iteration, and (b) a non-empty, non-aligned scalar
-    // remainder, so the SIMD -> scalar handoff is covered too.
-    //
-    // `encode_slice_avx2` is gated by `if len >= 32`, then processes 24
-    // logical bytes per "round" (`rounds = (len - 4) / 24`); 4 or more
-    // rounds at once run through a 4x-unrolled inner loop. `decode_slice_avx2`
-    // has an analogous two-tier split: an outer 128-byte quad loop and an
-    // inner 32-byte single loop. `ENC_INDUCTION_LEN`/`DEC_INDUCTION_LEN`
-    // below hit exactly 2 rounds/passes of each function's smallest
-    // granularity (0 quad-tier passes); the quad tier's own pointer
-    // arithmetic is covered separately by `check_avx2_quad_tier_roundtrip`.
+    // Layer 1 — index proofs. Every load/store bound is a statement about
+    // `rounds`, `remaining` and the `src`/`dst` offsets, not about the input
+    // bytes, so these drop the vectors and reason over a symbolic `len` and
+    // an *arbitrary* iteration index. That makes them an induction — base
+    // case, step, exit — covering all N at near-zero solver cost. They
+    // mirror the offset arithmetic of the kernels; each constant names the
+    // operation it tracks, and nothing but this file keeps them in sync, so
+    // treat them as code. The README's "How the Kani proofs work" has the
+    // full argument.
 
-    // Encoder induction size: 48 (2x 24-byte AVX2 rounds) + 5 (scalar transition).
-    const ENC_INDUCTION_LEN: usize = 53;
+    /// Largest `len` the index proofs consider: `Engine::encoded_len`'s
+    /// unpadded branch does `len * 4`, which overflows past `usize::MAX / 4`
+    /// (~4 EB), so above it the public API cannot size a buffer anyway.
+    const MAX_LEN: usize = usize::MAX / 4;
 
-    // Decoder induction size: 64 (2x 32-byte AVX2 single-vector passes) + 5 (scalar transition).
-    const DEC_INDUCTION_LEN: usize = 69;
+    // Encoder model, mirroring `encode_slice_avx2`.
+    const ENC_ROUND_IN: usize = 24; // logical input bytes per round
+    const ENC_ROUND_OUT: usize = 32; // output bytes per round
+    const ENC_LOAD: usize = 32; // bytes each `_mm256_loadu_si256` reads
+    const ENC_FIRST_ADVANCE: usize = 20; // `src.add(20)` after the first round
+    const ENC_UNROLL: usize = 4; // rounds per 4x-unrolled iteration
 
-    // Quad-tier induction size: smallest length that triggers exactly 1 pass
-    // of AVX2's 4x-unrolled quad-inner-loop tier. Used only by
-    // `check_avx2_quad_tier_roundtrip`.
-    const QUAD_ENC_INDUCTION_LEN: usize = 125;
-
-    // --- HELPERS ---
-
-    fn encoded_size(len: usize, padding: bool) -> usize {
+    fn enc_cap(len: usize, padding: bool) -> usize {
         if padding {
             TURBO_STANDARD.encoded_len(len)
         } else {
@@ -435,12 +430,376 @@ mod kani_verification_avx2 {
         }
     }
 
-    // --- STUBS ---
+    /// A symbolic `rounds` pinned to `(len - 4) / 24` by the two inequalities
+    /// that define it. Constraining the quotient is far cheaper for CBMC than
+    /// the division; `check_enc_rounds_model` proves the two agree.
+    fn any_enc_rounds(len: usize) -> usize {
+        let rounds: usize = kani::any();
+        kani::assume(rounds <= MAX_LEN / ENC_ROUND_IN);
+        kani::assume(ENC_ROUND_IN * rounds <= len - 4);
+        kani::assume(len - 4 < ENC_ROUND_IN * (rounds + 1));
+        rounds
+    }
+
+    /// `(src_off, dst_off)` after `done >= 1` rounds. The first round is the
+    /// permuted block advancing `src` by only 20; later rounds advance 24,
+    /// giving the uniform `24 * done - 4` (the deficit repaid by the trailing
+    /// `src.add(4)`).
+    fn enc_state(done: usize) -> (usize, usize) {
+        (ENC_ROUND_IN * done - 4, ENC_ROUND_OUT * done)
+    }
+
+    /// Isolated so the suite's one non-power-of-two division owns its run.
+    #[kani::proof]
+    fn check_enc_rounds_model() {
+        let len: usize = kani::any();
+        kani::assume((32..=MAX_LEN).contains(&len));
+
+        let rounds = any_enc_rounds(len);
+        assert_eq!(rounds, (len - 4) / ENC_ROUND_IN);
+        // `remaining = rounds - 1` must not underflow — the reason for the
+        // `len >= 32` guard rather than `len >= 28`.
+        assert!(rounds >= 1);
+    }
+
+    /// Base case: the permuted first round is in bounds and leaves the state
+    /// the loop invariant assumes.
+    #[kani::proof]
+    fn check_enc_first_block() {
+        let len: usize = kani::any();
+        let padding: bool = kani::any();
+        kani::assume((32..=MAX_LEN).contains(&len));
+
+        let rounds = any_enc_rounds(len);
+        let cap = enc_cap(len, padding);
+
+        assert!(ENC_LOAD <= len); // reads [0, 32)
+        assert!(ENC_ROUND_OUT <= cap); // writes [0, 32)
+
+        let (src_off, dst_off) = enc_state(1);
+        assert_eq!(src_off, ENC_FIRST_ADVANCE);
+        assert_eq!(dst_off, ENC_ROUND_OUT);
+        assert!(rounds >= 1);
+    }
+
+    /// Inductive step for the 4x-unrolled tier, over an arbitrary iteration.
+    #[kani::proof]
+    fn check_enc_quad_step() {
+        let len: usize = kani::any();
+        let padding: bool = kani::any();
+        kani::assume((32..=MAX_LEN).contains(&len));
+
+        let rounds = any_enc_rounds(len);
+        let cap = enc_cap(len, padding);
+
+        let done: usize = kani::any();
+        kani::assume(done >= 1 && done <= rounds);
+        let remaining = rounds - done;
+        kani::assume(remaining >= ENC_UNROLL); // guard `while remaining >= 4`
+
+        let (src_off, dst_off) = enc_state(done);
+
+        // Widest body accesses: `src.add(72)` load, `dst.add(96)` store.
+        assert!(src_off + 72 + ENC_LOAD <= len, "quad load leaves input");
+        assert!(
+            dst_off + 96 + ENC_ROUND_OUT <= cap,
+            "quad store leaves output"
+        );
+
+        // Update `src.add(96)`, `dst.add(128)`, `remaining -= 4` lands
+        // exactly on the invariant's next state — the machine-checked step.
+        let done_next = done + ENC_UNROLL;
+        assert_eq!((src_off + 96, dst_off + 128), enc_state(done_next));
+        assert!(done_next <= rounds);
+        assert_eq!(remaining - ENC_UNROLL, rounds - done_next);
+    }
+
+    /// Inductive step for the single-round tier.
+    #[kani::proof]
+    fn check_enc_single_step() {
+        let len: usize = kani::any();
+        let padding: bool = kani::any();
+        kani::assume((32..=MAX_LEN).contains(&len));
+
+        let rounds = any_enc_rounds(len);
+        let cap = enc_cap(len, padding);
+
+        let done: usize = kani::any();
+        kani::assume(done >= 1 && done <= rounds);
+        let remaining = rounds - done;
+        kani::assume(remaining >= 1);
+
+        let (src_off, dst_off) = enc_state(done);
+        assert!(src_off + ENC_LOAD <= len, "single load leaves input");
+        assert!(dst_off + ENC_ROUND_OUT <= cap, "single store leaves output");
+
+        // Update `src.add(24)`, `dst.add(32)`, `remaining -= 1`.
+        let done_next = done + 1;
+        assert_eq!(
+            (src_off + ENC_ROUND_IN, dst_off + ENC_ROUND_OUT),
+            enc_state(done_next)
+        );
+        assert!(done_next <= rounds);
+        assert_eq!(remaining - 1, rounds - done_next);
+    }
+
+    /// Exit case: after both loops drain, the trailing `src.add(4)` and the
+    /// scalar handoff account for exactly what is left.
+    #[kani::proof]
+    fn check_enc_tail_handoff() {
+        let len: usize = kani::any();
+        let padding: bool = kani::any();
+        kani::assume((32..=MAX_LEN).contains(&len));
+
+        let rounds = any_enc_rounds(len);
+        let (src_off, dst_off) = enc_state(rounds);
+
+        let processed = src_off + 4; // repays the first round's deficit
+        assert_eq!(processed, ENC_ROUND_IN * rounds);
+
+        // `&input[processed..]` never panics and is never empty: `rounds`
+        // caps at `(len - 4) / 24`, leaving at least 4 bytes for the tail.
+        assert!(processed < len);
+        let tail = len - processed;
+        assert!(tail >= 4);
+
+        // SIMD prefix plus scalar tail is exactly the encoded length — no
+        // overrun, no short write (`processed` is a multiple of 3).
+        assert_eq!(
+            dst_off + enc_cap(tail, padding),
+            enc_cap(len, padding),
+            "prefix + tail must equal encoded length"
+        );
+    }
+
+    // Decoder model, mirroring `decode_slice_avx2`.
+    const DEC_LOAD: usize = 32; // bytes each `_mm256_loadu_si256` reads
+    const DEC_BLOCK_IN: usize = 32; // input bytes per single-vector pass
+    const DEC_BLOCK_OUT: usize = 24; // dst advance per single-vector pass
+    /// Bytes `pack_and_store!` touches: 16 at `dst` + 16 at `dst.add(12)`,
+    /// 4 wider than the 24 it advances — every store overhangs its block.
+    const DEC_STORE_SPAN: usize = 28;
+    const DEC_QUAD_IN: usize = 128; // input bytes per quad-tier iteration
+    const DEC_QUAD_OUT: usize = 96; // dst advance per quad-tier iteration
+
+    fn dec_cap(len: usize) -> usize {
+        TURBO_STANDARD.estimate_decoded_len(len)
+    }
+
+    /// The `aligned_len_128` / `aligned_len_32` loop windows, both from the
+    /// `len.saturating_sub(4)` margin that keeps a 32-byte load in bounds.
+    fn dec_windows(len: usize) -> (usize, usize) {
+        let safe = len.saturating_sub(4);
+        (safe - safe % DEC_QUAD_IN, safe - safe % DEC_BLOCK_IN)
+    }
+
+    /// Inductive step for the decoder's quad tier, over an arbitrary iteration.
+    #[kani::proof]
+    fn check_dec_quad_step() {
+        let len: usize = kani::any();
+        kani::assume(len <= MAX_LEN);
+
+        let (aligned_quad, _) = dec_windows(len);
+        let cap = dec_cap(len);
+
+        let i: usize = kani::any();
+        kani::assume(i <= MAX_LEN / DEC_QUAD_IN);
+        let (src_off, dst_off) = (DEC_QUAD_IN * i, DEC_QUAD_OUT * i);
+        kani::assume(src_off < aligned_quad); // guard `src < src_end_128`
+
+        // Widest: `src.add(96)` load, `pack_and_store!(_, dst.add(72))`.
+        assert!(src_off + 96 + DEC_LOAD <= len, "quad load leaves input");
+        assert!(
+            dst_off + 72 + DEC_STORE_SPAN <= cap,
+            "quad store leaves output"
+        );
+
+        // Update `src.add(128)`, `dst.add(96)`.
+        assert_eq!(
+            (src_off + DEC_QUAD_IN, dst_off + DEC_QUAD_OUT),
+            (DEC_QUAD_IN * (i + 1), DEC_QUAD_OUT * (i + 1))
+        );
+    }
+
+    /// Inductive step for the decoder's single-vector tier, entered from
+    /// wherever the quad tier stopped.
+    #[kani::proof]
+    fn check_dec_single_step() {
+        let len: usize = kani::any();
+        kani::assume(len <= MAX_LEN);
+
+        let (aligned_quad, aligned_block) = dec_windows(len);
+        let cap = dec_cap(len);
+        let quads = aligned_quad / DEC_QUAD_IN;
+
+        let j: usize = kani::any();
+        kani::assume(j <= MAX_LEN / DEC_BLOCK_IN);
+        let src_off = aligned_quad + DEC_BLOCK_IN * j;
+        let dst_off = DEC_QUAD_OUT * quads + DEC_BLOCK_OUT * j;
+        kani::assume(src_off < aligned_block); // guard `src < src_end_32`
+
+        assert!(src_off + DEC_LOAD <= len, "single load leaves input");
+        assert!(
+            dst_off + DEC_STORE_SPAN <= cap,
+            "single store leaves output"
+        );
+
+        // Update `src.add(32)`, `dst.add(24)`.
+        assert_eq!(
+            (src_off + DEC_BLOCK_IN, dst_off + DEC_BLOCK_OUT),
+            (
+                aligned_quad + DEC_BLOCK_IN * (j + 1),
+                DEC_QUAD_OUT * quads + DEC_BLOCK_OUT * (j + 1)
+            )
+        );
+    }
+
+    /// Exit case: whatever the loops leave fits the space the caller
+    /// guaranteed, so the scalar decoder cannot overrun it.
+    #[kani::proof]
+    fn check_dec_tail_handoff() {
+        let len: usize = kani::any();
+        kani::assume(len <= MAX_LEN);
+
+        let (_, aligned_block) = dec_windows(len);
+        let cap = dec_cap(len);
+
+        // Both tiers advance dst 3 bytes per 4 consumed, so the handover
+        // offset depends only on the window, not on which tier got there.
+        let dst_off = DEC_BLOCK_OUT * (aligned_block / DEC_BLOCK_IN);
+        assert!(aligned_block <= len);
+        let tail = len - aligned_block;
+        assert!(
+            dst_off + dec_cap(tail) <= cap,
+            "scalar tail can overrun output"
+        );
+    }
+
+    // Layer 2 — kernel proofs. These run the real code over fully symbolic
+    // bytes, covering the character mapping, validation LUTs and panic
+    // freedom. Layer 1 owns the loop arithmetic, so each need only reach its
+    // kernel once: one round, not two, and no quad-tier roundtrip (the quad
+    // tier runs the same kernel, and its offsets are proven above). Buffers
+    // are the exact public-API capacities, so any real overrun fails.
+
+    /// One first round + 13-byte scalar tail.
+    const ENC_KERNEL_LEN: usize = 37;
+    /// One single-vector pass + 5-byte scalar tail.
+    const DEC_KERNEL_LEN: usize = 37;
+
+    // A length below its tier's guard would pass while proving nothing (an
+    // earlier revision used 29, under the encoder's `len >= 32` guard, and
+    // silently verified only the scalar fallback). Fail the build, not late.
+    const _: () = assert!(
+        ENC_KERNEL_LEN >= 32
+            && (ENC_KERNEL_LEN - 4) / ENC_ROUND_IN == 1
+            && ENC_KERNEL_LEN % ENC_ROUND_IN != 0,
+        "ENC_KERNEL_LEN must run one AVX2 round and leave an unaligned tail"
+    );
+    const _: () = assert!(
+        (DEC_KERNEL_LEN - 4) / DEC_BLOCK_IN == 1,
+        "DEC_KERNEL_LEN must run one single-vector decode pass"
+    );
+
+    const ENC_KERNEL_CAP: usize = TURBO_STANDARD.encoded_len(ENC_KERNEL_LEN);
+    const ENC_KERNEL_DEC_CAP: usize = TURBO_STANDARD.estimate_decoded_len(ENC_KERNEL_CAP);
+    const DEC_KERNEL_CAP: usize = TURBO_STANDARD.estimate_decoded_len(DEC_KERNEL_LEN);
+
+    /// `Decode(Encode(x)) == x` over every 37-byte input. The alphabet is a
+    /// parameter, not symbolic: it only selects constant LUTs, so two lean
+    /// runs cover it without doubling one run's state.
+    fn roundtrip_kernel(url_safe: bool) {
+        let config = Config {
+            url_safe,
+            padding: true,
+        };
+        let input: [u8; ENC_KERNEL_LEN] = kani::any();
+
+        let mut enc_buf = [0u8; ENC_KERNEL_CAP];
+        let mut dec_buf = [0u8; ENC_KERNEL_DEC_CAP];
+
+        unsafe {
+            encode_slice_avx2(&config, &input, enc_buf.as_mut_ptr());
+            let dec_len = decode_slice_avx2(&config, &enc_buf, dec_buf.as_mut_ptr())
+                .expect("valid encoding failed to decode");
+            assert_eq!(dec_len, ENC_KERNEL_LEN);
+            assert_eq!(&dec_buf[..dec_len], &input, "roundtrip mismatch");
+        }
+    }
+
+    #[kani::proof]
+    #[kani::stub(_mm256_shuffle_epi8, m::_mm256_shuffle_epi8_stub)]
+    #[kani::stub(_mm256_subs_epu8, m::_mm256_subs_epu8_stub)]
+    #[kani::stub(_mm256_testz_si256, m::_mm256_testz_si256_stub)]
+    #[kani::stub(_mm256_maddubs_epi16, m::_mm256_maddubs_epi16_stub)]
+    #[kani::stub(_mm256_madd_epi16, m::_mm256_madd_epi16_stub)]
+    #[kani::stub(_mm256_mulhi_epu16, m::_mm256_mulhi_epu16_stub)]
+    #[kani::stub(_mm256_permutevar8x32_epi32, m::_mm256_permutevar8x32_epi32_stub)]
+    fn check_avx2_roundtrip_standard() {
+        roundtrip_kernel(false);
+    }
+
+    #[kani::proof]
+    #[kani::stub(_mm256_shuffle_epi8, m::_mm256_shuffle_epi8_stub)]
+    #[kani::stub(_mm256_subs_epu8, m::_mm256_subs_epu8_stub)]
+    #[kani::stub(_mm256_testz_si256, m::_mm256_testz_si256_stub)]
+    #[kani::stub(_mm256_maddubs_epi16, m::_mm256_maddubs_epi16_stub)]
+    #[kani::stub(_mm256_madd_epi16, m::_mm256_madd_epi16_stub)]
+    #[kani::stub(_mm256_mulhi_epu16, m::_mm256_mulhi_epu16_stub)]
+    #[kani::stub(_mm256_permutevar8x32_epi32, m::_mm256_permutevar8x32_epi32_stub)]
+    fn check_avx2_roundtrip_url_safe() {
+        roundtrip_kernel(true);
+    }
+
+    /// Every 37-byte garbage input either decodes or returns `Err`, never
+    /// panicking or overrunning — covering the validation LUTs over all 256
+    /// byte values in every lane.
+    #[kani::proof]
+    #[kani::stub(_mm256_shuffle_epi8, m::_mm256_shuffle_epi8_stub)]
+    #[kani::stub(_mm256_subs_epu8, m::_mm256_subs_epu8_stub)]
+    #[kani::stub(_mm256_testz_si256, m::_mm256_testz_si256_stub)]
+    #[kani::stub(_mm256_maddubs_epi16, m::_mm256_maddubs_epi16_stub)]
+    #[kani::stub(_mm256_madd_epi16, m::_mm256_madd_epi16_stub)]
+    fn check_avx2_decode_robustness() {
+        let config = Config {
+            url_safe: kani::any(),
+            padding: true,
+        };
+        let input: [u8; DEC_KERNEL_LEN] = kani::any();
+        let mut output = [0u8; DEC_KERNEL_CAP];
+        unsafe {
+            let _ = decode_slice_avx2(&config, &input, output.as_mut_ptr());
+        }
+    }
+}
+
+/// Rust models of every AVX2 intrinsic the kernels use, for the Kani proofs.
+///
+/// Each model is transcribed line for line from the Intel Intrinsics Guide
+/// pseudocode — comments and all — so it can be diffed against the reference.
+/// The Layer 2 proofs are proven about *these*, so a wrong model weakens
+/// every proof that stubs it; `avx2_stub_equivalence` re-checks them against
+/// real hardware, which is why this compiles under `test` as well as `kani`.
+/// Do not "clean up" a model: fidelity to the pseudocode is the point, which
+/// is also why the transcription lints below are silenced rather than fixed.
+#[cfg(any(kani, test))]
+#[allow(non_snake_case)]
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::missing_transmute_annotations,
+    clippy::needless_late_init,
+    clippy::needless_range_loop,
+    clippy::needless_return,
+    clippy::used_underscore_items
+)]
+pub(super) mod intrinsic_models {
+    use super::*;
+    use std::mem::transmute;
 
     // STUB: _mm256_shuffle_epi8
     // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm256_shuffle_epi8
-    #[allow(dead_code)]
-    unsafe fn _mm256_shuffle_epi8_stub(a: __m256i, b: __m256i) -> __m256i {
+    pub(super) unsafe fn _mm256_shuffle_epi8_stub(a: __m256i, b: __m256i) -> __m256i {
         let a: [u8; 32] = unsafe { transmute(a) };
         let b: [u8; 32] = unsafe { transmute(b) };
         let mut dst = [0u8; 32];
@@ -485,8 +844,7 @@ mod kani_verification_avx2 {
 
     // STUB: _mm256_subs_epu8
     // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm256_subs_epu8
-    #[allow(dead_code)]
-    unsafe fn _mm256_subs_epu8_stub(a: __m256i, b: __m256i) -> __m256i {
+    pub(super) unsafe fn _mm256_subs_epu8_stub(a: __m256i, b: __m256i) -> __m256i {
         let a: [u8; 32] = unsafe { transmute(a) };
         let b: [u8; 32] = unsafe { transmute(b) };
         let mut dst = [0u8; 32];
@@ -509,8 +867,7 @@ mod kani_verification_avx2 {
     // STUB: _mm256_testz_si256
     // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm256_testz_si256
     // Split into four u64 lanes since Rust has no native 256-bit integer type.
-    #[allow(dead_code)]
-    unsafe fn _mm256_testz_si256_stub(a: __m256i, b: __m256i) -> i32 {
+    pub(super) unsafe fn _mm256_testz_si256_stub(a: __m256i, b: __m256i) -> i32 {
         let a: [u64; 4] = unsafe { transmute(a) };
         let b: [u64; 4] = unsafe { transmute(b) };
         let zf: i32;
@@ -554,8 +911,7 @@ mod kani_verification_avx2 {
 
     // STUB: _mm256_maddubs_epi16
     // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm256_maddubs_epi16
-    #[allow(dead_code)]
-    unsafe fn _mm256_maddubs_epi16_stub(a: __m256i, b: __m256i) -> __m256i {
+    pub(super) unsafe fn _mm256_maddubs_epi16_stub(a: __m256i, b: __m256i) -> __m256i {
         let a: [u8; 32] = unsafe { transmute(a) };
         let b: [i8; 32] = unsafe { transmute(b) };
         let mut dst = [0i16; 16];
@@ -578,8 +934,7 @@ mod kani_verification_avx2 {
 
     // STUB: _mm256_madd_epi16
     // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm256_madd_epi16
-    #[allow(dead_code)]
-    unsafe fn _mm256_madd_epi16_stub(a: __m256i, b: __m256i) -> __m256i {
+    pub(super) unsafe fn _mm256_madd_epi16_stub(a: __m256i, b: __m256i) -> __m256i {
         let a: [i16; 16] = unsafe { transmute(a) };
         let b: [i16; 16] = unsafe { transmute(b) };
         let mut dst = [0i32; 8];
@@ -603,8 +958,7 @@ mod kani_verification_avx2 {
 
     // STUB: _mm256_mulhi_epu16
     // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm256_mulhi_epu16
-    #[allow(dead_code)]
-    unsafe fn _mm256_mulhi_epu16_stub(a: __m256i, b: __m256i) -> __m256i {
+    pub(super) unsafe fn _mm256_mulhi_epu16_stub(a: __m256i, b: __m256i) -> __m256i {
         let a: [u16; 16] = unsafe { transmute(a) };
         let b: [u16; 16] = unsafe { transmute(b) };
         let mut dst = [0u16; 16];
@@ -627,8 +981,7 @@ mod kani_verification_avx2 {
 
     // STUB: _mm256_permutevar8x32_epi32
     // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm256_permutevar8x32_epi32
-    #[allow(dead_code)]
-    unsafe fn _mm256_permutevar8x32_epi32_stub(a: __m256i, idx: __m256i) -> __m256i {
+    pub(super) unsafe fn _mm256_permutevar8x32_epi32_stub(a: __m256i, idx: __m256i) -> __m256i {
         let a: [u32; 8] = unsafe { transmute(a) };
         let idx: [u32; 8] = unsafe { transmute(idx) };
         let mut dst = [0u32; 8];
@@ -646,139 +999,96 @@ mod kani_verification_avx2 {
 
         unsafe { transmute(dst) }
     }
+}
 
-    // --- PROOFS ---
+/// Checks every model in [`intrinsic_models`] against the real instruction
+/// on AVX2 hardware, under plain `cargo test`. The Kani proofs trust the
+/// models, so a model that disagrees with the silicon is the one assumption
+/// underneath every Layer 2 result that Kani cannot itself check.
+#[cfg(test)]
+#[cfg(not(miri))]
+#[allow(clippy::used_underscore_items)] // calling the models is the point
+mod avx2_stub_equivalence {
+    use super::intrinsic_models as model;
+    use super::*;
+    use std::mem::transmute;
 
-    /// **Proof 1: Roundtrip Correctness (The Logic Check)**
-    ///
-    /// Verifies that `Decode(Encode(X)) == X`.
-    #[kani::proof]
-    #[kani::stub(_mm256_shuffle_epi8, _mm256_shuffle_epi8_stub)]
-    #[kani::stub(_mm256_subs_epu8, _mm256_subs_epu8_stub)]
-    #[kani::stub(_mm256_testz_si256, _mm256_testz_si256_stub)]
-    #[kani::stub(_mm256_maddubs_epi16, _mm256_maddubs_epi16_stub)]
-    #[kani::stub(_mm256_madd_epi16, _mm256_madd_epi16_stub)]
-    #[kani::stub(_mm256_mulhi_epu16, _mm256_mulhi_epu16_stub)]
-    #[kani::stub(_mm256_permutevar8x32_epi32, _mm256_permutevar8x32_epi32_stub)]
-    fn check_avx2_roundtrip_correctness() {
-        let config = Config {
-            url_safe: kani::any(),
-            padding: true,
-        };
-        let input: [u8; ENC_INDUCTION_LEN] = kani::any();
+    /// Saturation and sign boundaries, the high bit that zeroes a shuffle
+    /// lane, index-shaped bytes, and deterministic noise.
+    fn probes() -> Vec<[u8; 32]> {
+        let byte = |i: usize| u8::try_from(i).expect("index below the 32-byte vector width");
 
-        // Buffers
-        let mut enc_buf = [0u8; 128];
-        let mut dec_buf = [0u8; 128];
+        let mut out = vec![[0x00; 32], [0xFF; 32], [0x80; 32], [0x7F; 32], [0x01; 32]];
+        out.push(core::array::from_fn(byte));
+        out.push(core::array::from_fn(|i| byte(i) | 0x80));
+        out.push(core::array::from_fn(|i| byte(i % 16)));
+        out.push(core::array::from_fn(|i| 0xFF - byte(i)));
 
-        unsafe {
-            // 1. Encode
-            encode_slice_avx2(&config, &input, enc_buf.as_mut_ptr());
-
-            // Calculate actual encoded length for slicing
-            let enc_len = encoded_size(ENC_INDUCTION_LEN, config.padding);
-            let encoded_slice = &enc_buf[..enc_len];
-
-            // 2. Decode
-            // This MUST succeed for valid encoded output
-            let dec_len = decode_slice_avx2(&config, encoded_slice, dec_buf.as_mut_ptr())
-                .expect("Valid encoding failed to decode");
-
-            // 3. Verify
-            assert_eq!(dec_len, ENC_INDUCTION_LEN);
-            assert_eq!(&dec_buf[..dec_len], &input, "Roundtrip mismatch");
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        for _ in 0..12 {
+            out.push(core::array::from_fn(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                u8::try_from(state >> 56).expect("shifted down to 8 bits")
+            }));
         }
+        out
     }
 
-    /// **Proof 2: Decoder Robustness**
-    ///
-    /// Verifies that `decode_slice_avx2`:
-    /// 1. Accepts ANY `DEC_INDUCTION_LEN` bytes of garbage input.
-    /// 2. Never Segfaults, Panics, or causes UB.
-    /// 3. Safely handles the SIMD->Scalar pointer transition.
-    #[kani::proof]
-    #[kani::stub(_mm256_shuffle_epi8, _mm256_shuffle_epi8_stub)]
-    #[kani::stub(_mm256_subs_epu8, _mm256_subs_epu8_stub)]
-    #[kani::stub(_mm256_testz_si256, _mm256_testz_si256_stub)]
-    #[kani::stub(_mm256_maddubs_epi16, _mm256_maddubs_epi16_stub)]
-    #[kani::stub(_mm256_madd_epi16, _mm256_madd_epi16_stub)]
-    fn check_avx2_decode_robustness() {
-        let config = Config {
-            url_safe: kani::any(),
-            padding: true,
-        };
+    #[target_feature(enable = "avx2")]
+    unsafe fn compare_all() {
+        let probes = probes();
+        // SAFETY: `__m256i` has no invalid bit patterns, so it and `[u8; 32]`
+        // are freely transmutable both ways.
+        let bytes = |v: __m256i| -> [u8; 32] { unsafe { transmute::<__m256i, [u8; 32]>(v) } };
 
-        // Input: bytes of unrestricted symbolic data (garbage)
-        let input: [u8; DEC_INDUCTION_LEN] = kani::any();
-
-        // Output Buffer: Max estimated size
-        let mut output = [0u8; 128];
-
-        unsafe {
-            // We ignore the Result. We only care that this function call
-            // returns safely (Ok or Err) and does not crash.
-            let _ = decode_slice_avx2(&config, &input, output.as_mut_ptr());
+        // Each arm: `real(a, b)` must equal `model(a, b)` for every probe pair.
+        macro_rules! same {
+            ($real:ident, $model:ident, $wrap:expr) => {
+                for x in &probes {
+                    for y in &probes {
+                        let (a, b) = unsafe {
+                            (
+                                transmute::<[u8; 32], __m256i>(*x),
+                                transmute::<[u8; 32], __m256i>(*y),
+                            )
+                        };
+                        assert_eq!(
+                            $wrap($real(a, b)),
+                            $wrap(unsafe { model::$model(a, b) }),
+                            "{}: a={x:02x?} b={y:02x?}",
+                            stringify!($real)
+                        );
+                    }
+                }
+            };
         }
+
+        same!(_mm256_shuffle_epi8, _mm256_shuffle_epi8_stub, bytes);
+        same!(_mm256_subs_epu8, _mm256_subs_epu8_stub, bytes);
+        same!(_mm256_maddubs_epi16, _mm256_maddubs_epi16_stub, bytes);
+        same!(_mm256_madd_epi16, _mm256_madd_epi16_stub, bytes);
+        same!(_mm256_mulhi_epu16, _mm256_mulhi_epu16_stub, bytes);
+        same!(
+            _mm256_permutevar8x32_epi32,
+            _mm256_permutevar8x32_epi32_stub,
+            bytes
+        );
+        same!(
+            _mm256_testz_si256,
+            _mm256_testz_si256_stub,
+            core::convert::identity
+        );
     }
 
-    /// **Proof 3: Quad-Tier Loop Coverage**
-    ///
-    /// Proofs 1 and 2 are sized to trigger 2 passes of AVX2's smallest
-    /// granularity (single 24/32-byte rounds) and 0 passes of the
-    /// 4x-unrolled quad-inner-loop tier, since that tier shares its
-    /// per-block logic (`encode_vec_avx2`/`decode_vec!`) with the smaller
-    /// tier. This proof covers what's left: the quad tier's own
-    /// fixed-offset pointer arithmetic (`src.add(24)`, `src.add(48)`,
-    /// `src.add(72)` for encode; `src.add(32)`/`src.add(64)`/`src.add(96)`
-    /// for decode) and its handoff back to the smaller tier / scalar
-    /// fallback. 1 pass suffices here (not 2) — the quad loop's
-    /// per-iteration stride is a fixed, unconditional increment, and the
-    /// "does this loop's state handoff work" argument is already answered
-    /// by the smaller tier's 2-pass proof, since both are built from the
-    /// same primitives.
-    ///
-    /// Verifies `Decode(Encode(X)) == X` at quad-tier scale; deliberately a
-    /// roundtrip (not a bare crash-check), which also happens to land
-    /// decode in its own quad tier — see the constant's doc comment. No
-    /// separate garbage-input quad-tier robustness proof is added:
-    /// `decode_vec!`'s validation logic is already exhaustively covered
-    /// over all symbolic byte values by Proof 2, and AVX2 decode's quad
-    /// loop (like AVX512's) validates all 4 sub-blocks before storing any
-    /// of them, so there's no partial-write state to additionally probe.
-    #[kani::proof]
-    #[kani::stub(_mm256_shuffle_epi8, _mm256_shuffle_epi8_stub)]
-    #[kani::stub(_mm256_subs_epu8, _mm256_subs_epu8_stub)]
-    #[kani::stub(_mm256_testz_si256, _mm256_testz_si256_stub)]
-    #[kani::stub(_mm256_maddubs_epi16, _mm256_maddubs_epi16_stub)]
-    #[kani::stub(_mm256_madd_epi16, _mm256_madd_epi16_stub)]
-    #[kani::stub(_mm256_mulhi_epu16, _mm256_mulhi_epu16_stub)]
-    #[kani::stub(_mm256_permutevar8x32_epi32, _mm256_permutevar8x32_epi32_stub)]
-    fn check_avx2_quad_tier_roundtrip() {
-        let config = Config {
-            url_safe: kani::any(),
-            padding: true,
-        };
-        let input: [u8; QUAD_ENC_INDUCTION_LEN] = kani::any();
-
-        // Buffers: encoded_size(125, true) = 168, sized with margin.
-        let mut enc_buf = [0u8; 192];
-        let mut dec_buf = [0u8; 192];
-
-        unsafe {
-            // 1. Encode (exercises AVX2's quad-inner-loop tier: 1 pass)
-            encode_slice_avx2(&config, &input, enc_buf.as_mut_ptr());
-
-            let enc_len = encoded_size(QUAD_ENC_INDUCTION_LEN, config.padding);
-            let encoded_slice = &enc_buf[..enc_len];
-
-            // 2. Decode (this encoded_len also lands in decode's quad tier)
-            let dec_len = decode_slice_avx2(&config, encoded_slice, dec_buf.as_mut_ptr())
-                .expect("Valid encoding failed to decode");
-
-            // 3. Verify
-            assert_eq!(dec_len, QUAD_ENC_INDUCTION_LEN);
-            assert_eq!(&dec_buf[..dec_len], &input, "Quad-tier roundtrip mismatch");
+    #[test]
+    fn avx2_models_match_hardware() {
+        if !is_x86_feature_detected!("avx2") {
+            eprintln!("skipping: no AVX2 on this machine");
+            return;
         }
+        unsafe { compare_all() };
     }
 }
 
@@ -787,286 +1097,116 @@ mod miri_avx2_coverage {
     use super::*;
     use base64::{
         Engine,
-        engine::general_purpose::{STANDARD, URL_SAFE},
+        engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE},
     };
-    use rand::{RngExt, rng};
 
-    // --- Mock Infrastructure ---
-    fn random_bytes(len: usize) -> Vec<u8> {
-        let mut rng = rng();
-        (0..len).map(|_| rng.random()).collect()
+    /// Seeded xorshift, not `rand`, so a MIRI failure reproduces exactly.
+    fn bytes(len: usize) -> Vec<u8> {
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        (0..len)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                u8::try_from(state >> 56).expect("shifted down to 8 bits")
+            })
+            .collect()
     }
 
-    /// Helper to verify AVX2 encoding against the 'base64' crate oracle
-    fn verify_encode_avx2(config: &Config, oracle: &impl Engine, input_len: usize) {
-        let input = random_bytes(input_len);
+    /// Encode against the oracle and decode back, with buffers sized exactly
+    /// as the public API sizes them so MIRI sees the real caller's provenance.
+    fn check(config: &Config, oracle: &impl Engine, len: usize) {
+        let input = bytes(len);
         let expected = oracle.encode(&input);
 
-        // Allocate buffer (Base64 is ~4/3 larger)
-        let mut dst = vec![0u8; expected.len() * 2]; // Safety margin
-
-        unsafe {
-            encode_slice_avx2(config, &input, dst.as_mut_ptr());
-        }
-
-        // Verify prefix matches expected
-        let result = &dst[..expected.len()];
+        let mut enc = vec![0u8; expected.len()];
+        unsafe { encode_slice_avx2(config, &input, enc.as_mut_ptr()) };
         assert_eq!(
-            std::str::from_utf8(result).unwrap(),
+            core::str::from_utf8(&enc).unwrap(),
             expected,
-            "Encode len {}",
-            input_len
+            "encode mismatch at len {len}"
         );
-    }
 
-    /// Helper to verify AVX2 decoding against the 'base64' crate oracle
-    fn verify_decode_avx2(config: &Config, oracle: &impl Engine, original_len: usize) {
-        // 1. Generate valid Base64 via oracle
-        let input_bytes = random_bytes(original_len);
-        let encoded = oracle.encode(&input_bytes);
-        let encoded_bytes = encoded.as_bytes();
-
-        // 2. Run AVX2 Decoder
-        let mut dst = vec![0u8; original_len + 64]; // Safety margin
-
-        let len = unsafe {
-            decode_slice_avx2(config, encoded_bytes, dst.as_mut_ptr())
-                .expect("Valid input failed to decode")
+        let mut dec = vec![0u8; (enc.len() / 4 + 1) * 3];
+        let dec_len = unsafe {
+            decode_slice_avx2(config, &enc, dec.as_mut_ptr()).expect("valid input failed to decode")
         };
-
-        // 3. Verify
-        assert_eq!(&dst[..len], &input_bytes, "Decode len {}", original_len);
+        assert_eq!(&dec[..dec_len], &input[..], "decode mismatch at len {len}");
     }
 
-    // ----------------------------------------------------------------------
-    // 1. Encoder Coverage Tests
-    // ----------------------------------------------------------------------
+    /// One raw length per distinct code path; the label names the path.
+    const TIER_LENGTHS: &[(usize, &str)] = &[
+        (0, "empty"),
+        (1, "scalar only"),
+        (23, "scalar only, longest sub-round"),
+        (31, "scalar only, just under the SIMD guard"),
+        (32, "encode: first block, no loop"),
+        (37, "encode: first block + unaligned scalar tail"),
+        (53, "encode: first block + one single-tier round"),
+        (96, "decode: quad window not yet reached"),
+        (97, "decode: exactly one quad pass"),
+        (124, "encode: exactly one quad pass"),
+        (192, "both: quad pass then single-tier rounds"),
+    ];
 
     #[test]
-    fn miri_avx2_encode_scalar_fallback() {
+    fn miri_avx2_standard() {
         let config = Config {
             url_safe: false,
             padding: true,
         };
-        // Test < 24 bytes (Hits scalar fallback immediately)
-        verify_encode_avx2(&config, &STANDARD, 1);
-        verify_encode_avx2(&config, &STANDARD, 23);
+        for &(len, tier) in TIER_LENGTHS {
+            println!("standard: len {len} ({tier})");
+            check(&config, &STANDARD, len);
+        }
     }
 
     #[test]
-    fn miri_avx2_encode_single_vector_loop() {
-        let config = Config {
-            url_safe: false,
-            padding: true,
-        };
-        // Encoding processes 24-byte chunks (32-byte registers reading 24
-        // logical bytes). 24: 1 loop. 48: 2 loops (proves src.add(24)
-        // works). 25: 1 loop + 1 byte scalar fallback.
-        verify_encode_avx2(&config, &STANDARD, 24);
-        verify_encode_avx2(&config, &STANDARD, 48);
-        verify_encode_avx2(&config, &STANDARD, 25);
-    }
-
-    #[test]
-    fn miri_encode_quad_vector_loop() {
-        let config = Config {
-            url_safe: false,
-            padding: true,
-        };
-        // The 4x-unrolled quad-inner-loop (`while remaining >= 4`) only
-        // triggers once `rounds = (len - 4) / 24 >= 5`, i.e. `len >= 124`,
-        // since `remaining = rounds - 1` must independently clear the `>= 4`
-        // threshold. 96, 97, and 120 resolve to `rounds <= 4`
-        // (`remaining <= 3`) and exercise only the single-round tail loop.
-        verify_encode_avx2(&config, &STANDARD, 96);
-        verify_encode_avx2(&config, &STANDARD, 97);
-        verify_encode_avx2(&config, &STANDARD, 120);
-        // 124: smallest length that triggers 1 quad-inner-loop iteration
-        // (rounds=5, remaining=4).
-        verify_encode_avx2(&config, &STANDARD, 124);
-        // 192: rounds=7, remaining=6 -> 1 quad-inner-loop iteration
-        // (processing 4 of the 6) + 2 more via the tail loop; also exercises
-        // `src.add(96)` pointer arithmetic between quad-inner iterations.
-        verify_encode_avx2(&config, &STANDARD, 192);
-    }
-
-    #[test]
-    fn miri_avx2_encode_url_safe() {
-        // Verify the lookup table switching logic
+    fn miri_avx2_url_safe() {
         let config = Config {
             url_safe: true,
             padding: true,
         };
-        verify_encode_avx2(&config, &URL_SAFE, 50);
+        for &(len, tier) in TIER_LENGTHS {
+            println!("url-safe: len {len} ({tier})");
+            check(&config, &URL_SAFE, len);
+        }
     }
 
-    // ----------------------------------------------------------------------
-    // 2. Decoder Coverage Tests
-    // ----------------------------------------------------------------------
-
     #[test]
-    fn miri_avx2_decode_scalar_fallback() {
+    fn miri_avx2_no_padding() {
         let config = Config {
             url_safe: false,
-            padding: true,
-        };
-        // Decoding falls back to scalar for < 32 bytes. Base64 expands 3
-        // bytes -> 4 chars, so an input length of 4 chars decodes to 3 bytes.
-        verify_decode_avx2(&config, &STANDARD, 3); // 4 chars
-        verify_decode_avx2(&config, &STANDARD, 21); // 28 chars (< 32)
-    }
-
-    #[test]
-    fn miri_avx2_decode_single_vector_loop() {
-        let config = Config {
-            url_safe: false,
-            padding: true,
-        };
-        // Decoding processes 32-byte chunks; 32 bytes of Base64 decode to
-        // 24 bytes of data.
-        verify_decode_avx2(&config, &STANDARD, 24); // Exactly 32 bytes input
-        verify_decode_avx2(&config, &STANDARD, 48); // Exactly 64 bytes input (2 loops)
-        verify_decode_avx2(&config, &STANDARD, 25); // 32 bytes + scalar remainder
-    }
-
-    #[test]
-    fn miri_avx2_decode_quad_vector_loop() {
-        let config = Config {
-            url_safe: false,
-            padding: true,
-        };
-        // The quad loop needs `aligned_len_128 >= 128`, i.e. encoded input
-        // >= 132 bytes (the -4 safety margin means 128 alone isn't enough).
-        // raw=96 encodes to exactly 128 bytes, so it does not reach the
-        // quad loop (all 3 rounds run via the single-vector tail loop).
-        verify_decode_avx2(&config, &STANDARD, 96);
-        // raw=192 encodes to 256 bytes: 1 quad-loop iteration + 3 more via
-        // the single-vector tail loop.
-        verify_decode_avx2(&config, &STANDARD, 192);
-        // raw=97 encodes to 132 bytes: exactly 1 quad-loop iteration, 0
-        // single-loop iterations, 4-byte scalar remainder.
-        verify_decode_avx2(&config, &STANDARD, 97);
-    }
-
-    #[test]
-    fn miri_avx2_decode_url_safe() {
-        // Verify '-' and '_' handling in the SIMD path
-        let config = Config {
-            url_safe: true,
             padding: false,
         };
-
-        // Construct specific input with URL safe chars
-        // 0x3F (?) is usually '/', in URL safe it is '_'
-        // 0x3E (>) is usually '+', in URL safe it is '-'
-        let input = b"-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_"; // 32 bytes
-        let mut dst = [0u8; 32];
-
-        unsafe {
-            decode_slice_avx2(&config, input, dst.as_mut_ptr()).unwrap();
+        for &(len, tier) in TIER_LENGTHS {
+            println!("no-pad: len {len} ({tier})");
+            check(&config, &STANDARD_NO_PAD, len);
         }
     }
 
-    // ----------------------------------------------------------------------
-    // 3. Error Logic Coverage
-    // ----------------------------------------------------------------------
-
+    /// Invalid bytes must be caught in every tier, including the last lane
+    /// of a quad pass, where an early-out would otherwise have already
+    /// stored three sub-blocks.
     #[test]
-    fn miri_avx2_decode_error_detection() {
+    fn miri_avx2_decode_rejects_invalid() {
         let config = Config {
             url_safe: false,
             padding: true,
         };
         let mut dst = [0u8; 256];
 
-        // Case 1: Error in the Quad loop (byte 127)
-        let mut bad_input_128 = vec![b'A'; 128];
-        bad_input_128[127] = b'$'; // Invalid char
-        let res = unsafe { decode_slice_avx2(&config, &bad_input_128, dst.as_mut_ptr()) };
-        assert!(res.is_err(), "Failed to catch error in Quad Loop lane 4");
-
-        // Case 2: Error in the Single loop (byte 31)
-        let mut bad_input_32 = vec![b'A'; 32];
-        bad_input_32[31] = b'?'; // Invalid char
-        let res = unsafe { decode_slice_avx2(&config, &bad_input_32, dst.as_mut_ptr()) };
-        assert!(res.is_err(), "Failed to catch error in Single Loop");
-
-        // Case 3: Error in Quad Loop (first vector, first byte)
-        let mut bad_input_128_first = vec![b'A'; 128];
-        bad_input_128_first[0] = b'$';
-        let res = unsafe { decode_slice_avx2(&config, &bad_input_128_first, dst.as_mut_ptr()) };
-        assert!(res.is_err(), "Failed to catch error in Quad Loop lane 1");
-
-        // Case 4: Error in Scalar Fallback (after SIMD processing)
-        let mut bad_input_33 = vec![b'A'; 33];
-        bad_input_33[32] = b'?'; // Invalid in scalar region
-        let res = unsafe { decode_slice_avx2(&config, &bad_input_33, dst.as_mut_ptr()) };
-        assert!(res.is_err(), "Failed to catch error in Scalar Fallback");
-    }
-
-    // ----------------------------------------------------------------------
-    // 4. Roundtrip & Config Coverage
-    // ----------------------------------------------------------------------
-
-    #[test]
-    fn miri_avx2_roundtrip_standard() {
-        let config = Config {
-            url_safe: false,
-            padding: true,
-        };
-        for &len in &[24, 48, 96, 97, 120, 192] {
-            let input = random_bytes(len);
-            let expected = STANDARD.encode(&input);
-            let mut enc = vec![0u8; expected.len() * 2];
-            unsafe {
-                encode_slice_avx2(&config, &input, enc.as_mut_ptr());
-            }
-            let encoded = &enc[..expected.len()];
-            assert_eq!(std::str::from_utf8(encoded).unwrap(), expected);
-
-            let mut dec = vec![0u8; len + 64];
-            let dec_len = unsafe { decode_slice_avx2(&config, encoded, dec.as_mut_ptr()).unwrap() };
-            assert_eq!(&dec[..dec_len], &input, "Roundtrip len {}", len);
+        for &(len, bad_at, where_) in &[
+            (32, 31, "single tier"),
+            (33, 32, "scalar tail"),
+            (132, 0, "quad tier, first lane"),
+            (132, 127, "quad tier, last lane"),
+        ] {
+            let mut input = vec![b'A'; len];
+            input[bad_at] = b'$';
+            let res = unsafe { decode_slice_avx2(&config, &input, dst.as_mut_ptr()) };
+            assert!(res.is_err(), "missed invalid byte in {where_}");
         }
-    }
-
-    #[test]
-    fn miri_avx2_encode_no_padding() {
-        use base64::engine::general_purpose::STANDARD_NO_PAD;
-        let config = Config {
-            url_safe: false,
-            padding: false,
-        };
-        for &len in &[1, 24, 25, 48, 96, 97] {
-            verify_encode_avx2(&config, &STANDARD_NO_PAD, len);
-        }
-    }
-
-    #[test]
-    fn miri_avx2_decode_no_padding() {
-        use base64::engine::general_purpose::STANDARD_NO_PAD;
-        let config = Config {
-            url_safe: false,
-            padding: false,
-        };
-        for &len in &[3, 24, 25, 48, 96, 97] {
-            let input_bytes = random_bytes(len);
-            let encoded = STANDARD_NO_PAD.encode(&input_bytes);
-            let mut dst = vec![0u8; len + 64];
-            let dec_len = unsafe {
-                decode_slice_avx2(&config, encoded.as_bytes(), dst.as_mut_ptr()).unwrap()
-            };
-            assert_eq!(&dst[..dec_len], &input_bytes, "No-pad decode len {}", len);
-        }
-    }
-
-    #[test]
-    fn miri_avx2_decode_url_safe_padded() {
-        let config = Config {
-            url_safe: true,
-            padding: true,
-        };
-        verify_decode_avx2(&config, &URL_SAFE, 50);
     }
 }
 

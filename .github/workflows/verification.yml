@@ -14,14 +14,11 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  CARGO_BUILD_JOBS: 2 
+  CARGO_BUILD_JOBS: 2
 
 jobs:
-  # Scalar + AVX2's smaller-tier harnesses. Kept together at low
-  # parallelism since none of these carry a fully-symbolic input over
-  # ~70 bytes.
-  kani-proofs-core:
-    name: Kani Model Checker (Core)
+  kani-index-proofs:
+    name: Kani Model Checker (Index / Induction)
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -31,21 +28,25 @@ jobs:
       - name: Run Kani
         uses: model-checking/kani-github-action@v1.1
         with:
-          args: '--jobs 2 --output-format=terse --unstable stubbing --harness check_scalar_decode_robustness --harness check_scalar_roundtrip_safety --harness check_avx2_decode_robustness --harness check_avx2_roundtrip_correctness'
+          args: '--jobs 2 --output-format=terse --harness check_enc_rounds_model --harness check_enc_first_block --harness check_enc_quad_step --harness check_enc_single_step --harness check_enc_tail_handoff --harness check_dec_quad_step --harness check_dec_single_step --harness check_dec_tail_handoff'
 
       - name: Cleanup Artifacts
         if: always()
         run: cargo clean
 
-  # AVX2's quad-tier proof carries 125 fully-symbolic input bytes through
-  # both encode and decode plus SIMD stub unrolling — it dominates CBMC's
-  # memory/time footprint. Running it alone (no --jobs contention with the
-  # other harnesses) avoids the OOM-driven runner cancellations seen when
-  # it shared a runner with the harnesses above.
-  kani-proofs-quad-tier:
-    name: Kani Model Checker (AVX2 Quad-Tier)
+  kani-kernel-proofs:
+    name: Kani Model Checker (Kernels)
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        harness:
+          - check_scalar_roundtrip_safety
+          - check_scalar_decode_robustness
+          - check_avx2_roundtrip_standard
+          - check_avx2_roundtrip_url_safe
+          - check_avx2_decode_robustness
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -53,7 +54,7 @@ jobs:
       - name: Run Kani
         uses: model-checking/kani-github-action@v1.1
         with:
-          args: '--jobs 1 --output-format=terse --unstable stubbing --harness check_avx2_quad_tier_roundtrip'
+          args: '--jobs 1 --output-format=terse --unstable stubbing --harness ${{ matrix.harness }}'
 
       - name: Cleanup Artifacts
         if: always()

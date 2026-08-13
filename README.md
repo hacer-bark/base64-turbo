@@ -112,39 +112,58 @@ BENCH_TARGET=turbo-buff cargo bench   # zero-alloc only
 | Architecture | MIRI | MSan | Kani | Fuzzing |
 | :--- | :---: | :---: | :---: | :---: |
 | **Scalar** | ✅ | ✅ | ✅ (CI) | ✅ |
-| **AVX2** | ✅ | ✅ | ✅ (CI) | ✅ |
+| **AVX2** | ✅ | ✅ | ✅ (CI, unbounded) | ✅ |
 | **AVX512** (`avx512f`+`avx512bw`) | ✅ | ✅ | ✅ (local only) | ✅ |
 | **AVX512-VBMI** (`vpermb`/`vpermi2b`) | ✅ | ✅ | ❌ | ✅ |
 | **NEON** | ✅ | ✅ | ❌ | ❌ |
 
-*   **Kani** — the model checker explores *every possible input byte value* at chosen lengths and proves the kernel does not panic, does not read out of bounds, and round-trips exactly. Scope and caveats below.
+*   **Kani** — the model checker proves the kernels do not panic, do not read or write out of bounds, and round-trip exactly. For AVX2 the bounds result holds for *every* input length, by a machine-checked induction; for the other paths it holds at the lengths the harnesses pin. Details below.
 *   **MIRI** — checks for Undefined Behavior (strict provenance, alignment, OOB pointer arithmetic, data races) on the inputs it runs. Every distinct code path — single-vector loop, quad-vector loop, scalar tail — is exercised for Scalar, AVX2, AVX512 and AVX512-VBMI. This is branch coverage, not exhaustive input coverage.
 *   **MSan** — the whole standard library is rebuilt with instrumentation (`-Z build-std -Z sanitizer=memory`) to confirm we never branch on or emit uninitialized memory, which matters given how much AVX512 masking we do.
 *   **Fuzzing** — 2.5B+ `cargo-fuzz` iterations across all paths, no crashes to date.
 
-### How the Kani proofs work, and what they don't cover
+### How the Kani proofs work
 
-Base64 is a linear, block-structured operation, so we don't check every length. Each harness fixes a length chosen to exercise (a) the loop body **at least twice**, so the pointer state one iteration hands to the next is itself proven a valid entry state, (b) the SIMD→scalar handoff, and (c) a non-empty, non-aligned scalar tail. The input bytes are fully symbolic (`kani::any()`), so at `ENC_INDUCTION_LEN = 53` the encoder proof covers all 2^(53·8) possible inputs — not samples.
+Kani is a bounded model checker, so a proof that runs the real kernel over symbolic *bytes* has to pin the length — the loops get unwound, and the cost grows with them. Pin one length and you have proven one length. That is the trap most "formally verified" claims fall into, and for AVX2 we split the problem in two to get out of it.
 
-The constants come straight from the code's structure. `encode_slice_avx2` enters SIMD at `len >= 32` and works in 24-byte rounds, so `53 = 2×24 + 5`; `decode_slice_avx2` works in 32-byte passes, so `DEC_INDUCTION_LEN = 69 = 2×32 + 5`. `QUAD_ENC_INDUCTION_LEN = 125` is the smallest length hitting the 4×-unrolled quad tier, proven by its own harness since that tier has its own fixed-offset pointer arithmetic. (An earlier version used `29`, which was below the `len >= 32` guard and silently proved only the scalar fallback — the kind of mistake these constants are now derived, not guessed, to avoid.)
+**The index proofs** throw away the vectors entirely. Every load and store bound in the kernels is a statement about `rounds`, `remaining` and the `src`/`dst` offsets — plain `usize` arithmetic that no input byte influences. Those proofs run over a **fully symbolic `len`** and, critically, over an **arbitrary iteration index** rather than an unwound sequence of them:
 
-**Be precise about what that buys you.** Kani proves the base cases exhaustively. The generalization from "correct at 53 bytes" to "correct at any N" is a **documented human argument** — the loop stride is a fixed unconditional increment and the two-iteration proof shows the handoff state is stable — **not a machine-checked induction**. There is no symbolic `N` and no loop invariant in the harnesses. That argument is sound as far as we can tell, and it is the step you should scrutinize first if you're auditing this crate.
+```rust,ignore
+let done: usize = kani::any();              // ANY iteration, not iteration 0..n
+kani::assume(done >= 1 && done <= rounds);
+kani::assume(rounds - done >= 4);           // the quad loop's guard still holds
 
-Three further limits, stated plainly:
+let (src_off, dst_off) = enc_state(done);
+assert!(src_off + 72 + 32 <= len);          // widest read in the body
+assert!(dst_off + 96 + 32 <= cap);          // widest write in the body
 
-1.  **Output buffers in the harnesses are oversized** (e.g. a 128-byte array for 72 bytes of real output). Kani therefore proves the kernels stay inside a *padded* buffer, not that they stay inside the exact output length. A write a few bytes past the legitimate tail would not be caught.
-2.  **Only `padding: true` is proven on the SIMD paths.** `url_safe` is symbolic there; the no-padding tail is Kani-covered on the scalar path only.
-3.  **The proofs run against stubs, not silicon.** ~25 intrinsics are replaced with hand-written Rust models, transcribed variable-for-variable from the [Intel Intrinsics Guide](https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html) so they can be diffed against the reference. A wrong stub silently weakens the corresponding proof.
+assert_eq!((src_off + 96, dst_off + 128), enc_state(done + 4));  // step preserved
+```
+
+That last line is the inductive step, machine-checked: an arbitrary state satisfying the invariant produces a successor that satisfies it too. With a base case (`check_enc_first_block`) and an exit case (`check_enc_tail_handoff`) either side of it, the result covers **every length a Rust slice can have**, and it costs the solver almost nothing because no vector ever appears. The decoder gets the same treatment, including the fact that `pack_and_store!` touches a 28-byte span while advancing only 24 — a 4-byte overhang past every block that is now proven to stay inside the caller's buffer instead of being assumed to.
+
+**The kernel proofs** then do what only symbolic bytes can: run the real code with `kani::any()` input to prove the character mapping, the validation LUTs and the absence of panics. Because the index proofs own the loop arithmetic, these no longer have to demonstrate any of it, so they only need to reach each distinct kernel once. That let us cut them down rather than grow them: the encoder harness went from 53 bytes to 37, the decoder from 69 to 37, and the 125-byte quad-tier roundtrip — by far the most expensive harness — was **deleted**, because the quad tier runs the same kernel as the single tier and everything that distinguishes it is offset arithmetic that is now proven for every iteration rather than one. Total solver time went down while the claim got stronger.
+
+Destination buffers in those harnesses are sized to **exactly** what the public API guarantees (`encoded_len` for encode, `estimate_decoded_len` for decode), so a kernel that overruns its real output by even one byte fails the proof. Alphabets are split into separate harnesses rather than taken symbolically: two lean solver runs beat one that needs a bigger machine.
+
+### What still rests on human judgment
+
+Two things, and they should be the first things an auditor attacks:
+
+1.  **The index proofs mirror the loop arithmetic; they do not execute it.** Roughly a dozen lines of model sit beside the real loops, each constant annotated with the operation it mirrors. If someone edits a stride without editing the model, the proofs keep passing. Treat those constants as part of the code.
+2.  **The proofs run against models of the AVX2 instructions, not the instructions.** Kani cannot execute SIMD, so each intrinsic is a Rust transcription of the Intel Intrinsics Guide pseudocode. That is now checked rather than trusted: `avx2_stub_equivalence` runs every model against the real instruction on real hardware under plain `cargo test`, over saturation and sign boundaries, shuffle-index patterns and deterministic noise. It cannot prove the models agree everywhere, but it catches transcription errors, which is the realistic failure mode.
+
+The same split has not yet been applied to AVX512, AVX512-VBMI or NEON — for those, the older caveats stand.
 
 ### Kani in CI vs. locally
 
-`verification.yml` runs the Scalar and AVX2 harnesses. The AVX512 proof is **not** in CI — its state space exceeded GitHub Actions' time and memory budget. It is re-run locally before each release and passes. The harness is checked in, so you can reproduce it:
+`verification.yml` runs the Scalar and AVX2 harnesses: the index proofs together in one job, each kernel proof on its own runner. The AVX512 proof is **not** in CI — its state space exceeded GitHub Actions' time and memory budget. It is re-run locally before each release and passes. The harness is checked in, so you can reproduce it:
 
 ```sh
 cargo kani --unstable stubbing --harness kani_verification_avx512
 ```
 
-AVX512-VBMI has no proof at all: it depends on `vpermb` / `vpermi2b`, for which we haven't written stubs yet. NEON has no Kani harness either. Both rest on MIRI, MSan and fuzzing — a real bar, but a lower one than the proven paths.
+AVX512-VBMI has no proof at all: it depends on `vpermb` / `vpermi2b`, for which we haven't written models yet. NEON has no Kani harness either. Both rest on MIRI, MSan and fuzzing — a real bar, but a lower one than the proven paths.
 
 ### Verification FAQ
 
@@ -156,7 +175,7 @@ AVX512-VBMI has no proof at all: it depends on `vpermb` / `vpermi2b`, for which 
 
 **Is it production-ready?** Scalar, AVX2 and plain AVX512 are Kani-proven plus MIRI/MSan/fuzz-clean. AVX512-VBMI and NEON have everything except Kani. We ship both; you should know which one your CPU picks.
 
-**How do I know your stubs are right?** You read them against the Intel guide — they're written for exactly that. Nothing currently cross-checks them against real hardware, which is the honest answer.
+**How do I know your intrinsic models are right?** For AVX2, `cargo test` runs every model against the real instruction on real hardware and fails if they disagree. For the other paths, you read them against the Intel guide — they're written for exactly that, but nothing cross-checks them yet.
 
 **How can I trust any of this?** Don't. Read the [CI logs](https://github.com/hacer-bark/base64-turbo/actions), reproduce the proofs, and read the `unsafe` blocks — each documents the contract it relies on.
 
@@ -207,4 +226,13 @@ The encode/decode kernels build directly on techniques published by others, all 
 
 ## License
 
-Licensed under either the [MIT License](https://github.com/hacer-bark/base64-turbo/blob/main/LICENSE-MIT) or the [Apache License, Version 2.0](https://github.com/hacer-bark/base64-turbo/blob/main/LICENSE-APACHE) at your option.
+Licensed under either of
+
+- [Apache License, Version 2.0](https://github.com/hacer-bark/base64-turbo/blob/main/LICENSE-APACHE)
+- [MIT license](https://github.com/hacer-bark/base64-turbo/blob/main/LICENSE-MIT)
+
+at your option.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in
+this crate, as defined in the Apache-2.0 license, shall be dual licensed as above, without any
+additional terms or conditions.
