@@ -92,6 +92,7 @@
 
 #![cfg_attr(not(any(feature = "std", test)), no_std)]
 #![doc(issue_tracker_base_url = "https://github.com/hacer-bark/base64-turbo/issues/")]
+#![forbid(elided_lifetimes_in_paths)]
 // This crate casts pointers to wider SIMD vector types (`__m128i`, `__m256i`, `__m512i`)
 // purely to call `_mm*_loadu_*`/`_mm*_storeu_*` intrinsics, which are explicitly
 // documented to work on any alignment ("u" = unaligned). Clippy cannot see through
@@ -208,9 +209,6 @@ const URL_SAFE_DECODE_TABLE: [u8; 256] = {
 // ======================================================================
 
 /// Internal configuration for the Base64 engine.
-///
-/// This struct uses `repr(C)` to ensure predictable memory layout.
-#[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Config {
     /// If true, uses `-` and `_` instead of `+` and `/`.
@@ -379,9 +377,8 @@ impl Engine {
         }
 
         // --- Normal Path ---
-        // Pass the raw pointer to the dispatcher.
-        // SAFETY: We checked output.len() >= req_len above.
-        unsafe { Self::encode_dispatch(self, input, output[..req_len].as_mut_ptr()) };
+        // We checked output.len() >= req_len above.
+        Self::encode_dispatch(self, input, &mut output[..req_len]);
 
         Ok(req_len)
     }
@@ -417,9 +414,7 @@ impl Engine {
         }
 
         // --- Normal Path ---
-        // SAFETY: We pass only verified data.
-        let real_len =
-            unsafe { Self::decode_dispatch(self, input, output[..req_len].as_mut_ptr())? };
+        let real_len = Self::decode_dispatch(self, input, &mut output[..req_len])?;
 
         Ok(real_len)
     }
@@ -465,10 +460,7 @@ impl Engine {
         // (infallible) dispatcher directly instead of the bounds-checked
         // `encode_into`, which would otherwise force us to handle an
         // unreachable `Err(BufferTooSmall)`.
-        // SAFETY: `out` has capacity `len`, which is exactly what `encode_dispatch` writes.
-        unsafe {
-            Self::encode_dispatch(self, input, out.as_mut_ptr());
-        }
+        Self::encode_dispatch(self, input, &mut out);
 
         // 5. Convert to String
         // SAFETY: The Base64 alphabet consists strictly of ASCII characters,
@@ -537,8 +529,11 @@ impl Engine {
 
     // TODO: Recalculate lengths for SIMDs paths.
 
+    // `&self` (a 2-byte Copy `Engine`) is kept by-ref for consistency with the
+    // rest of the `Engine` methods, not because the reference is required.
+    #[allow(clippy::trivially_copy_pass_by_ref)]
     #[inline]
-    unsafe fn encode_dispatch(&self, input: &[u8], dst: *mut u8) {
+    fn encode_dispatch(&self, input: &[u8], dst: &mut [u8]) {
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         #[cfg(feature = "simd")]
         {
@@ -551,11 +546,13 @@ impl Engine {
             {
                 // VBMI fast-path: vpermb replaces 8-instruction char mapping with 1 instruction
                 if std::is_x86_feature_detected!("avx512vbmi") {
+                    // SAFETY: AVX-512F/BW/VBMI availability checked above.
                     unsafe {
                         simd::encode_slice_avx512_vbmi(&self.config, input, dst);
                     }
                     return;
                 }
+                // SAFETY: AVX-512F/BW availability checked above.
                 unsafe {
                     simd::encode_slice_avx512(&self.config, input, dst);
                 }
@@ -564,6 +561,7 @@ impl Engine {
 
             // Smart degrade: If len < 32, skip AVX2.
             if len >= 32 && std::is_x86_feature_detected!("avx2") {
+                // SAFETY: AVX2 availability checked above.
                 unsafe {
                     simd::encode_slice_avx2(&self.config, input, dst);
                 }
@@ -577,6 +575,7 @@ impl Engine {
         {
             let len = input.len();
             if len >= 16 {
+                // SAFETY: NEON is baseline on aarch64.
                 unsafe {
                     simd::encode_slice_neon(&self.config, input, dst);
                 }
@@ -585,14 +584,12 @@ impl Engine {
         }
 
         // Fallback: Scalar / Non-x86 / Short inputs
-        // SAFETY: Pointers verified by caller
-        unsafe {
-            scalar::encode_slice_unsafe(&self.config, input, dst);
-        }
+        scalar::encode_slice(&self.config, input, dst);
     }
 
+    #[allow(clippy::trivially_copy_pass_by_ref)]
     #[inline]
-    unsafe fn decode_dispatch(&self, input: &[u8], dst: *mut u8) -> Result<usize, Error> {
+    fn decode_dispatch(&self, input: &[u8], dst: &mut [u8]) -> Result<usize, Error> {
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         #[cfg(feature = "simd")]
         {
@@ -605,13 +602,16 @@ impl Engine {
             {
                 // VBMI fast-path: vpermi2b replaces 13-instruction decode+validate with ~4 instructions
                 if std::is_x86_feature_detected!("avx512vbmi") {
+                    // SAFETY: AVX-512F/BW/VBMI availability checked above.
                     return unsafe { simd::decode_slice_avx512_vbmi(&self.config, input, dst) };
                 }
+                // SAFETY: AVX-512F/BW availability checked above.
                 return unsafe { simd::decode_slice_avx512(&self.config, input, dst) };
             }
 
             // Smart degrade: Fallback to AVX2 if len is between 32 and 64, or if AVX512 is missing.
             if len >= 32 && std::is_x86_feature_detected!("avx2") {
+                // SAFETY: AVX2 availability checked above.
                 return unsafe { simd::decode_slice_avx2(&self.config, input, dst) };
             }
         }
@@ -622,13 +622,13 @@ impl Engine {
         {
             let len = input.len();
             if len >= 16 {
+                // SAFETY: NEON is baseline on aarch64.
                 return unsafe { simd::decode_slice_neon(&self.config, input, dst) };
             }
         }
 
         // Fallback: Scalar / Non-x86 / Short inputs
-        // SAFETY: Pointers verified by caller
-        unsafe { scalar::decode_slice_unsafe(&self.config, input, dst) }
+        scalar::decode_slice(&self.config, input, dst)
     }
 
     // ========================================================================
@@ -664,7 +664,7 @@ impl Engine {
     #[cfg(feature = "unstable")]
     pub unsafe fn encode_avx2(&self, input: &[u8], dst: &mut [u8]) {
         // SAFETY: Caller must uphold the contracts documented on this function.
-        unsafe { simd::encode_slice_avx2(&self.config, input, dst.as_mut_ptr()) }
+        unsafe { simd::encode_slice_avx2(&self.config, input, dst) }
     }
 
     /// Encodes a byte slice into Base64 using a highly optimized AVX2 SIMD implementation.
@@ -702,7 +702,7 @@ impl Engine {
     #[cfg(feature = "unstable")]
     pub unsafe fn decode_avx2(&self, input: &[u8], dst: &mut [u8]) -> Result<usize, Error> {
         // SAFETY: Caller must uphold the contracts documented on this function.
-        unsafe { simd::decode_slice_avx2(&self.config, input, dst.as_mut_ptr()) }
+        unsafe { simd::decode_slice_avx2(&self.config, input, dst) }
     }
 
     /// Encodes a byte slice into Base64 using a highly optimized scalar (non-SIMD) algorithm.
@@ -727,8 +727,7 @@ impl Engine {
     /// (e.g., `Engine::encode`).
     #[cfg(feature = "unstable")]
     pub unsafe fn encode_scalar(&self, input: &[u8], dst: &mut [u8]) {
-        // SAFETY: Caller must uphold the contracts documented on this function.
-        unsafe { scalar::encode_slice_unsafe(&self.config, input, dst.as_mut_ptr()) }
+        scalar::encode_slice(&self.config, input, dst);
     }
 
     /// Decodes a Base64 byte slice using a highly optimized scalar (non-SIMD) algorithm.
@@ -740,16 +739,10 @@ impl Engine {
     /// This function is **unsafe** and requires the caller to uphold strict memory contracts.
     /// Failure to do so will result in **undefined behavior** (e.g., buffer overflow).
     ///
-    /// - The destination pointer `dst` must be valid and point to a mutable memory region with
-    ///   at least `(input.len() / 4 + 1) * 3` bytes of capacity. The extra space is required due
-    ///   to the implementation performing overlapping writes.
+    /// - `dst` must be large enough to hold the decoded output; a buffer that is too small
+    ///   panics (bounds check) rather than corrupting memory. The scalar decoder writes exactly
+    ///   the decoded bytes (no overlapping over-writes).
     ///  - Highly recommended: use `Engine::estimate_decoded_len` to compute length.
-    ///
-    /// # Warning
-    ///
-    /// This is a low-level, unsafe primitive. Misuse can lead to undefined behavior regardless
-    /// of other crate guarantees. For better memory safety, use the safe higher-level APIs
-    /// (e.g., `Engine::decode`).
     ///
     /// # Errors
     ///
@@ -757,8 +750,7 @@ impl Engine {
     /// valid Base64.
     #[cfg(feature = "unstable")]
     pub unsafe fn decode_scalar(&self, input: &[u8], dst: &mut [u8]) -> Result<usize, Error> {
-        // SAFETY: Caller must uphold the contracts documented on this function.
-        unsafe { scalar::decode_slice_unsafe(&self.config, input, dst.as_mut_ptr()) }
+        scalar::decode_slice(&self.config, input, dst)
     }
 
     /// Encodes a byte slice into Base64 using the NEON SIMD implementation.
@@ -783,7 +775,7 @@ impl Engine {
     #[cfg(feature = "unstable")]
     pub unsafe fn encode_neon(&self, input: &[u8], dst: &mut [u8]) {
         // SAFETY: Caller must uphold the contracts documented on this function.
-        unsafe { simd::encode_slice_neon(&self.config, input, dst.as_mut_ptr()) }
+        unsafe { simd::encode_slice_neon(&self.config, input, dst) }
     }
 
     /// Decodes a Base64 byte slice using the NEON SIMD implementation.
@@ -813,6 +805,6 @@ impl Engine {
     #[cfg(feature = "unstable")]
     pub unsafe fn decode_neon(&self, input: &[u8], dst: &mut [u8]) -> Result<usize, Error> {
         // SAFETY: Caller must uphold the contracts documented on this function.
-        unsafe { simd::decode_slice_neon(&self.config, input, dst.as_mut_ptr()) }
+        unsafe { simd::decode_slice_neon(&self.config, input, dst) }
     }
 }

@@ -73,9 +73,11 @@ const VBMI_DECODE_URL_SAFE: [u8; 128] = {
 // ======================================================================
 
 #[target_feature(enable = "avx512f,avx512bw")]
-pub(crate) unsafe fn encode_slice_avx512(config: &Config, input: &[u8], mut dst: *mut u8) {
+pub(crate) unsafe fn encode_slice_avx512(config: &Config, input: &[u8], dst_slice: &mut [u8]) {
     let len = input.len();
     let mut src = input.as_ptr();
+    let dst_start = dst_slice.as_mut_ptr();
+    let mut dst = dst_start;
 
     // Shuffle bytes for mul
     let shuffle = _mm512_broadcast_i32x4(_mm_setr_epi8(
@@ -175,7 +177,8 @@ pub(crate) unsafe fn encode_slice_avx512(config: &Config, input: &[u8], mut dst:
     // Scalar Fallback
     let processed_len = unsafe { src.offset_from(input.as_ptr()) }.cast_unsigned();
     if processed_len < len {
-        unsafe { scalar::encode_slice_unsafe(config, &input[processed_len..], dst) };
+        let out_off = unsafe { dst.offset_from(dst_start) }.cast_unsigned();
+        scalar::encode_slice(config, &input[processed_len..], &mut dst_slice[out_off..]);
     }
 }
 
@@ -264,11 +267,12 @@ unsafe fn decode_constants_avx512(config: &Config) -> DecodeConstantsAvx512 {
 pub(crate) unsafe fn decode_slice_avx512(
     config: &Config,
     input: &[u8],
-    mut dst: *mut u8,
+    dst_slice: &mut [u8],
 ) -> Result<usize, Error> {
     let len = input.len();
     let mut src = input.as_ptr();
-    let dst_start = dst;
+    let dst_start = dst_slice.as_mut_ptr();
+    let mut dst = dst_start;
 
     let DecodeConstantsAvx512 {
         lut_hi_nibble,
@@ -390,34 +394,32 @@ pub(crate) unsafe fn decode_slice_avx512(
         dst = unsafe { dst.add(48) };
     }
 
-    unsafe { decode_scalar_tail(config, input, src, dst, dst_start) }
+    let dst_off = unsafe { dst.offset_from(dst_start) }.cast_unsigned();
+    unsafe { decode_scalar_tail(config, input, src, dst_slice, dst_off) }
 }
 
 /// Decodes any bytes left over after the vectorized main/tail loops via the
 /// scalar fallback, then returns the total number of bytes written.
 ///
+/// `dst_off` is how many bytes the SIMD loops already wrote into `dst_slice`.
+///
 /// # Safety
-/// `src` must point within `input`, and `dst`/`dst_start` must satisfy the
-/// same contract as [`scalar::decode_slice_unsafe`].
+/// `src` must point within `input`.
 unsafe fn decode_scalar_tail(
     config: &Config,
     input: &[u8],
     src: *const u8,
-    mut dst: *mut u8,
-    dst_start: *mut u8,
+    dst_slice: &mut [u8],
+    dst_off: usize,
 ) -> Result<usize, Error> {
     let processed_len = unsafe { src.offset_from(input.as_ptr()) }.cast_unsigned();
     if processed_len < input.len() {
-        dst = unsafe {
-            dst.add(scalar::decode_slice_unsafe(
-                config,
-                &input[processed_len..],
-                dst,
-            )?)
-        };
+        let written =
+            scalar::decode_slice(config, &input[processed_len..], &mut dst_slice[dst_off..])?;
+        Ok(dst_off + written)
+    } else {
+        Ok(dst_off)
     }
-
-    Ok(unsafe { dst.offset_from(dst_start) }.cast_unsigned())
 }
 
 // ======================================================================
@@ -502,9 +504,11 @@ unsafe fn zmm_permutex2var_epi8(a: __m512i, idx: __m512i, b: __m512i) -> __m512i
 // ======================================================================
 
 #[target_feature(enable = "avx512f,avx512bw,avx512vbmi")]
-pub(crate) unsafe fn encode_slice_avx512_vbmi(config: &Config, input: &[u8], mut dst: *mut u8) {
+pub(crate) unsafe fn encode_slice_avx512_vbmi(config: &Config, input: &[u8], dst_slice: &mut [u8]) {
     let len = input.len();
     let mut src = input.as_ptr();
+    let dst_start = dst_slice.as_mut_ptr();
+    let mut dst = dst_start;
 
     // VBMI: single-instruction byte reorder directly from a raw 64-byte load,
     // replacing the two-step permutexvar_epi32(dword gather) + shuffle_epi8
@@ -602,7 +606,8 @@ pub(crate) unsafe fn encode_slice_avx512_vbmi(config: &Config, input: &[u8], mut
     // Scalar Fallback
     let processed_len = unsafe { src.offset_from(input.as_ptr()) }.cast_unsigned();
     if processed_len < len {
-        unsafe { scalar::encode_slice_unsafe(config, &input[processed_len..], dst) };
+        let out_off = unsafe { dst.offset_from(dst_start) }.cast_unsigned();
+        scalar::encode_slice(config, &input[processed_len..], &mut dst_slice[out_off..]);
     }
 }
 
@@ -614,11 +619,12 @@ pub(crate) unsafe fn encode_slice_avx512_vbmi(config: &Config, input: &[u8], mut
 pub(crate) unsafe fn decode_slice_avx512_vbmi(
     config: &Config,
     input: &[u8],
-    mut dst: *mut u8,
+    dst_slice: &mut [u8],
 ) -> Result<usize, Error> {
     let len = input.len();
     let mut src = input.as_ptr();
-    let dst_start = dst;
+    let dst_start = dst_slice.as_mut_ptr();
+    let mut dst = dst_start;
 
     // VBMI: Load 128-byte reverse LUT into two ZMM registers.
     // vpermi2b uses bit [6] to select between the two registers,
@@ -743,17 +749,12 @@ pub(crate) unsafe fn decode_slice_avx512_vbmi(
 
     // Scalar Fallback
     let processed_len = unsafe { src.offset_from(input.as_ptr()) }.cast_unsigned();
+    let mut written = unsafe { dst.offset_from(dst_start) }.cast_unsigned();
     if processed_len < len {
-        dst = unsafe {
-            dst.add(scalar::decode_slice_unsafe(
-                config,
-                &input[processed_len..],
-                dst,
-            )?)
-        };
+        written += scalar::decode_slice(config, &input[processed_len..], &mut dst_slice[written..])?;
     }
 
-    Ok(unsafe { dst.offset_from(dst_start) }.cast_unsigned())
+    Ok(written)
 }
 
 #[cfg(kani)]
@@ -990,7 +991,7 @@ mod kani_verification_avx512 {
 
         unsafe {
             // 1. Encode
-            encode_slice_avx512(&config, &input, enc_buf.as_mut_ptr());
+            encode_slice_avx512(&config, &input, &mut enc_buf);
 
             // Calculate actual encoded length for slicing
             let enc_len = encoded_size(ENC_INDUCTION_LEN, config.padding);
@@ -998,7 +999,7 @@ mod kani_verification_avx512 {
 
             // 2. Decode
             // This MUST succeed for valid encoded output
-            let dec_len = decode_slice_avx512(&config, encoded_slice, dec_buf.as_mut_ptr())
+            let dec_len = decode_slice_avx512(&config, encoded_slice, &mut dec_buf)
                 .expect("Valid encoding failed to decode");
 
             // 3. Verify
@@ -1034,7 +1035,7 @@ mod kani_verification_avx512 {
         unsafe {
             // We ignore the Result. We only care that this function call
             // returns safely (Ok or Err) and does not crash.
-            let _ = decode_slice_avx512(&config, &input, output.as_mut_ptr());
+            let _ = decode_slice_avx512(&config, &input, &mut output);
         }
     }
 
@@ -1081,14 +1082,14 @@ mod kani_verification_avx512 {
 
         unsafe {
             // 1. Encode (exercises the quad-tier encode loop: 1 pass)
-            encode_slice_avx512(&config, &input, enc_buf.as_mut_ptr());
+            encode_slice_avx512(&config, &input, &mut enc_buf);
 
             let enc_len = encoded_size(QUAD_ENC_INDUCTION_LEN, config.padding);
             let encoded_slice = &enc_buf[..enc_len];
 
             // 2. Decode (this encoded_len also happens to land in the
             // decode quad tier: 1 pass, 0 single-vector passes)
-            let dec_len = decode_slice_avx512(&config, encoded_slice, dec_buf.as_mut_ptr())
+            let dec_len = decode_slice_avx512(&config, encoded_slice, &mut dec_buf)
                 .expect("Valid encoding failed to decode");
 
             // 3. Verify
@@ -1120,7 +1121,7 @@ mod miri_avx512_coverage {
         let mut dst = vec![0u8; expected.len() * 2]; // Safety margin
 
         unsafe {
-            encode_slice_avx512(config, &input, dst.as_mut_ptr());
+            encode_slice_avx512(config, &input, &mut dst);
         }
 
         let result = &dst[..expected.len()];
@@ -1140,7 +1141,7 @@ mod miri_avx512_coverage {
         let mut dst = vec![0u8; original_len + 64];
 
         let len = unsafe {
-            decode_slice_avx512(config, encoded_bytes, dst.as_mut_ptr())
+            decode_slice_avx512(config, encoded_bytes, &mut dst)
                 .expect("Valid input failed to decode")
         };
 
@@ -1272,7 +1273,7 @@ mod miri_avx512_coverage {
         let input = b"-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_";
         let mut dst = [0u8; 64];
         unsafe {
-            decode_slice_avx512(&config, input, dst.as_mut_ptr()).unwrap();
+            decode_slice_avx512(&config, input, &mut dst).unwrap();
         }
     }
 
@@ -1292,20 +1293,20 @@ mod miri_avx512_coverage {
         // Batch size is 256 bytes.
         let mut bad_input_256 = vec![b'A'; 256];
         bad_input_256[255] = b'$'; // Invalid char
-        let res = unsafe { decode_slice_avx512(&config, &bad_input_256, dst.as_mut_ptr()) };
+        let res = unsafe { decode_slice_avx512(&config, &bad_input_256, &mut dst) };
         assert!(res.is_err(), "Failed to catch error in Quad Loop");
 
         // Case 2: Error in Single Loop
         // Vector size is 64 bytes.
         let mut bad_input_64 = vec![b'A'; 64];
         bad_input_64[63] = b'?'; // Invalid char
-        let res = unsafe { decode_slice_avx512(&config, &bad_input_64, dst.as_mut_ptr()) };
+        let res = unsafe { decode_slice_avx512(&config, &bad_input_64, &mut dst) };
         assert!(res.is_err(), "Failed to catch error in Single Loop");
 
         // Case 3: Error in Quad Loop (first vector, first byte)
         let mut bad_input_256_first = vec![b'A'; 256];
         bad_input_256_first[0] = b'$';
-        let res = unsafe { decode_slice_avx512(&config, &bad_input_256_first, dst.as_mut_ptr()) };
+        let res = unsafe { decode_slice_avx512(&config, &bad_input_256_first, &mut dst) };
         assert!(
             res.is_err(),
             "Failed to catch error in Quad Loop first vector"
@@ -1314,7 +1315,7 @@ mod miri_avx512_coverage {
         // Case 4: Error in Scalar Fallback (after SIMD processing)
         let mut bad_input_65 = vec![b'A'; 65];
         bad_input_65[64] = b'?'; // Invalid in scalar region
-        let res = unsafe { decode_slice_avx512(&config, &bad_input_65, dst.as_mut_ptr()) };
+        let res = unsafe { decode_slice_avx512(&config, &bad_input_65, &mut dst) };
         assert!(res.is_err(), "Failed to catch error in Scalar Fallback");
     }
 
@@ -1333,14 +1334,14 @@ mod miri_avx512_coverage {
             let expected = STANDARD.encode(&input);
             let mut enc = vec![0u8; expected.len() * 2];
             unsafe {
-                encode_slice_avx512(&config, &input, enc.as_mut_ptr());
+                encode_slice_avx512(&config, &input, &mut enc);
             }
             let encoded = &enc[..expected.len()];
             assert_eq!(std::str::from_utf8(encoded).unwrap(), expected);
 
             let mut dec = vec![0u8; len + 64];
             let dec_len =
-                unsafe { decode_slice_avx512(&config, encoded, dec.as_mut_ptr()).unwrap() };
+                unsafe { decode_slice_avx512(&config, encoded, &mut dec).unwrap() };
             assert_eq!(&dec[..dec_len], &input, "Roundtrip len {}", len);
         }
     }
@@ -1367,7 +1368,7 @@ mod miri_avx512_coverage {
             let encoded = STANDARD_NO_PAD.encode(&input_bytes);
             let mut dst = vec![0u8; len + 64];
             let dec_len = unsafe {
-                decode_slice_avx512(&config, encoded.as_bytes(), dst.as_mut_ptr()).unwrap()
+                decode_slice_avx512(&config, encoded.as_bytes(), &mut dst).unwrap()
             };
             assert_eq!(&dst[..dec_len], &input_bytes, "No-pad decode len {}", len);
         }
@@ -1416,7 +1417,7 @@ mod miri_avx512_vbmi_coverage {
         let mut dst = vec![0u8; expected.len() * 2]; // Safety margin
 
         unsafe {
-            encode_slice_avx512_vbmi(config, &input, dst.as_mut_ptr());
+            encode_slice_avx512_vbmi(config, &input, &mut dst);
         }
 
         let result = &dst[..expected.len()];
@@ -1435,7 +1436,7 @@ mod miri_avx512_vbmi_coverage {
         let mut dst = vec![0u8; original_len + 64];
 
         let len = unsafe {
-            decode_slice_avx512_vbmi(config, encoded_bytes, dst.as_mut_ptr())
+            decode_slice_avx512_vbmi(config, encoded_bytes, &mut dst)
                 .expect("Valid input failed to decode")
         };
 
@@ -1548,7 +1549,7 @@ mod miri_avx512_vbmi_coverage {
         let input = b"-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_";
         let mut dst = [0u8; 64];
         unsafe {
-            decode_slice_avx512_vbmi(&config, input, dst.as_mut_ptr()).unwrap();
+            decode_slice_avx512_vbmi(&config, input, &mut dst).unwrap();
         }
     }
 
@@ -1567,7 +1568,7 @@ mod miri_avx512_vbmi_coverage {
         // Case 1: `0xFF` LUT sentinel path — char not present in either alphabet.
         let mut bad_input_256 = vec![b'A'; 256];
         bad_input_256[255] = b'$';
-        let res = unsafe { decode_slice_avx512_vbmi(&config, &bad_input_256, dst.as_mut_ptr()) };
+        let res = unsafe { decode_slice_avx512_vbmi(&config, &bad_input_256, &mut dst) };
         assert!(
             res.is_err(),
             "Failed to catch sentinel-invalid char in Quad Loop"
@@ -1575,7 +1576,7 @@ mod miri_avx512_vbmi_coverage {
 
         let mut bad_input_64 = vec![b'A'; 64];
         bad_input_64[63] = b'?';
-        let res = unsafe { decode_slice_avx512_vbmi(&config, &bad_input_64, dst.as_mut_ptr()) };
+        let res = unsafe { decode_slice_avx512_vbmi(&config, &bad_input_64, &mut dst) };
         assert!(
             res.is_err(),
             "Failed to catch sentinel-invalid char in Single Loop"
@@ -1588,20 +1589,20 @@ mod miri_avx512_vbmi_coverage {
         let mut bad_input_high_bit = vec![b'A'; 256];
         bad_input_high_bit[0] = 0x80;
         let res =
-            unsafe { decode_slice_avx512_vbmi(&config, &bad_input_high_bit, dst.as_mut_ptr()) };
+            unsafe { decode_slice_avx512_vbmi(&config, &bad_input_high_bit, &mut dst) };
         assert!(res.is_err(), "Failed to catch byte >= 128 in Quad Loop");
 
         let mut bad_input_high_bit_single = vec![b'A'; 64];
         bad_input_high_bit_single[0] = 0xFF;
         let res = unsafe {
-            decode_slice_avx512_vbmi(&config, &bad_input_high_bit_single, dst.as_mut_ptr())
+            decode_slice_avx512_vbmi(&config, &bad_input_high_bit_single, &mut dst)
         };
         assert!(res.is_err(), "Failed to catch byte >= 128 in Single Loop");
 
         // Case 3: Error in Scalar Fallback (after SIMD processing)
         let mut bad_input_65 = vec![b'A'; 65];
         bad_input_65[64] = b'?';
-        let res = unsafe { decode_slice_avx512_vbmi(&config, &bad_input_65, dst.as_mut_ptr()) };
+        let res = unsafe { decode_slice_avx512_vbmi(&config, &bad_input_65, &mut dst) };
         assert!(res.is_err(), "Failed to catch error in Scalar Fallback");
     }
 
@@ -1620,14 +1621,14 @@ mod miri_avx512_vbmi_coverage {
             let expected = STANDARD.encode(&input);
             let mut enc = vec![0u8; expected.len() * 2];
             unsafe {
-                encode_slice_avx512_vbmi(&config, &input, enc.as_mut_ptr());
+                encode_slice_avx512_vbmi(&config, &input, &mut enc);
             }
             let encoded = &enc[..expected.len()];
             assert_eq!(std::str::from_utf8(encoded).unwrap(), expected);
 
             let mut dec = vec![0u8; len + 64];
             let dec_len =
-                unsafe { decode_slice_avx512_vbmi(&config, encoded, dec.as_mut_ptr()).unwrap() };
+                unsafe { decode_slice_avx512_vbmi(&config, encoded, &mut dec).unwrap() };
             assert_eq!(&dec[..dec_len], &input, "Roundtrip len {len}");
         }
     }
@@ -1654,7 +1655,7 @@ mod miri_avx512_vbmi_coverage {
             let encoded = STANDARD_NO_PAD.encode(&input_bytes);
             let mut dst = vec![0u8; len + 64];
             let dec_len = unsafe {
-                decode_slice_avx512_vbmi(&config, encoded.as_bytes(), dst.as_mut_ptr()).unwrap()
+                decode_slice_avx512_vbmi(&config, encoded.as_bytes(), &mut dst).unwrap()
             };
             assert_eq!(&dst[..dec_len], &input_bytes, "No-pad decode len {len}");
         }
@@ -1687,6 +1688,7 @@ mod miri_avx512_vbmi_coverage {
     /// Decodes into a buffer sized to the exact true output length only (no
     /// safety margin), so Miri's precise out-of-bounds tracking can catch a
     /// masked-store overrun by even a single byte.
+    #[allow(clippy::trivially_copy_pass_by_ref)]
     fn verify_decode_avx512_vbmi_exact(config: &Config, oracle: &impl Engine, original_len: usize) {
         let input_bytes = random_bytes(original_len);
         let encoded = oracle.encode(&input_bytes);
@@ -1694,7 +1696,7 @@ mod miri_avx512_vbmi_coverage {
         let mut dst = vec![0u8; original_len];
 
         let len = unsafe {
-            decode_slice_avx512_vbmi(config, encoded_bytes, dst.as_mut_ptr())
+            decode_slice_avx512_vbmi(config, encoded_bytes, &mut dst)
                 .expect("Valid input failed to decode")
         };
 
@@ -1748,6 +1750,7 @@ mod avx512_vbmi_hardware_coverage {
         (0..len).map(|_| rng.random()).collect()
     }
 
+    #[allow(clippy::trivially_copy_pass_by_ref)]
     fn verify_decode_avx512_vbmi_exact(config: &Config, oracle: &impl Engine, original_len: usize) {
         let input_bytes = random_bytes(original_len);
         let encoded = oracle.encode(&input_bytes);
@@ -1755,7 +1758,7 @@ mod avx512_vbmi_hardware_coverage {
         let mut dst = vec![0u8; original_len];
 
         let len = unsafe {
-            decode_slice_avx512_vbmi(config, encoded_bytes, dst.as_mut_ptr())
+            decode_slice_avx512_vbmi(config, encoded_bytes, &mut dst)
                 .expect("Valid input failed to decode")
         };
 

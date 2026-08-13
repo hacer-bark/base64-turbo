@@ -62,9 +62,11 @@ unsafe fn encode_vec_avx2(input: __m256i, translate_lut: __m256i) -> __m256i {
 }
 
 #[target_feature(enable = "avx2")]
-pub(crate) unsafe fn encode_slice_avx2(config: &Config, input: &[u8], mut dst: *mut u8) {
+pub(crate) unsafe fn encode_slice_avx2(config: &Config, input: &[u8], dst_slice: &mut [u8]) {
     let len = input.len();
     let mut src = input.as_ptr();
+    let dst_start = dst_slice.as_mut_ptr();
+    let mut dst = dst_start;
 
     let translate_lut = if config.url_safe {
         _mm256_setr_epi8(
@@ -145,7 +147,8 @@ pub(crate) unsafe fn encode_slice_avx2(config: &Config, input: &[u8], mut dst: *
     // Scalar Fallback
     let processed_len = unsafe { src.offset_from(input.as_ptr()) }.cast_unsigned();
     if processed_len < len {
-        unsafe { scalar::encode_slice_unsafe(config, &input[processed_len..], dst) };
+        let out_off = unsafe { dst.offset_from(dst_start) }.cast_unsigned();
+        scalar::encode_slice(config, &input[processed_len..], &mut dst_slice[out_off..]);
     }
 }
 
@@ -267,11 +270,12 @@ unsafe fn decode_constants_avx2(config: &Config) -> DecodeConstantsAvx2 {
 pub(crate) unsafe fn decode_slice_avx2(
     config: &Config,
     input: &[u8],
-    mut dst: *mut u8,
+    dst_slice: &mut [u8],
 ) -> Result<usize, Error> {
     let len = input.len();
     let mut src = input.as_ptr();
-    let dst_start = dst;
+    let dst_start = dst_slice.as_mut_ptr();
+    let mut dst = dst_start;
 
     let DecodeConstantsAvx2 {
         lut_lo,
@@ -380,17 +384,12 @@ pub(crate) unsafe fn decode_slice_avx2(
 
     // Scalar Fallback
     let processed_len = unsafe { src.offset_from(input.as_ptr()) }.cast_unsigned();
+    let mut written = unsafe { dst.offset_from(dst_start) }.cast_unsigned();
     if processed_len < len {
-        dst = unsafe {
-            dst.add(scalar::decode_slice_unsafe(
-                config,
-                &input[processed_len..],
-                dst,
-            )?)
-        };
+        written += scalar::decode_slice(config, &input[processed_len..], &mut dst_slice[written..])?;
     }
 
-    Ok(unsafe { dst.offset_from(dst_start) }.cast_unsigned())
+    Ok(written)
 }
 
 #[cfg(kani)]
@@ -398,6 +397,9 @@ mod kani_verification_avx2 {
     use super::*;
     use crate::{Config, STANDARD as TURBO_STANDARD, STANDARD_NO_PAD as TURBO_STANDARD_NO_PAD};
 
+    // Only referenced inside `#[kani::stub(...)]` attribute paths, which the
+    // `unused_imports` lint doesn't count as a use — hence the explicit allow.
+    #[allow(unused_imports)]
     use super::intrinsic_models as m;
 
     // Layer 1 — index proofs. Every load/store bound is a statement about
@@ -719,8 +721,8 @@ mod kani_verification_avx2 {
         let mut dec_buf = [0u8; ENC_KERNEL_DEC_CAP];
 
         unsafe {
-            encode_slice_avx2(&config, &input, enc_buf.as_mut_ptr());
-            let dec_len = decode_slice_avx2(&config, &enc_buf, dec_buf.as_mut_ptr())
+            encode_slice_avx2(&config, &input, &mut enc_buf);
+            let dec_len = decode_slice_avx2(&config, &enc_buf, &mut dec_buf)
                 .expect("valid encoding failed to decode");
             assert_eq!(dec_len, ENC_KERNEL_LEN);
             assert_eq!(&dec_buf[..dec_len], &input, "roundtrip mismatch");
@@ -768,7 +770,7 @@ mod kani_verification_avx2 {
         let input: [u8; DEC_KERNEL_LEN] = kani::any();
         let mut output = [0u8; DEC_KERNEL_CAP];
         unsafe {
-            let _ = decode_slice_avx2(&config, &input, output.as_mut_ptr());
+            let _ = decode_slice_avx2(&config, &input, &mut output);
         }
     }
 }
@@ -1120,7 +1122,7 @@ mod miri_avx2_coverage {
         let expected = oracle.encode(&input);
 
         let mut enc = vec![0u8; expected.len()];
-        unsafe { encode_slice_avx2(config, &input, enc.as_mut_ptr()) };
+        unsafe { encode_slice_avx2(config, &input, &mut enc) };
         assert_eq!(
             core::str::from_utf8(&enc).unwrap(),
             expected,
@@ -1129,7 +1131,7 @@ mod miri_avx2_coverage {
 
         let mut dec = vec![0u8; (enc.len() / 4 + 1) * 3];
         let dec_len = unsafe {
-            decode_slice_avx2(config, &enc, dec.as_mut_ptr()).expect("valid input failed to decode")
+            decode_slice_avx2(config, &enc, &mut dec).expect("valid input failed to decode")
         };
         assert_eq!(&dec[..dec_len], &input[..], "decode mismatch at len {len}");
     }
@@ -1204,7 +1206,7 @@ mod miri_avx2_coverage {
         ] {
             let mut input = vec![b'A'; len];
             input[bad_at] = b'$';
-            let res = unsafe { decode_slice_avx2(&config, &input, dst.as_mut_ptr()) };
+            let res = unsafe { decode_slice_avx2(&config, &input, &mut dst) };
             assert!(res.is_err(), "missed invalid byte in {where_}");
         }
     }
@@ -1230,20 +1232,19 @@ mod avx2_decode_lut_exhaustive {
     /// by the fast path) followed by 4 valid filler bytes (pushed to the
     /// scalar tail), and check that `decode_slice_avx2` agrees with the
     /// scalar decoder on both validity and the decoded value.
+    #[allow(clippy::trivially_copy_pass_by_ref)]
     fn check_all_byte_values(config: &Config) {
         for candidate in 0u8..=255 {
             let mut input = [candidate; 36];
             input[32..].copy_from_slice(b"AAAA");
 
             let mut avx2_out = [0u8; 64];
-            let avx2_result = unsafe { decode_slice_avx2(config, &input, avx2_out.as_mut_ptr()) };
+            let avx2_result = unsafe { decode_slice_avx2(config, &input, &mut avx2_out) };
 
             // Oracle: the first 32 bytes decoded on their own via the scalar
-            // path (already covered by its own dedicated tests/Kani proofs).
+            // path (already covered by its own dedicated tests).
             let mut scalar_out = [0u8; 64];
-            let scalar_result = unsafe {
-                crate::scalar::decode_slice_unsafe(config, &input[..32], scalar_out.as_mut_ptr())
-            };
+            let scalar_result = crate::scalar::decode_slice(config, &input[..32], &mut scalar_out);
 
             match scalar_result {
                 Ok(scalar_len) => {
@@ -1308,6 +1309,7 @@ mod avx2_encode_length_sweep {
     use super::*;
     use base64::engine::general_purpose::{STANDARD as REF_STANDARD, URL_SAFE as REF_URL_SAFE};
 
+    #[allow(clippy::trivially_copy_pass_by_ref)]
     fn check(config: &Config, oracle: &impl base64::Engine, len: usize) {
         let input: Vec<u8> = (0..len)
             .map(|i| u8::try_from((i * 37 + 11) % 256).expect("value masked to fit in u8"))
@@ -1319,7 +1321,7 @@ mod avx2_encode_length_sweep {
         // exact `Engine::encoded_len` (padding doesn't matter here, we only
         // compare the encoded prefix).
         let mut dst = vec![0u8; len * 2 + 64];
-        unsafe { encode_slice_avx2(config, &input, dst.as_mut_ptr()) };
+        unsafe { encode_slice_avx2(config, &input, &mut dst) };
 
         assert_eq!(
             &dst[..expected.len()],

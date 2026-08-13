@@ -69,9 +69,11 @@ unsafe fn vmadd_s32(a: int16x8_t, b: int16x8_t) -> int32x4_t {
 // ======================================================================
 
 #[target_feature(enable = "neon")]
-pub(crate) unsafe fn encode_slice_neon(config: &Config, input: &[u8], mut dst: *mut u8) {
+pub(crate) unsafe fn encode_slice_neon(config: &Config, input: &[u8], dst_slice: &mut [u8]) {
     let len = input.len();
     let mut src = input.as_ptr();
+    let dst_start = dst_slice.as_mut_ptr();
+    let mut dst = dst_start;
 
     // Shuffle: rearrange 12 input bytes into positions for 6-bit extraction
     let shuffle = unsafe {
@@ -178,7 +180,8 @@ pub(crate) unsafe fn encode_slice_neon(config: &Config, input: &[u8], mut dst: *
     // --- Scalar fallback for tail ---
     let processed_len = unsafe { src.offset_from(input.as_ptr()) }.cast_unsigned();
     if processed_len < len {
-        unsafe { scalar::encode_slice_unsafe(config, &input[processed_len..], dst) };
+        let out_off = unsafe { dst.offset_from(dst_start) }.cast_unsigned();
+        scalar::encode_slice(config, &input[processed_len..], &mut dst_slice[out_off..]);
     }
 }
 
@@ -282,11 +285,12 @@ unsafe fn decode_constants_neon(config: &Config) -> DecodeConstantsNeon {
 pub(crate) unsafe fn decode_slice_neon(
     config: &Config,
     input: &[u8],
-    mut dst: *mut u8,
+    dst_slice: &mut [u8],
 ) -> Result<usize, Error> {
     let len = input.len();
     let mut src = input.as_ptr();
-    let dst_start = dst;
+    let dst_start = dst_slice.as_mut_ptr();
+    let mut dst = dst_start;
 
     let DecodeConstantsNeon {
         lut_hi_nibble,
@@ -406,34 +410,32 @@ pub(crate) unsafe fn decode_slice_neon(
         dst = unsafe { dst.add(12) };
     }
 
-    unsafe { decode_scalar_tail(config, input, src, dst, dst_start) }
+    let dst_off = unsafe { dst.offset_from(dst_start) }.cast_unsigned();
+    unsafe { decode_scalar_tail(config, input, src, dst_slice, dst_off) }
 }
 
 /// Decodes any bytes left over after the vectorized main/tail loops via the
 /// scalar fallback, then returns the total number of bytes written.
 ///
+/// `dst_off` is how many bytes the SIMD loops already wrote into `dst_slice`.
+///
 /// # Safety
-/// `src` must point within `input`, and `dst`/`dst_start` must satisfy the
-/// same contract as [`scalar::decode_slice_unsafe`].
+/// `src` must point within `input`.
 unsafe fn decode_scalar_tail(
     config: &Config,
     input: &[u8],
     src: *const u8,
-    mut dst: *mut u8,
-    dst_start: *mut u8,
+    dst_slice: &mut [u8],
+    dst_off: usize,
 ) -> Result<usize, Error> {
     let processed_len = unsafe { src.offset_from(input.as_ptr()) }.cast_unsigned();
     if processed_len < input.len() {
-        dst = unsafe {
-            dst.add(scalar::decode_slice_unsafe(
-                config,
-                &input[processed_len..],
-                dst,
-            )?)
-        };
+        let written =
+            scalar::decode_slice(config, &input[processed_len..], &mut dst_slice[dst_off..])?;
+        Ok(dst_off + written)
+    } else {
+        Ok(dst_off)
     }
-
-    Ok(unsafe { dst.offset_from(dst_start) }.cast_unsigned())
 }
 
 #[cfg(all(test, miri))]
@@ -456,7 +458,7 @@ mod miri_neon_coverage {
         let mut dst = vec![0u8; expected.len() * 2];
 
         unsafe {
-            encode_slice_neon(config, &input, dst.as_mut_ptr());
+            encode_slice_neon(config, &input, &mut dst);
         }
 
         let result = &dst[..expected.len()];
@@ -474,7 +476,7 @@ mod miri_neon_coverage {
         let mut dst = vec![0u8; original_len + 64];
 
         let len = unsafe {
-            decode_slice_neon(config, encoded_bytes, dst.as_mut_ptr())
+            decode_slice_neon(config, encoded_bytes, &mut dst)
                 .expect("Valid input failed to decode")
         };
 
@@ -573,7 +575,7 @@ mod miri_neon_coverage {
         let input = b"-_-_-_-_-_-_-_-_"; // 16 bytes
         let mut dst = [0u8; 16];
         unsafe {
-            decode_slice_neon(&config, input, dst.as_mut_ptr()).unwrap();
+            decode_slice_neon(&config, input, &mut dst).unwrap();
         }
     }
 
@@ -592,19 +594,19 @@ mod miri_neon_coverage {
         // Error in Quad Loop
         let mut bad_input_64 = vec![b'A'; 64];
         bad_input_64[63] = b'$';
-        let res = unsafe { decode_slice_neon(&config, &bad_input_64, dst.as_mut_ptr()) };
+        let res = unsafe { decode_slice_neon(&config, &bad_input_64, &mut dst) };
         assert!(res.is_err(), "Failed to catch error in Quad Loop");
 
         // Error in Single Loop
         let mut bad_input_16 = vec![b'A'; 16];
         bad_input_16[15] = b'?';
-        let res = unsafe { decode_slice_neon(&config, &bad_input_16, dst.as_mut_ptr()) };
+        let res = unsafe { decode_slice_neon(&config, &bad_input_16, &mut dst) };
         assert!(res.is_err(), "Failed to catch error in Single Loop");
 
         // Error in Quad Loop (first byte)
         let mut bad_input_64_first = vec![b'A'; 64];
         bad_input_64_first[0] = b'$';
-        let res = unsafe { decode_slice_neon(&config, &bad_input_64_first, dst.as_mut_ptr()) };
+        let res = unsafe { decode_slice_neon(&config, &bad_input_64_first, &mut dst) };
         assert!(
             res.is_err(),
             "Failed to catch error in Quad Loop first byte"
@@ -613,7 +615,7 @@ mod miri_neon_coverage {
         // Error in Scalar Fallback
         let mut bad_input_17 = vec![b'A'; 17];
         bad_input_17[16] = b'?';
-        let res = unsafe { decode_slice_neon(&config, &bad_input_17, dst.as_mut_ptr()) };
+        let res = unsafe { decode_slice_neon(&config, &bad_input_17, &mut dst) };
         assert!(res.is_err(), "Failed to catch error in Scalar Fallback");
     }
 
@@ -632,13 +634,13 @@ mod miri_neon_coverage {
             let expected = STANDARD.encode(&input);
             let mut enc = vec![0u8; expected.len() * 2];
             unsafe {
-                encode_slice_neon(&config, &input, enc.as_mut_ptr());
+                encode_slice_neon(&config, &input, &mut enc);
             }
             let encoded = &enc[..expected.len()];
             assert_eq!(std::str::from_utf8(encoded).unwrap(), expected);
 
             let mut dec = vec![0u8; len + 64];
-            let dec_len = unsafe { decode_slice_neon(&config, encoded, dec.as_mut_ptr()).unwrap() };
+            let dec_len = unsafe { decode_slice_neon(&config, encoded, &mut dec).unwrap() };
             assert_eq!(&dec[..dec_len], &input, "Roundtrip len {len}");
         }
     }
@@ -665,7 +667,7 @@ mod miri_neon_coverage {
             let encoded = STANDARD_NO_PAD.encode(&input_bytes);
             let mut dst = vec![0u8; len + 64];
             let dec_len = unsafe {
-                decode_slice_neon(&config, encoded.as_bytes(), dst.as_mut_ptr()).unwrap()
+                decode_slice_neon(&config, encoded.as_bytes(), &mut dst).unwrap()
             };
             assert_eq!(&dst[..dec_len], &input_bytes, "No-pad decode len {len}");
         }
