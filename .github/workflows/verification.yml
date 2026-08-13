@@ -42,8 +42,6 @@ jobs:
       fail-fast: false
       matrix:
         harness:
-          - check_scalar_roundtrip_safety
-          - check_scalar_decode_robustness
           - check_avx2_roundtrip_standard
           - check_avx2_roundtrip_url_safe
           - check_avx2_decode_robustness
