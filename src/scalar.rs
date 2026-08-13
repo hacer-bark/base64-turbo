@@ -375,9 +375,12 @@ mod kani_verification_scalar {
 
     /// **Proof 1: Roundtrip Correctness & Safety**
     ///
-    /// Verifies that `Decode(Encode(X)) == X` for the critical induction length.
-    /// Since this length triggers all unique logic branches (Loop, Tail-Block, Tail-Partial),
-    /// proving this implies safety for any N.
+    /// Verifies that `Decode(Encode(X)) == X` for the critical induction length,
+    /// over all possible input bytes at that length.
+    ///
+    /// This length triggers every unique logic branch (Loop, Tail-Block, Tail-Partial).
+    /// Extending the result to arbitrary N is an argument about the loop's fixed stride,
+    /// made by hand and documented in the README — Kani checks the base case, not the step.
     #[kani::proof]
     fn check_scalar_roundtrip_safety() {
         // 1. Symbolic Config

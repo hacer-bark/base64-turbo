@@ -11,13 +11,7 @@ readme = "README.md"
 authors = ["Hacer"]
 keywords = ["base64", "simd", "avx512", "neon", "encoding"]
 categories = ["encoding", "hardware-support", "no-std", "web-programming"]
-exclude = [
-    ".github",
-    ".gitignore",
-    "benches/results/*",
-    "benches/img/*",
-    "docs/*",
-]
+exclude = ["benches/scripts/", "benches/results/"]
 
 [features]
 default = ["std", "simd", "neon"]
@@ -29,7 +23,7 @@ neon = []
 [dev-dependencies]
 rand = "0.10"
 criterion = { version = "0.8", features = ["html_reports"] }
-base64 = "0.22"
+base64 = "0.23"
 base64-simd = "0.8"
 
 [lints.rust]

@@ -5,18 +5,17 @@
 //! [![Kani Verified](https://img.shields.io/github/actions/workflow/status/hacer-bark/base64-turbo/verification.yml?label=Kani%20Verified)](https://github.com/hacer-bark/base64-turbo/actions/workflows/verification.yml)
 //! [![MIRI Verified](https://img.shields.io/github/actions/workflow/status/hacer-bark/base64-turbo/miri.yml?label=MIRI%20Verified)](https://github.com/hacer-bark/base64-turbo/actions/workflows/miri.yml)
 //!
-//! **The fastest Base64 implementation we're aware of that is formally verified memory-safe.**
+//! **A SIMD Base64 implementation whose `unsafe` paths are checked by a model checker, not just by review.**
 //!
 //! `base64-turbo` is a production-grade library engineered for high-throughput systems where CPU cycles are scarce and Undefined Behavior (UB) is unacceptable.
 //!
-//! "Memory-safe" here means something concrete: the `unsafe` SIMD paths are checked by the
-//! [Kani](https://github.com/model-checking/kani) model checker (mathematical proof, not testing)
-//! and [MIRI](https://github.com/rust-lang/miri) (a strict UB interpreter), on top of `MemorySanitizer`
-//! audits and continuous fuzzing — see the "Safety & Verification" section below for exactly what is
-//! and isn't covered per architecture. This crate is **not** faster than unchecked C/assembly
-//! implementations and does not claim to be; within the narrower set of crates combining
-//! SIMD-accelerated Base64 with Kani + MIRI verification, we are not aware of another one that
-//! reaches AVX512 speeds.
+//! "Memory-safe" here is a specific, bounded claim: the `unsafe` SIMD paths are checked by the
+//! [Kani](https://github.com/model-checking/kani) model checker and [MIRI](https://github.com/rust-lang/miri)
+//! (a strict UB interpreter), on top of `MemorySanitizer` audits and continuous fuzzing — see the
+//! "Safety & Verification" section below for what each layer does and does not cover per
+//! architecture. This crate is **not** faster than unchecked C/assembly implementations and does
+//! not claim to be; within the narrower set of crates combining SIMD-accelerated Base64 with
+//! Kani + MIRI verification, we are not aware of another one that reaches AVX512 speeds.
 //!
 //! This crate provides runtime CPU detection to utilize **AVX512** or **AVX2** intrinsics on `x86_64`,
 //! and compile-time **NEON** acceleration on `aarch64`.
@@ -76,12 +75,18 @@
 //! This crate utilizes `unsafe` code for SIMD intrinsics and pointer arithmetic to achieve maximum performance.
 //! To ensure safety, we employ a "Swiss Cheese" model of verification layers:
 //!
-//! *   **Formal Verification (Kani):** Mathematical proofs ensure the kernels never read out of bounds or panic on any input (0..∞ bytes).
-//! *   **MIRI Audited:** All SIMD paths (AVX512, AVX2, NEON) and Scalar fallbacks are verified with **MIRI** (Undefined Behavior checker) in CI to ensure strict memory safety.
+//! *   **Model checking (Kani):** For the Scalar, AVX2 and plain AVX512 kernels, Kani explores
+//!     *every possible input byte value* at lengths chosen to exercise each loop tier and the
+//!     scalar-tail handoff, proving the kernel does not panic, does not read out of bounds, and
+//!     round-trips exactly. Generalizing from those lengths to arbitrary `N` rests on a documented
+//!     human argument about the loop stride, not on a machine-checked induction — the README
+//!     spells this out, along with the AVX512-VBMI/NEON gaps and the harnesses' own limits.
+//! *   **MIRI Audited:** All SIMD paths (AVX512, AVX2, NEON) and Scalar fallbacks are run under
+//!     **MIRI** (Undefined Behavior checker) in CI, covering every distinct code path at least once.
 //! *   **`MemorySanitizer`:** The codebase is audited with `MSan` to prevent logic errors derived from reading uninitialized memory.
 //! *   **Fuzzing:** The codebase is fuzz-tested via `cargo-fuzz` (2.5B+ iterations).
 //!
-//! **[Learn More](https://github.com/hacer-bark/base64-turbo/blob/main/docs/verification.md)**: Details on our threat model and formal verification strategy.
+//! **[Learn More](https://github.com/hacer-bark/base64-turbo#safety--verification)**: exactly what is proven, and what isn't.
 
 #![cfg_attr(not(any(feature = "std", test)), no_std)]
 #![doc(issue_tracker_base_url = "https://github.com/hacer-bark/base64-turbo/issues/")]
@@ -93,6 +98,12 @@
 #![allow(clippy::cast_ptr_alignment)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
+
+// The README's examples are compiled and run as doctests so they can't drift from the
+// real API. Not attached to the crate docs — this is a test harness, not documentation.
+#[cfg(all(doctest, feature = "std"))]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;
 
 // Scalar implementation
 mod scalar;

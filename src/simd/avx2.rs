@@ -690,7 +690,7 @@ mod kani_verification_avx2 {
         }
     }
 
-    /// **Proof 2: Decoder Robustness & Induction**
+    /// **Proof 2: Decoder Robustness**
     ///
     /// Verifies that `decode_slice_avx2`:
     /// 1. Accepts ANY `DEC_INDUCTION_LEN` bytes of garbage input.
