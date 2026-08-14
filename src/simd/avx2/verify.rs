@@ -347,6 +347,7 @@ mod kani_verification_avx2 {
     #[kani::stub(_mm256_testz_si256, m::_mm256_testz_si256_stub)]
     #[kani::stub(_mm256_maddubs_epi16, m::_mm256_maddubs_epi16_stub)]
     #[kani::stub(_mm256_madd_epi16, m::_mm256_madd_epi16_stub)]
+    #[kani::stub(_mm256_mullo_epi16, m::_mm256_mullo_epi16_stub)]
     #[kani::stub(_mm256_permutevar8x32_epi32, m::_mm256_permutevar8x32_epi32_stub)]
     fn check_avx2_roundtrip_standard() {
         roundtrip_kernel(false);
@@ -358,6 +359,7 @@ mod kani_verification_avx2 {
     #[kani::stub(_mm256_testz_si256, m::_mm256_testz_si256_stub)]
     #[kani::stub(_mm256_maddubs_epi16, m::_mm256_maddubs_epi16_stub)]
     #[kani::stub(_mm256_madd_epi16, m::_mm256_madd_epi16_stub)]
+    #[kani::stub(_mm256_mullo_epi16, m::_mm256_mullo_epi16_stub)]
     #[kani::stub(_mm256_permutevar8x32_epi32, m::_mm256_permutevar8x32_epi32_stub)]
     fn check_avx2_roundtrip_url_safe() {
         roundtrip_kernel(true);
@@ -535,6 +537,32 @@ pub(super) mod intrinsic_models {
         unsafe { transmute(dst) }
     }
 
+    // STUB: _mm256_mullo_epi16
+    // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm256_mullo_epi16
+    pub(super) unsafe fn _mm256_mullo_epi16_stub(a: __m256i, b: __m256i) -> __m256i {
+        let a: [i16; 16] = unsafe { transmute(a) };
+        let b: [i16; 16] = unsafe { transmute(b) };
+        let mut dst = [0i16; 16];
+
+        // FOR j := 0 to 15
+        for j in 0..16 {
+            // i := j*16
+            let i = j;
+
+            // tmp[31:0] := a[i+15:i] * b[i+15:i]
+            // dst[i+15:i] := tmp[15:0]
+            // (Keeping the low 16 bits of the product is a wrapping 16-bit
+            // multiply; the real instruction discards the overflow that Kani's
+            // `simd_mul` otherwise flags.)
+            dst[i] = a[i].wrapping_mul(b[i]);
+        }
+        // ENDFOR
+
+        // dst[MAX:256] := 0
+
+        unsafe { transmute(dst) }
+    }
+
     // STUB: _mm256_madd_epi16
     // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm256_madd_epi16
     pub(super) unsafe fn _mm256_madd_epi16_stub(a: __m256i, b: __m256i) -> __m256i {
@@ -649,6 +677,7 @@ mod avx2_stub_equivalence {
         same!(_mm256_subs_epu8, _mm256_subs_epu8_stub, bytes);
         same!(_mm256_maddubs_epi16, _mm256_maddubs_epi16_stub, bytes);
         same!(_mm256_madd_epi16, _mm256_madd_epi16_stub, bytes);
+        same!(_mm256_mullo_epi16, _mm256_mullo_epi16_stub, bytes);
         same!(
             _mm256_permutevar8x32_epi32,
             _mm256_permutevar8x32_epi32_stub,

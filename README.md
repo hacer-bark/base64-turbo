@@ -11,7 +11,7 @@
 
 *   **x86_64:** AVX512 (incl. a VBMI fast path) or AVX2, via runtime CPU detection.
 *   **ARM (aarch64):** NEON, via compile-time dispatch — no detection overhead.
-*   **Other:** An optimized SWAR scalar kernel.
+*   **Other:** An optimized table-driven scalar kernel, in 100% safe Rust.
 
 ### What we actually claim
 
@@ -184,7 +184,7 @@ AVX512-VBMI has no proof at all: it depends on `vpermb` / `vpermi2b`, for which 
 
 The design goal is maximum throughput *within* Rust's safety guarantees, by trading byte-at-a-time lookup tables (data-dependent, branch-heavy) for vectorized data movement: batch 32–64 bytes per register, and handle padding and error detection with bitmasks *after* the vector op so the hot loop stays branchless.
 
-**Scalar (SWAR).** Casts to `u64` and builds indices with shifts and masks, moving 8 bytes per instruction instead of one. `unsafe` pointer casts, bounded by the Kani proofs.
+**Scalar (wide tables).** 100% safe Rust — the module carries `#![forbid(unsafe_code)]`, so every write is bounds-checked rather than resting on a pointer contract. Both kernels retire more loads than arithmetic, so both tables are widened to cut lookups per byte: encode maps 12 input bits directly to the two characters they encode (8 KiB per alphabet, 4 lookups per 6-byte block instead of 8), and decode folds each character's `<< 18 / << 12 / << 6` position shift into the table itself (4 × 1 KiB per alphabet), so a 4-character group is four loads OR-ed together and validation falls out of the same OR. Costs 24 KiB of `.rodata`.
 
 **AVX2.** Tuned for execution-port balance: `vpshufb` shuffles contend for port 5, so we interleave AND/OR/shift work that can issue on ports 0/1/5 to keep the shuffle port from becoming the bottleneck. AVX2's 256-bit registers behave as two independent 128-bit lanes, which a sliding bit-stream like Base64 must cross — we bridge that with an offset load plus a permute ("lane stitching") instead of dropping to scalar.
 

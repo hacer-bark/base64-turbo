@@ -3,9 +3,23 @@
 //! This module is **100% safe Rust**: `unsafe` is forbidden crate-wide for this
 //! file (see the inner attribute below). Both primitives take a `&mut [u8]`
 //! destination, so every write is bounds-checked at compile time / runtime
-//! rather than relying on a caller-upheld pointer contract. Index math on the
-//! alphabet and decode tables is masked into range (`& 0x3F`, or a `u8` index
-//! into a 256-entry table), so those lookups compile to bounds-check-free code.
+//! rather than relying on a caller-upheld pointer contract. Every table index is
+//! masked into range (`& 0x3F`, `& 0xFFF`, or a `u8` index into a 256-entry
+//! table), so those lookups compile to bounds-check-free code.
+//!
+//! Both kernels are table-driven and limited by retired *loads* rather than by
+//! arithmetic, so both tables are widened to cut the number of lookups per byte:
+//!
+//! * encode: one 8 KiB table per alphabet maps 12 input bits straight to the two
+//!   output characters they encode, halving the lookups (8 -> 4 per 6-byte
+//!   block).
+//! * decode: four 1 KiB tables per alphabet fold the `<< 18 / << 12 / << 6`
+//!   position shifts into the lookup itself, so decoding a 4-character group is
+//!   four loads OR-ed together, with validation falling out of the same OR.
+//!
+//! That costs 24 KiB of `.rodata` and roughly doubles both kernels. The narrow
+//! `*_ALPHABET` / `*_DECODE_TABLE` tables are still used by the decode tail,
+//! where a handful of bytes cannot amortize a wide table's cache footprint.
 
 #![forbid(unsafe_code)]
 // The rest of the crate threads `&Config` everywhere (dispatch + SIMD); keep the
@@ -16,6 +30,55 @@ use crate::{
     Config, Error, STANDARD_ALPHABET, STANDARD_DECODE_TABLE, URL_SAFE_ALPHABET,
     URL_SAFE_DECODE_TABLE,
 };
+
+/// Maps a 12-bit value to the two Base64 characters it encodes, packed
+/// little-endian so the first character lands in the low byte.
+const fn encode_pair_table(alphabet: &[u8; 64]) -> [u16; 4096] {
+    let mut table = [0u16; 4096];
+    let mut i = 0;
+    while i < 4096 {
+        table[i] = (alphabet[i >> 6] as u16) | ((alphabet[i & 0x3F] as u16) << 8);
+        i += 1;
+    }
+    table
+}
+
+static STANDARD_ENCODE_PAIRS: [u16; 4096] = encode_pair_table(STANDARD_ALPHABET);
+static URL_SAFE_ENCODE_PAIRS: [u16; 4096] = encode_pair_table(URL_SAFE_ALPHABET);
+
+/// Reverse lookup with the 6-bit index pre-shifted into its position within a
+/// 24-bit group. Invalid characters map to `u32::MAX`, so OR-ing a whole group
+/// together pushes the result above `0x00FF_FFFF` if any character was bad.
+const fn decode_shift_table(alphabet: &[u8; 64], shift: u32) -> [u32; 256] {
+    let mut table = [u32::MAX; 256];
+    let mut i: u32 = 0;
+    while i < 64 {
+        table[alphabet[i as usize] as usize] = i << shift;
+        i += 1;
+    }
+    table
+}
+
+/// The four position tables as one array, indexed by a character's position
+/// within its 4-character group. Keeping them contiguous matters: as four
+/// separate statics, selecting the alphabet costs four `cmov`s that LLVM hoists
+/// into the function entry even when the fast loop never runs, which is pure
+/// overhead for inputs of a few characters. As one array it is a single `cmov`
+/// plus constant offsets.
+const fn decode_shift_tables(alphabet: &[u8; 64]) -> [[u32; 256]; 4] {
+    [
+        decode_shift_table(alphabet, 18),
+        decode_shift_table(alphabet, 12),
+        decode_shift_table(alphabet, 6),
+        decode_shift_table(alphabet, 0),
+    ]
+}
+
+static STANDARD_DECODE_SHIFTED: [[u32; 256]; 4] = decode_shift_tables(STANDARD_ALPHABET);
+static URL_SAFE_DECODE_SHIFTED: [[u32; 256]; 4] = decode_shift_tables(URL_SAFE_ALPHABET);
+
+/// Largest value a valid 4-character group can OR to (24 significant bits).
+const GROUP_MAX: u32 = 0x00FF_FFFF;
 
 /// Encodes `input` into Base64, writing the result into `dst`.
 ///
@@ -28,12 +91,15 @@ use crate::{
 /// `Engine::encode`), which size the buffer automatically.
 #[inline]
 pub(crate) fn encode_slice(config: &Config, input: &[u8], dst: &mut [u8]) {
-    // Select the alphabet based on configuration. This branch predicts
-    // perfectly since config doesn't change during the loop.
-    let alphabet = if config.url_safe {
-        URL_SAFE_ALPHABET
+    // Select the table based on configuration. This branch predicts perfectly
+    // since config doesn't change during the loop. The tail below reads its
+    // characters out of this same table so that this stays the *only* selection
+    // in the function; a second one is hoisted into the entry block by LLVM and
+    // measurably slows down one- and two-byte inputs, which do no other work.
+    let pairs: &[u16; 4096] = if config.url_safe {
+        &URL_SAFE_ENCODE_PAIRS
     } else {
-        STANDARD_ALPHABET
+        &STANDARD_ENCODE_PAIRS
     };
 
     let len = input.len();
@@ -49,23 +115,23 @@ pub(crate) fn encode_slice(config: &Config, input: &[u8], dst: &mut [u8]) {
     // Process 6 input bytes -> 8 output bytes per iteration.
     for (chunk, out) in in_main.chunks_exact(6).zip(out_main.chunks_exact_mut(8)) {
         // Read two overlapping big-endian u32s to avoid complex shifting logic.
-        let reg_a = u32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
-        let reg_b = u32::from_be_bytes([chunk[2], chunk[3], chunk[4], chunk[5]]);
+        // `first_chunk`/`last_chunk` (bytes 0..4 and 2..6 of a 6-byte chunk) are
+        // what let LLVM emit two 32-bit loads here; indexing the chunk
+        // byte-by-byte instead compiles to a `movzbl`-and-shift pile. Neither
+        // can be `None`, and both fold away once the chunk length is known.
+        let reg_a = u32::from_be_bytes(chunk.first_chunk::<4>().copied().unwrap_or_default());
+        let reg_b = u32::from_be_bytes(chunk.last_chunk::<4>().copied().unwrap_or_default());
 
         let n1 = (reg_a >> 8) as usize; // Bytes 0, 1, 2
         let n2 = (reg_b & 0x00_FF_FF_FF) as usize; // Bytes 3, 4, 5
 
-        // Map indices to Base64 characters and pack into a single u64.
-        let pack = u64::from(alphabet[(n1 >> 18) & 0x3F])
-            | (u64::from(alphabet[(n1 >> 12) & 0x3F]) << 8)
-            | (u64::from(alphabet[(n1 >> 6) & 0x3F]) << 16)
-            | (u64::from(alphabet[n1 & 0x3F]) << 24)
-            | (u64::from(alphabet[(n2 >> 18) & 0x3F]) << 32)
-            | (u64::from(alphabet[(n2 >> 12) & 0x3F]) << 40)
-            | (u64::from(alphabet[(n2 >> 6) & 0x3F]) << 48)
-            | (u64::from(alphabet[n2 & 0x3F]) << 56);
+        // Two 12-bit halves per group, two characters per lookup. Emitting two
+        // 32-bit stores rather than assembling one u64 keeps the OR chain short.
+        let lo = u32::from(pairs[n1 >> 12]) | (u32::from(pairs[n1 & 0xFFF]) << 16);
+        let hi = u32::from(pairs[n2 >> 12]) | (u32::from(pairs[n2 & 0xFFF]) << 16);
 
-        out.copy_from_slice(&pack.to_le_bytes());
+        out[0..4].copy_from_slice(&lo.to_le_bytes());
+        out[4..8].copy_from_slice(&hi.to_le_bytes());
     }
 
     // --- TAIL HANDLING ---
@@ -79,10 +145,7 @@ pub(crate) fn encode_slice(config: &Config, input: &[u8], dst: &mut [u8]) {
             | (usize::from(in_tail[ti + 1]) << 8)
             | usize::from(in_tail[ti + 2]);
 
-        let packed = u32::from(alphabet[(n >> 18) & 0x3F])
-            | (u32::from(alphabet[(n >> 12) & 0x3F]) << 8)
-            | (u32::from(alphabet[(n >> 6) & 0x3F]) << 16)
-            | (u32::from(alphabet[n & 0x3F]) << 24);
+        let packed = u32::from(pairs[n >> 12]) | (u32::from(pairs[n & 0xFFF]) << 16);
 
         out_tail[oi..oi + 4].copy_from_slice(&packed.to_le_bytes());
         ti += 3;
@@ -100,13 +163,18 @@ pub(crate) fn encode_slice(config: &Config, input: &[u8], dst: &mut [u8]) {
         };
         let n = (b0 << 16) | (b1 << 8);
 
-        // The first 2 characters are always present.
-        out_tail[oi] = alphabet[(n >> 18) & 0x3F];
-        out_tail[oi + 1] = alphabet[(n >> 12) & 0x3F];
+        // The first 2 characters are always present, and are exactly the pair
+        // that the top 12 bits of `n` encode.
+        let first_two = pairs[n >> 12].to_le_bytes();
+        out_tail[oi] = first_two[0];
+        out_tail[oi + 1] = first_two[1];
 
         // Handle the 3rd and 4th characters (data vs padding).
         if rem == 2 {
-            out_tail[oi + 2] = alphabet[(n >> 6) & 0x3F];
+            // The character for the 6-bit index `(n >> 6) & 0x3F`. A pair index
+            // of `index << 6` places that index in the pair's *first* slot,
+            // so the low byte of the entry is the character wanted here.
+            out_tail[oi + 2] = pairs[n & 0xFC0].to_le_bytes()[0];
             if config.padding {
                 out_tail[oi + 3] = b'=';
             }
@@ -136,59 +204,57 @@ pub(crate) fn decode_slice(config: &Config, input: &[u8], dst: &mut [u8]) -> Res
     }
 
     // The table maps valid characters to 0..=63 and invalid characters to 0xFF.
+    // It is only needed by the tail; the fast loop uses the pre-shifted tables.
     let table = if config.url_safe {
         &URL_SAFE_DECODE_TABLE
     } else {
         &STANDARD_DECODE_TABLE
     };
-
     // Fast loop bounds: process 8 input bytes -> 6 output bytes per iteration,
     // reserving the last 4 input bytes so the tail can handle padding carefully.
     let len_safe = len.saturating_sub(4);
     let len_fast = len_safe - (len_safe % 8);
+    // `len_fast <= len - 4`, so this is always within `estimate_decoded_len`.
+    let out_fast = len_fast / 8 * 6;
 
-    let mut i = 0; // input offset
-    let mut o = 0; // output offset
+    let shifted: &[[u32; 256]; 4] = if config.url_safe {
+        &URL_SAFE_DECODE_SHIFTED
+    } else {
+        &STANDARD_DECODE_SHIFTED
+    };
 
     // --- FAST LOOP (Middle Chunks) ---
-    while i < len_fast {
-        // Load 8 bytes and look them up in the table.
-        let d0 = table[usize::from(input[i])];
-        let d1 = table[usize::from(input[i + 1])];
-        let d2 = table[usize::from(input[i + 2])];
-        let d3 = table[usize::from(input[i + 3])];
-        let d4 = table[usize::from(input[i + 4])];
-        let d5 = table[usize::from(input[i + 5])];
-        let d6 = table[usize::from(input[i + 6])];
-        let d7 = table[usize::from(input[i + 7])];
+    // Slicing both sides up front and pairing them with `chunks_exact` hoists
+    // every bounds check out of the loop; indexing `input[i + n]` and
+    // `dst[o..o + 6]` per iteration leaves two compares and two branches behind
+    // instead.
+    for (chars, out) in input[..len_fast]
+        .chunks_exact(8)
+        .zip(dst[..out_fast].chunks_exact_mut(6))
+    {
+        // Each lookup already carries its position shift, so a group is just
+        // four loads OR-ed together. Invalid characters contribute `u32::MAX`,
+        // lifting the result above the 24 bits a valid group can occupy.
+        let n1 = shifted[0][usize::from(chars[0])]
+            | shifted[1][usize::from(chars[1])]
+            | shifted[2][usize::from(chars[2])]
+            | shifted[3][usize::from(chars[3])];
+        let n2 = shifted[0][usize::from(chars[4])]
+            | shifted[1][usize::from(chars[5])]
+            | shifted[2][usize::from(chars[6])]
+            | shifted[3][usize::from(chars[7])];
 
-        // Valid characters map to 0..=63 (00xxxxxx); invalid map to 0xFF.
-        // OR-ing accumulates the high bits, so any invalid char sets 0xC0.
-        if (d0 | d1 | d2 | d3 | d4 | d5 | d6 | d7) & 0xC0 != 0 {
+        if (n1 | n2) > GROUP_MAX {
             return Err(Error::InvalidCharacter);
         }
 
-        // Pack each group of 4x 6-bit indices into a 24-bit value.
-        let n1 =
-            (u32::from(d0) << 18) | (u32::from(d1) << 12) | (u32::from(d2) << 6) | u32::from(d3);
-        let n2 =
-            (u32::from(d4) << 18) | (u32::from(d5) << 12) | (u32::from(d6) << 6) | u32::from(d7);
-
-        // Write exactly 6 bytes (3 per group), in one bounds-checked copy.
-        dst[o..o + 6].copy_from_slice(&[
-            ((n1 >> 16) & 0xFF) as u8,
-            ((n1 >> 8) & 0xFF) as u8,
-            (n1 & 0xFF) as u8,
-            ((n2 >> 16) & 0xFF) as u8,
-            ((n2 >> 8) & 0xFF) as u8,
-            (n2 & 0xFF) as u8,
-        ]);
-
-        i += 8;
-        o += 6;
+        // Both groups land in the top 48 bits, so one byte-swap emits all 6
+        // output bytes in order.
+        let packed = ((u64::from(n1) << 40) | (u64::from(n2) << 16)).to_be_bytes();
+        out.copy_from_slice(&packed[..6]);
     }
 
-    decode_tail(config, table, input, i, dst, o)
+    decode_tail(config, table, input, len_fast, dst, out_fast)
 }
 
 /// Decodes the final input bytes (from offset `i`) of a scalar decode pass,
