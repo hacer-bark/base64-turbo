@@ -97,7 +97,9 @@
 // purely to call `_mm*_loadu_*`/`_mm*_storeu_*` intrinsics, which are explicitly
 // documented to work on any alignment ("u" = unaligned). Clippy cannot see through
 // the intrinsic to know alignment isn't required here, so this lint is a crate-wide
-// false positive for our SIMD code paths.
+// false positive for our SIMD code paths. The one exception, the AVX2 encoder's
+// non-temporal `_mm_stream_si128` store, does require 16-byte alignment and checks
+// for it at run time before taking that path.
 #![allow(clippy::cast_ptr_alignment)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 #![cfg_attr(docsrs, feature(doc_cfg))]

@@ -28,7 +28,7 @@ jobs:
       - name: Run Kani
         uses: model-checking/kani-github-action@v1.1
         with:
-          args: '--jobs 2 --output-format=terse --harness check_enc_rounds_model --harness check_enc_first_block --harness check_enc_quad_step --harness check_enc_single_step --harness check_enc_tail_handoff --harness check_dec_quad_step --harness check_dec_single_step --harness check_dec_tail_handoff'
+          args: '--jobs 2 --output-format=terse --harness check_enc_rounds_model --harness check_enc_first_block --harness check_enc_wide_step --harness check_enc_single_step --harness check_enc_tail_handoff --harness check_dec_wide_step --harness check_dec_single_step --harness check_dec_tail_handoff'
 
       - name: Cleanup Artifacts
         if: always()

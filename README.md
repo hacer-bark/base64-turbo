@@ -118,7 +118,7 @@ BENCH_TARGET=turbo-buff cargo bench   # zero-alloc only
 | **NEON** | ✅ | ✅ | ❌ | ❌ |
 
 *   **Kani** — the model checker proves the kernels do not panic, do not read or write out of bounds, and round-trip exactly. For AVX2 the bounds result holds for *every* input length, by a machine-checked induction; for the other paths it holds at the lengths the harnesses pin. Details below.
-*   **MIRI** — checks for Undefined Behavior (strict provenance, alignment, OOB pointer arithmetic, data races) on the inputs it runs. Every distinct code path — single-vector loop, quad-vector loop, scalar tail — is exercised for Scalar, AVX2, AVX512 and AVX512-VBMI. This is branch coverage, not exhaustive input coverage.
+*   **MIRI** — checks for Undefined Behavior (strict provenance, alignment, OOB pointer arithmetic, data races) on the inputs it runs. Every distinct code path — single-vector loop, wide unrolled loop, scalar tail — is exercised for Scalar, AVX2, AVX512 and AVX512-VBMI. This is branch coverage, not exhaustive input coverage.
 *   **MSan** — the whole standard library is rebuilt with instrumentation (`-Z build-std -Z sanitizer=memory`) to confirm we never branch on or emit uninitialized memory, which matters given how much AVX512 masking we do.
 *   **Fuzzing** — 2.5B+ `cargo-fuzz` iterations across all paths, no crashes to date.
 
@@ -131,18 +131,18 @@ Kani is a bounded model checker, so a proof that runs the real kernel over symbo
 ```rust,ignore
 let done: usize = kani::any();              // ANY iteration, not iteration 0..n
 kani::assume(done >= 1 && done <= rounds);
-kani::assume(rounds - done >= 4);           // the quad loop's guard still holds
+kani::assume(rounds - done >= 8);           // the wide loop's guard still holds
 
 let (src_off, dst_off) = enc_state(done);
-assert!(src_off + 72 + 32 <= len);          // widest read in the body
-assert!(dst_off + 96 + 32 <= cap);          // widest write in the body
+assert!(src_off + 168 + 32 <= len);         // widest read in the body
+assert!(dst_off + 224 + 32 <= cap);         // widest write in the body
 
-assert_eq!((src_off + 96, dst_off + 128), enc_state(done + 4));  // step preserved
+assert_eq!((src_off + 192, dst_off + 256), enc_state(done + 8));  // step preserved
 ```
 
 That last line is the inductive step, machine-checked: an arbitrary state satisfying the invariant produces a successor that satisfies it too. With a base case (`check_enc_first_block`) and an exit case (`check_enc_tail_handoff`) either side of it, the result covers **every length a Rust slice can have**, and it costs the solver almost nothing because no vector ever appears. The decoder gets the same treatment, including the fact that `pack_and_store!` touches a 28-byte span while advancing only 24 — a 4-byte overhang past every block that is now proven to stay inside the caller's buffer instead of being assumed to.
 
-**The kernel proofs** then do what only symbolic bytes can: run the real code with `kani::any()` input to prove the character mapping, the validation LUTs and the absence of panics. Because the index proofs own the loop arithmetic, these no longer have to demonstrate any of it, so they only need to reach each distinct kernel once. That let us cut them down rather than grow them: the encoder harness went from 53 bytes to 37, the decoder from 69 to 37, and the 125-byte quad-tier roundtrip — by far the most expensive harness — was **deleted**, because the quad tier runs the same kernel as the single tier and everything that distinguishes it is offset arithmetic that is now proven for every iteration rather than one. Total solver time went down while the claim got stronger.
+**The kernel proofs** then do what only symbolic bytes can: run the real code with `kani::any()` input to prove the character mapping, the validation LUTs and the absence of panics. Because the index proofs own the loop arithmetic, these no longer have to demonstrate any of it, so they only need to reach each distinct kernel once. That let us cut them down rather than grow them: the encoder harness went from 53 bytes to 37, the decoder from 69 to 37, and the 125-byte wide-tier roundtrip — by far the most expensive harness — was **deleted**, because the wide tier runs the same kernel as the single tier and everything that distinguishes it is offset arithmetic that is now proven for every iteration rather than one. Total solver time went down while the claim got stronger.
 
 Destination buffers in those harnesses are sized to **exactly** what the public API guarantees (`encoded_len` for encode, `estimate_decoded_len` for decode), so a kernel that overruns its real output by even one byte fails the proof. Alphabets are split into separate harnesses rather than taken symbolically: two lean solver runs beat one that needs a bigger machine.
 
@@ -152,6 +152,7 @@ Two things, and they should be the first things an auditor attacks:
 
 1.  **The index proofs mirror the loop arithmetic; they do not execute it.** Roughly a dozen lines of model sit beside the real loops, each constant annotated with the operation it mirrors. If someone edits a stride without editing the model, the proofs keep passing. Treat those constants as part of the code.
 2.  **The proofs run against models of the AVX2 instructions, not the instructions.** Kani cannot execute SIMD, so each intrinsic is a Rust transcription of the Intel Intrinsics Guide pseudocode. That is now checked rather than trusted: `avx2_stub_equivalence` runs every model against the real instruction on real hardware under plain `cargo test`, over saturation and sign boundaries, shuffle-index patterns and deterministic noise. It cannot prove the models agree everywhere, but it catches transcription errors, which is the realistic failure mode.
+3.  **The AVX2 encoder's non-temporal store path is covered by hardware tests, not by Kani or MIRI.** It only engages above 4 MiB of input, and both tools are far too slow to reach that. It writes exactly the same bytes to exactly the same offsets as the ordinary path — the offset arithmetic the index proofs cover is shared — so what it adds is `_mm_stream_si128`'s 16-byte alignment requirement, which the kernel tests for at run time and `avx2_encode_non_temporal` exercises on both sides of the gate under `cargo test`.
 
 The same split has not yet been applied to AVX512, AVX512-VBMI or NEON — for those, the older caveats stand.
 

@@ -1,68 +1,63 @@
 use super::{PACK_L1, PACK_L2, PACK_SHUFFLE};
 use crate::{Config, Error};
+use core::hint::black_box;
 
 #[cfg(target_arch = "x86")]
 use std::arch::x86::{
-    __m128i, __m256i, _mm_storeu_si128, _mm256_add_epi8, _mm256_and_si256, _mm256_castsi256_si128,
-    _mm256_cmpeq_epi8, _mm256_cmpgt_epi8, _mm256_extracti128_si256, _mm256_loadu_si256,
-    _mm256_madd_epi16, _mm256_maddubs_epi16, _mm256_mulhi_epu16, _mm256_mullo_epi16,
-    _mm256_or_si256, _mm256_permutevar8x32_epi32, _mm256_set_epi8, _mm256_set1_epi8,
-    _mm256_set1_epi32, _mm256_setr_epi8, _mm256_setr_epi32, _mm256_shuffle_epi8, _mm256_srli_epi16,
-    _mm256_storeu_si256, _mm256_sub_epi8, _mm256_subs_epu8, _mm256_testz_si256,
+    __m128i, __m256i, _mm_sfence, _mm_storeu_si128, _mm_stream_si128, _mm256_add_epi8,
+    _mm256_and_si256, _mm256_castsi256_si128, _mm256_cmpeq_epi8, _mm256_cmpgt_epi8,
+    _mm256_extracti128_si256, _mm256_loadu_si256, _mm256_madd_epi16, _mm256_maddubs_epi16,
+    _mm256_mullo_epi16, _mm256_or_si256, _mm256_permutevar8x32_epi32, _mm256_set_epi8,
+    _mm256_set1_epi8, _mm256_set1_epi32, _mm256_setr_epi8, _mm256_setr_epi32, _mm256_setzero_si256,
+    _mm256_shuffle_epi8, _mm256_srli_epi16, _mm256_storeu_si256, _mm256_sub_epi8, _mm256_subs_epu8,
+    _mm256_testz_si256,
 };
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::{
-    __m128i, __m256i, _mm_storeu_si128, _mm256_add_epi8, _mm256_and_si256, _mm256_castsi256_si128,
-    _mm256_cmpeq_epi8, _mm256_cmpgt_epi8, _mm256_extracti128_si256, _mm256_loadu_si256,
-    _mm256_madd_epi16, _mm256_maddubs_epi16, _mm256_mulhi_epu16, _mm256_mullo_epi16,
-    _mm256_or_si256, _mm256_permutevar8x32_epi32, _mm256_set_epi8, _mm256_set1_epi8,
-    _mm256_set1_epi32, _mm256_setr_epi8, _mm256_setr_epi32, _mm256_shuffle_epi8, _mm256_srli_epi16,
-    _mm256_storeu_si256, _mm256_sub_epi8, _mm256_subs_epu8, _mm256_testz_si256,
+    __m128i, __m256i, _mm_sfence, _mm_storeu_si128, _mm_stream_si128, _mm256_add_epi8,
+    _mm256_and_si256, _mm256_castsi256_si128, _mm256_cmpeq_epi8, _mm256_cmpgt_epi8,
+    _mm256_extracti128_si256, _mm256_loadu_si256, _mm256_madd_epi16, _mm256_maddubs_epi16,
+    _mm256_mullo_epi16, _mm256_or_si256, _mm256_permutevar8x32_epi32, _mm256_set_epi8,
+    _mm256_set1_epi8, _mm256_set1_epi32, _mm256_setr_epi8, _mm256_setr_epi32, _mm256_setzero_si256,
+    _mm256_shuffle_epi8, _mm256_srli_epi16, _mm256_storeu_si256, _mm256_sub_epi8, _mm256_subs_epu8,
+    _mm256_testz_si256,
 };
 
-/// Encodes 32 raw input bytes (only the low 24, byte-shifted by 4, are
-/// logically consumed) into 32 Base64 characters.
+/// Input length from which the encoder switches to non-temporal stores.
+///
+/// Above it the input plus its 4/3-sized output no longer fit in a typical
+/// last-level cache, so the ordinary stores spend a third of the memory
+/// bandwidth on read-for-ownership traffic for lines that are then overwritten
+/// whole. Below it the output usually *is* reused from cache and bypassing it
+/// costs more than the RFO traffic saves; measured on a 9 MiB-L3 Coffee Lake,
+/// the crossover sits between 2 and 4 MiB.
+const NT_STORE_MIN_LEN: usize = 4 << 20;
+
+/// Rounds per iteration of the encoder's wide tier.
+const ENC_UNROLL: usize = 8;
+/// Vectors per iteration of the decoder's wide tier.
+const DEC_UNROLL: usize = 8;
+
+/// Precomputed AVX2 encode constants, factored out of [`encode_slice_avx2`] so
+/// they are materialized once per call rather than once per round.
 ///
 /// Credit: the reshuffle bit-extraction and single-LUT character mapping are
 /// Alfred Klomp's (`aklomp/base64`, BSD); see the README. The URL-safe
-/// `translate_lut` (only the `+`/`/` vs `-`/`_` deltas differ) was re-derived
+/// `translate` LUT (only the `+`/`/` vs `-`/`_` deltas differ) was re-derived
 /// for this crate and checked against all 64 indices (see the length sweep).
-#[target_feature(enable = "avx2")]
-unsafe fn encode_vec_avx2(input: __m256i, translate_lut: __m256i) -> __m256i {
-    // Reshuffle so each 32-bit lane holds one 3-byte group, then pull the four
-    // 6-bit indices per lane via two masked multiplies (mulhi/mullo) rather
-    // than per-group shifts.
-    let reshuffle = _mm256_set_epi8(
-        10, 11, 9, 10, 7, 8, 6, 7, 4, 5, 3, 4, 1, 2, 0, 1, 14, 15, 13, 14, 11, 12, 10, 11, 8, 9, 7,
-        8, 5, 6, 4, 5,
-    );
-    let shuffled = _mm256_shuffle_epi8(input, reshuffle);
-    let t0 = _mm256_and_si256(shuffled, _mm256_set1_epi32(0x0FC0_FC00));
-    let t1 = _mm256_mulhi_epu16(t0, _mm256_set1_epi32(0x0400_0040));
-    let t2 = _mm256_and_si256(shuffled, _mm256_set1_epi32(0x003F_03F0));
-    let t3 = _mm256_mullo_epi16(t2, _mm256_set1_epi32(0x0100_0010));
-    let indices = _mm256_or_si256(t1, t3);
-
-    // Map each 6-bit index to its character with one LUT lookup: `subs_epu8`
-    // by 51 offsets into the last 3 ranges (digits, `+`/`-`, `/`/`_`), and
-    // `cmpgt_epi8(idx, 25)` bumps it past the uppercase range.
-    let set_51 = _mm256_set1_epi8(51);
-    let set_25 = _mm256_set1_epi8(25);
-    let lut_idx = _mm256_sub_epi8(
-        _mm256_subs_epu8(indices, set_51),
-        _mm256_cmpgt_epi8(indices, set_25),
-    );
-    _mm256_add_epi8(indices, _mm256_shuffle_epi8(translate_lut, lut_idx))
+struct EncodeConstantsAvx2 {
+    reshuffle: __m256i,
+    align_mul: __m256i,
+    field_mask: __m256i,
+    field_mul: __m256i,
+    translate: __m256i,
+    c51: __m256i,
+    c25: __m256i,
 }
 
 #[target_feature(enable = "avx2")]
-pub(crate) unsafe fn encode_slice_avx2(config: &Config, input: &[u8], dst_slice: &mut [u8]) {
-    let len = input.len();
-    let mut src = input.as_ptr();
-    let dst_start = dst_slice.as_mut_ptr();
-    let mut dst = dst_start;
-
-    let translate_lut = if config.url_safe {
+fn encode_constants_avx2(config: Config) -> EncodeConstantsAvx2 {
+    let translate = if config.url_safe {
         _mm256_setr_epi8(
             65, 71, -4, -4, -4, -4, -4, -4, -4, -4, -4, -4, -17, 32, 0, 0, 65, 71, -4, -4, -4, -4,
             -4, -4, -4, -4, -4, -4, -17, 32, 0, 0,
@@ -74,57 +69,150 @@ pub(crate) unsafe fn encode_slice_avx2(config: &Config, input: &[u8], dst_slice:
         )
     };
 
-    // Each round consumes 24 input bytes, writes 32, but loads a 32-byte vector
-    // shifted 4 ahead of what it consumes — the shift lets the reshuffle skip a
-    // per-iteration cross-lane permute. Round 1 can't read before `input`, so it
-    // loads at offset 0 and applies a one-time permute; later rounds get the
-    // shift free by advancing `src` only 20 (the trailing `+= 4` repays it).
-    // `rounds = (len - 4) / 24` keeps every load in bounds.
+    EncodeConstantsAvx2 {
+        reshuffle: _mm256_set_epi8(
+            10, 11, 9, 10, 7, 8, 6, 7, 4, 5, 3, 4, 1, 2, 0, 1, 14, 15, 13, 14, 11, 12, 10, 11, 8,
+            9, 7, 8, 5, 6, 4, 5,
+        ),
+        // Both multipliers are per-16-bit-lane powers of two, which LLVM will
+        // happily strength-reduce back into shift-and-blend sequences that cost
+        // two to six extra uops apiece and land on the already-saturated shuffle
+        // port. `black_box` keeps them opaque so a single `vpmullw` survives; it
+        // runs once per call, outside the loop.
+        align_mul: black_box(_mm256_set1_epi32(0x0010_0001)),
+        field_mask: _mm256_set1_epi32(0x003F_03F0),
+        field_mul: black_box(_mm256_set1_epi32(0x0100_0010)),
+        translate,
+        c51: _mm256_set1_epi8(51),
+        c25: _mm256_set1_epi8(25),
+    }
+}
+
+/// Encodes 32 raw input bytes (only the middle 24, byte-shifted by 4, are
+/// logically consumed) into 32 Base64 characters.
+///
+/// The two multiplies split the four 6-bit fields of each 3-byte group into
+/// their own bytes. `align_mul` scales the odd 16-bit halfword by 16 so that a
+/// single `>> 10` lands both of that dword's "high" fields at bit 0 of their
+/// byte; `field_mul` shifts the two "low" fields up by 4 and 8 into bits 8..13.
+/// The results occupy disjoint bits, so one `or` merges them.
+#[target_feature(enable = "avx2")]
+fn encode_vec_avx2(input: __m256i, k: &EncodeConstantsAvx2) -> __m256i {
+    let shuffled = _mm256_shuffle_epi8(input, k.reshuffle);
+    let aligned = _mm256_srli_epi16(_mm256_mullo_epi16(shuffled, k.align_mul), 10);
+    let fields = _mm256_mullo_epi16(_mm256_and_si256(shuffled, k.field_mask), k.field_mul);
+    let indices = _mm256_or_si256(aligned, fields);
+
+    let lut_idx = _mm256_sub_epi8(
+        _mm256_subs_epu8(indices, k.c51),
+        _mm256_cmpgt_epi8(indices, k.c25),
+    );
+    _mm256_add_epi8(indices, _mm256_shuffle_epi8(k.translate, lut_idx))
+}
+
+/// # Safety
+/// `dst` must be valid for a 32-byte write, and 16-byte aligned when `NT`.
+#[target_feature(enable = "avx2")]
+unsafe fn store_chars_avx2<const NT: bool>(dst: *mut u8, chars: __m256i) {
+    if NT {
+        let half = dst.cast::<__m128i>();
+        unsafe {
+            _mm_stream_si128(half, _mm256_castsi256_si128(chars));
+            _mm_stream_si128(half.add(1), _mm256_extracti128_si256(chars, 1));
+        }
+    } else {
+        unsafe { _mm256_storeu_si256(dst.cast::<__m256i>(), chars) };
+    }
+}
+
+/// Runs `rounds` steady-state encode rounds: each reads the 32 bytes at `src`,
+/// consumes the middle 24 (`src[4..28]`), and writes 32 characters.
+///
+/// # Safety
+/// For every `i < rounds`, `src.add(24 * i)` must be valid for a 32-byte read
+/// and `dst.add(32 * i)` for a 32-byte write; when `NT`, `dst` must also be
+/// 16-byte aligned.
+#[target_feature(enable = "avx2")]
+unsafe fn encode_rounds_avx2<const NT: bool>(
+    src: *const u8,
+    dst: *mut u8,
+    rounds: usize,
+    k: &EncodeConstantsAvx2,
+) {
+    let mut src = src;
+    let mut dst = dst;
+    let mut remaining = rounds;
+
+    while remaining >= ENC_UNROLL {
+        // Loads first, stores second: the eight independent chains keep the
+        // multiply latency covered without the scheduler having to reorder
+        // across a store.
+        let mut chunk = [_mm256_setzero_si256(); ENC_UNROLL];
+        for (i, slot) in chunk.iter_mut().enumerate() {
+            *slot = unsafe { _mm256_loadu_si256(src.add(24 * i).cast::<__m256i>()) };
+        }
+        for (i, raw) in chunk.into_iter().enumerate() {
+            let chars = encode_vec_avx2(raw, k);
+            unsafe { store_chars_avx2::<NT>(dst.add(32 * i), chars) };
+        }
+
+        src = unsafe { src.add(24 * ENC_UNROLL) };
+        dst = unsafe { dst.add(32 * ENC_UNROLL) };
+        remaining -= ENC_UNROLL;
+    }
+
+    while remaining > 0 {
+        let raw = unsafe { _mm256_loadu_si256(src.cast::<__m256i>()) };
+        let chars = encode_vec_avx2(raw, k);
+        unsafe { store_chars_avx2::<NT>(dst, chars) };
+
+        src = unsafe { src.add(24) };
+        dst = unsafe { dst.add(32) };
+        remaining -= 1;
+    }
+
+    if NT {
+        // Non-temporal stores are not ordered against the caller's later loads.
+        _mm_sfence();
+    }
+}
+
+#[target_feature(enable = "avx2")]
+pub(crate) unsafe fn encode_slice_avx2(config: &Config, input: &[u8], dst_slice: &mut [u8]) {
+    let len = input.len();
+    let mut src = input.as_ptr();
+    let dst_start = dst_slice.as_mut_ptr();
+    let mut dst = dst_start;
+
+    let k = encode_constants_avx2(*config);
+
     if len >= 32 {
         let rounds = (len - 4) / 24;
 
+        // First round: the steady-state rounds read `src[4..28]`, so the very
+        // first one has no four bytes to its left. Permuting the load down by
+        // one dword manufactures them, at the cost of advancing `src` by only
+        // 20; the trailing `src.add(4)` below repays that.
         let first = unsafe { _mm256_loadu_si256(src.cast::<__m256i>()) };
         let first = _mm256_permutevar8x32_epi32(first, _mm256_setr_epi32(0, 0, 1, 2, 3, 4, 5, 6));
-        let out0 = unsafe { encode_vec_avx2(first, translate_lut) };
+        let out0 = encode_vec_avx2(first, &k);
         unsafe { _mm256_storeu_si256(dst.cast::<__m256i>(), out0) };
         src = unsafe { src.add(20) };
         dst = unsafe { dst.add(32) };
 
-        let mut remaining = rounds - 1;
+        let remaining = rounds - 1;
 
-        while remaining >= 4 {
-            let v0 = unsafe { _mm256_loadu_si256(src.cast::<__m256i>()) };
-            let v1 = unsafe { _mm256_loadu_si256(src.add(24).cast::<__m256i>()) };
-            let v2 = unsafe { _mm256_loadu_si256(src.add(48).cast::<__m256i>()) };
-            let v3 = unsafe { _mm256_loadu_si256(src.add(72).cast::<__m256i>()) };
-
-            let o0 = unsafe { encode_vec_avx2(v0, translate_lut) };
-            let o1 = unsafe { encode_vec_avx2(v1, translate_lut) };
-            let o2 = unsafe { encode_vec_avx2(v2, translate_lut) };
-            let o3 = unsafe { encode_vec_avx2(v3, translate_lut) };
-
-            unsafe { _mm256_storeu_si256(dst.cast::<__m256i>(), o0) };
-            unsafe { _mm256_storeu_si256(dst.add(32).cast::<__m256i>(), o1) };
-            unsafe { _mm256_storeu_si256(dst.add(64).cast::<__m256i>(), o2) };
-            unsafe { _mm256_storeu_si256(dst.add(96).cast::<__m256i>(), o3) };
-
-            src = unsafe { src.add(96) };
-            dst = unsafe { dst.add(128) };
-            remaining -= 4;
-        }
-
-        while remaining > 0 {
-            let v = unsafe { _mm256_loadu_si256(src.cast::<__m256i>()) };
-            let out = unsafe { encode_vec_avx2(v, translate_lut) };
-            unsafe { _mm256_storeu_si256(dst.cast::<__m256i>(), out) };
-
-            src = unsafe { src.add(24) };
-            dst = unsafe { dst.add(32) };
-            remaining -= 1;
+        // Every store sits at `dst_start + 32 * n`, so one alignment test up
+        // front covers the whole loop.
+        if len >= NT_STORE_MIN_LEN && dst_start.align_offset(16) == 0 {
+            unsafe { encode_rounds_avx2::<true>(src, dst, remaining, &k) };
+        } else {
+            unsafe { encode_rounds_avx2::<false>(src, dst, remaining, &k) };
         }
 
         // Undo the first round's 20-vs-24 pointer-advancement deficit.
-        src = unsafe { src.add(4) };
+        src = unsafe { src.add(24 * remaining + 4) };
+        dst = unsafe { dst.add(32 * remaining) };
     }
 
     let dst_off = unsafe { dst.offset_from(dst_start) }.cast_unsigned();
@@ -285,50 +373,51 @@ pub(crate) unsafe fn decode_slice_avx2(
     // may start within 4 bytes of the end; each tier rounds `safe_len` down to
     // its own block size.
     let safe_len = len.saturating_sub(4);
-    let aligned_len_128 = safe_len - (safe_len % 128);
+    let block_wide = 32 * DEC_UNROLL;
+    let aligned_len_wide = safe_len - (safe_len % block_wide);
     let aligned_len_32 = safe_len - (safe_len % 32);
-    let src_end_128 = unsafe { src.add(aligned_len_128) };
+    let src_end_wide = unsafe { src.add(aligned_len_wide) };
     let src_end_32 = unsafe { src.add(aligned_len_32) };
 
-    // Quad tier: 128 input bytes -> 96 output.
-    while src < src_end_128 {
-        let v0 = unsafe { _mm256_loadu_si256(src.cast::<__m256i>()) };
-        let v1 = unsafe { _mm256_loadu_si256(src.add(32).cast::<__m256i>()) };
-        let v2 = unsafe { _mm256_loadu_si256(src.add(64).cast::<__m256i>()) };
-        let v3 = unsafe { _mm256_loadu_si256(src.add(96).cast::<__m256i>()) };
+    // Invalid characters are folded into one accumulator and reported after the
+    // loops rather than per block. Bailing out mid-loop would force every
+    // vector's inputs to stay live across a branch, which costs more registers
+    // than this machine has; the caller sees the same `Err` either way, and the
+    // bytes written before it are already unspecified on the error path.
+    let mut err_acc = _mm256_setzero_si256();
 
-        let (i0, e0) = decode_vec!(v0);
-        let (i1, e1) = decode_vec!(v1);
-        let (i2, e2) = decode_vec!(v2);
-        let (i3, e3) = decode_vec!(v3);
-
-        let err_any = _mm256_or_si256(_mm256_or_si256(e0, e1), _mm256_or_si256(e2, e3));
-        if _mm256_testz_si256(err_any, err_any) != 1 {
-            return Err(Error::InvalidCharacter);
+    // Wide tier: 256 input bytes -> 192 output.
+    while src < src_end_wide {
+        let mut decoded = [_mm256_setzero_si256(); DEC_UNROLL];
+        for (i, slot) in decoded.iter_mut().enumerate() {
+            let raw = unsafe { _mm256_loadu_si256(src.add(32 * i).cast::<__m256i>()) };
+            let (indices, err) = decode_vec!(raw);
+            *slot = indices;
+            err_acc = _mm256_or_si256(err_acc, err);
+        }
+        for (i, indices) in decoded.into_iter().enumerate() {
+            let out = unsafe { dst.add(24 * i) };
+            pack_and_store!(indices, out);
         }
 
-        pack_and_store!(i0, dst);
-        pack_and_store!(i1, dst.add(24));
-        pack_and_store!(i2, dst.add(48));
-        pack_and_store!(i3, dst.add(72));
-
-        src = unsafe { src.add(128) };
-        dst = unsafe { dst.add(96) };
+        src = unsafe { src.add(32 * DEC_UNROLL) };
+        dst = unsafe { dst.add(24 * DEC_UNROLL) };
     }
 
     // Single tier: 32 input bytes -> 24 output.
     while src < src_end_32 {
-        let v = unsafe { _mm256_loadu_si256(src.cast::<__m256i>()) };
-        let (idx, err) = decode_vec!(v);
+        let raw = unsafe { _mm256_loadu_si256(src.cast::<__m256i>()) };
+        let (indices, err) = decode_vec!(raw);
+        err_acc = _mm256_or_si256(err_acc, err);
 
-        if _mm256_testz_si256(err, err) != 1 {
-            return Err(Error::InvalidCharacter);
-        }
-
-        pack_and_store!(idx, dst);
+        pack_and_store!(indices, dst);
 
         src = unsafe { src.add(32) };
         dst = unsafe { dst.add(24) };
+    }
+
+    if _mm256_testz_si256(err_acc, err_acc) != 1 {
+        return Err(Error::InvalidCharacter);
     }
 
     let dst_off = unsafe { dst.offset_from(dst_start) }.cast_unsigned();

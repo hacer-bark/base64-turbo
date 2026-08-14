@@ -27,7 +27,8 @@ mod kani_verification_avx2 {
     const ENC_ROUND_OUT: usize = 32; // output bytes per round
     const ENC_LOAD: usize = 32; // bytes each `_mm256_loadu_si256` reads
     const ENC_FIRST_ADVANCE: usize = 20; // `src.add(20)` after the first round
-    const ENC_UNROLL: usize = 4; // rounds per 4x-unrolled iteration
+    /// Rounds per iteration of the wide tier; mirrors the kernel's `ENC_UNROLL`.
+    const ENC_UNROLL: usize = super::super::ENC_UNROLL;
 
     fn enc_cap(len: usize, padding: bool) -> usize {
         if padding {
@@ -84,9 +85,10 @@ mod kani_verification_avx2 {
         assert!(rounds >= 1);
     }
 
-    /// Inductive step for the 4x-unrolled tier, over an arbitrary iteration.
+    /// Inductive step for the wide (8x-unrolled) tier, over an arbitrary
+    /// iteration.
     #[kani::proof]
-    fn check_enc_quad_step() {
+    fn check_enc_wide_step() {
         let len: usize = kani::any();
         let padding: bool = kani::any();
         kani::assume((32..=MAX_LEN).contains(&len));
@@ -97,20 +99,31 @@ mod kani_verification_avx2 {
         let done: usize = kani::any();
         kani::assume(done >= 1 && done <= rounds);
         let remaining = rounds - done;
-        kani::assume(remaining >= ENC_UNROLL); // guard `while remaining >= 4`
+        kani::assume(remaining >= ENC_UNROLL); // guard `while remaining >= 8`
 
         let (src_off, dst_off) = enc_state(done);
 
-        // Widest body accesses: `src.add(72)` load, `dst.add(96)` store.
-        assert!(src_off + 72 + ENC_LOAD <= len, "quad load leaves input");
+        // Widest body accesses: the `i = ENC_UNROLL - 1` load and store.
+        let last_src = ENC_ROUND_IN * (ENC_UNROLL - 1);
+        let last_dst = ENC_ROUND_OUT * (ENC_UNROLL - 1);
         assert!(
-            dst_off + 96 + ENC_ROUND_OUT <= cap,
-            "quad store leaves output"
+            src_off + last_src + ENC_LOAD <= len,
+            "wide load leaves input"
+        );
+        assert!(
+            dst_off + last_dst + ENC_ROUND_OUT <= cap,
+            "wide store leaves output"
         );
 
-        // `src += 96`, `dst += 128`, `remaining -= 4` lands on the next state.
+        // `src += 24*8`, `dst += 32*8`, `remaining -= 8` lands on the next state.
         let done_next = done + ENC_UNROLL;
-        assert_eq!((src_off + 96, dst_off + 128), enc_state(done_next));
+        assert_eq!(
+            (
+                src_off + ENC_ROUND_IN * ENC_UNROLL,
+                dst_off + ENC_ROUND_OUT * ENC_UNROLL
+            ),
+            enc_state(done_next)
+        );
         assert!(done_next <= rounds);
         assert_eq!(remaining - ENC_UNROLL, rounds - done_next);
     }
@@ -177,8 +190,10 @@ mod kani_verification_avx2 {
     /// Bytes `pack_and_store!` touches (16 at `dst` + 16 at `dst.add(12)`),
     /// 4 wider than the 24 it advances.
     const DEC_STORE_SPAN: usize = 28;
-    const DEC_QUAD_IN: usize = 128; // input bytes per quad-tier iteration
-    const DEC_QUAD_OUT: usize = 96; // dst advance per quad-tier iteration
+    /// Vectors per iteration of the wide tier; mirrors the kernel's `DEC_UNROLL`.
+    const DEC_UNROLL: usize = super::super::DEC_UNROLL;
+    const DEC_WIDE_IN: usize = DEC_BLOCK_IN * DEC_UNROLL; // input bytes per wide-tier iteration
+    const DEC_WIDE_OUT: usize = DEC_BLOCK_OUT * DEC_UNROLL; // dst advance per wide-tier iteration
 
     fn dec_cap(len: usize) -> usize {
         TURBO_STANDARD.estimate_decoded_len(len)
@@ -188,52 +203,57 @@ mod kani_verification_avx2 {
     /// `saturating_sub(4)` margin that keeps a 32-byte load in bounds).
     fn dec_windows(len: usize) -> (usize, usize) {
         let safe = len.saturating_sub(4);
-        (safe - safe % DEC_QUAD_IN, safe - safe % DEC_BLOCK_IN)
+        (safe - safe % DEC_WIDE_IN, safe - safe % DEC_BLOCK_IN)
     }
 
-    /// Inductive step for the decoder's quad tier, over an arbitrary iteration.
+    /// Inductive step for the decoder's wide tier, over an arbitrary iteration.
     #[kani::proof]
-    fn check_dec_quad_step() {
+    fn check_dec_wide_step() {
         let len: usize = kani::any();
         kani::assume(len <= MAX_LEN);
 
-        let (aligned_quad, _) = dec_windows(len);
+        let (aligned_wide, _) = dec_windows(len);
         let cap = dec_cap(len);
 
         let i: usize = kani::any();
-        kani::assume(i <= MAX_LEN / DEC_QUAD_IN);
-        let (src_off, dst_off) = (DEC_QUAD_IN * i, DEC_QUAD_OUT * i);
-        kani::assume(src_off < aligned_quad); // guard `src < src_end_128`
+        kani::assume(i <= MAX_LEN / DEC_WIDE_IN);
+        let (src_off, dst_off) = (DEC_WIDE_IN * i, DEC_WIDE_OUT * i);
+        kani::assume(src_off < aligned_wide); // guard `src < src_end_wide`
 
-        // Widest: `src.add(96)` load, `pack_and_store!(_, dst.add(72))`.
-        assert!(src_off + 96 + DEC_LOAD <= len, "quad load leaves input");
+        // Widest: the `i = DEC_UNROLL - 1` load and `pack_and_store!`.
+        let last_src = DEC_BLOCK_IN * (DEC_UNROLL - 1);
+        let last_dst = DEC_BLOCK_OUT * (DEC_UNROLL - 1);
         assert!(
-            dst_off + 72 + DEC_STORE_SPAN <= cap,
-            "quad store leaves output"
+            src_off + last_src + DEC_LOAD <= len,
+            "wide load leaves input"
+        );
+        assert!(
+            dst_off + last_dst + DEC_STORE_SPAN <= cap,
+            "wide store leaves output"
         );
 
-        // Update `src.add(128)`, `dst.add(96)`.
+        // Update `src.add(256)`, `dst.add(192)`.
         assert_eq!(
-            (src_off + DEC_QUAD_IN, dst_off + DEC_QUAD_OUT),
-            (DEC_QUAD_IN * (i + 1), DEC_QUAD_OUT * (i + 1))
+            (src_off + DEC_WIDE_IN, dst_off + DEC_WIDE_OUT),
+            (DEC_WIDE_IN * (i + 1), DEC_WIDE_OUT * (i + 1))
         );
     }
 
     /// Inductive step for the decoder's single-vector tier, entered from
-    /// wherever the quad tier stopped.
+    /// wherever the wide tier stopped.
     #[kani::proof]
     fn check_dec_single_step() {
         let len: usize = kani::any();
         kani::assume(len <= MAX_LEN);
 
-        let (aligned_quad, aligned_block) = dec_windows(len);
+        let (aligned_wide, aligned_block) = dec_windows(len);
         let cap = dec_cap(len);
-        let quads = aligned_quad / DEC_QUAD_IN;
+        let wides = aligned_wide / DEC_WIDE_IN;
 
         let j: usize = kani::any();
         kani::assume(j <= MAX_LEN / DEC_BLOCK_IN);
-        let src_off = aligned_quad + DEC_BLOCK_IN * j;
-        let dst_off = DEC_QUAD_OUT * quads + DEC_BLOCK_OUT * j;
+        let src_off = aligned_wide + DEC_BLOCK_IN * j;
+        let dst_off = DEC_WIDE_OUT * wides + DEC_BLOCK_OUT * j;
         kani::assume(src_off < aligned_block); // guard `src < src_end_32`
 
         assert!(src_off + DEC_LOAD <= len, "single load leaves input");
@@ -246,8 +266,8 @@ mod kani_verification_avx2 {
         assert_eq!(
             (src_off + DEC_BLOCK_IN, dst_off + DEC_BLOCK_OUT),
             (
-                aligned_quad + DEC_BLOCK_IN * (j + 1),
-                DEC_QUAD_OUT * quads + DEC_BLOCK_OUT * (j + 1)
+                aligned_wide + DEC_BLOCK_IN * (j + 1),
+                DEC_WIDE_OUT * wides + DEC_BLOCK_OUT * (j + 1)
             )
         );
     }
@@ -327,7 +347,6 @@ mod kani_verification_avx2 {
     #[kani::stub(_mm256_testz_si256, m::_mm256_testz_si256_stub)]
     #[kani::stub(_mm256_maddubs_epi16, m::_mm256_maddubs_epi16_stub)]
     #[kani::stub(_mm256_madd_epi16, m::_mm256_madd_epi16_stub)]
-    #[kani::stub(_mm256_mulhi_epu16, m::_mm256_mulhi_epu16_stub)]
     #[kani::stub(_mm256_permutevar8x32_epi32, m::_mm256_permutevar8x32_epi32_stub)]
     fn check_avx2_roundtrip_standard() {
         roundtrip_kernel(false);
@@ -339,7 +358,6 @@ mod kani_verification_avx2 {
     #[kani::stub(_mm256_testz_si256, m::_mm256_testz_si256_stub)]
     #[kani::stub(_mm256_maddubs_epi16, m::_mm256_maddubs_epi16_stub)]
     #[kani::stub(_mm256_madd_epi16, m::_mm256_madd_epi16_stub)]
-    #[kani::stub(_mm256_mulhi_epu16, m::_mm256_mulhi_epu16_stub)]
     #[kani::stub(_mm256_permutevar8x32_epi32, m::_mm256_permutevar8x32_epi32_stub)]
     fn check_avx2_roundtrip_url_safe() {
         roundtrip_kernel(true);
@@ -541,29 +559,6 @@ pub(super) mod intrinsic_models {
         unsafe { transmute(dst) }
     }
 
-    // STUB: _mm256_mulhi_epu16
-    // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm256_mulhi_epu16
-    pub(super) unsafe fn _mm256_mulhi_epu16_stub(a: __m256i, b: __m256i) -> __m256i {
-        let a: [u16; 16] = unsafe { transmute(a) };
-        let b: [u16; 16] = unsafe { transmute(b) };
-        let mut dst = [0u16; 16];
-
-        // FOR j := 0 to 15
-        for j in 0..16 {
-            // i := j*16
-            let i = j;
-            // tmp[31:0] := ZeroExtend32(a[i+15:i]) * ZeroExtend32(b[i+15:i])
-            let tmp: u32 = (a[i] as u32) * (b[i] as u32);
-            // dst[i+15:i] := tmp[31:16]
-            dst[i] = (tmp >> 16) as u16;
-        }
-        // ENDFOR
-
-        // dst[MAX:256] := 0
-
-        unsafe { transmute(dst) }
-    }
-
     // STUB: _mm256_permutevar8x32_epi32
     // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm256_permutevar8x32_epi32
     pub(super) unsafe fn _mm256_permutevar8x32_epi32_stub(a: __m256i, idx: __m256i) -> __m256i {
@@ -654,7 +649,6 @@ mod avx2_stub_equivalence {
         same!(_mm256_subs_epu8, _mm256_subs_epu8_stub, bytes);
         same!(_mm256_maddubs_epi16, _mm256_maddubs_epi16_stub, bytes);
         same!(_mm256_madd_epi16, _mm256_madd_epi16_stub, bytes);
-        same!(_mm256_mulhi_epu16, _mm256_mulhi_epu16_stub, bytes);
         same!(
             _mm256_permutevar8x32_epi32,
             _mm256_permutevar8x32_epi32_stub,
@@ -699,10 +693,12 @@ mod miri_avx2_coverage {
         (32, "encode: first block, no loop"),
         (37, "encode: first block + unaligned scalar tail"),
         (53, "encode: first block + one single-tier round"),
-        (96, "decode: quad window not yet reached"),
-        (97, "decode: exactly one quad pass"),
-        (124, "encode: exactly one quad pass"),
-        (192, "both: quad pass then single-tier rounds"),
+        (124, "encode: single-tier rounds only"),
+        (192, "decode: single-tier passes only"),
+        (244, "encode: one wide pass, then a single-tier round"),
+        (260, "decode: wide window not yet reached"),
+        (292, "decode: one wide pass, then a single-tier pass"),
+        (700, "both: several wide passes plus single-tier rounds"),
     ];
 
     #[test]
@@ -741,22 +737,23 @@ mod miri_avx2_coverage {
         }
     }
 
-    /// Invalid bytes must be caught in every tier, including the last lane
-    /// of a quad pass, where an early-out would otherwise have already
-    /// stored three sub-blocks.
+    /// Invalid bytes must be caught in every tier, wherever they sit in a
+    /// pass. The kernel folds all validation into one accumulator checked after
+    /// the loops, so a byte in the very last lane must still fail the call.
     #[test]
     fn miri_avx2_decode_rejects_invalid() {
         let config = Config {
             url_safe: false,
             padding: true,
         };
-        let mut dst = [0u8; 256];
+        let mut dst = [0u8; 512];
 
         for &(len, bad_at, where_) in &[
-            (32, 31, "single tier"),
-            (33, 32, "scalar tail"),
-            (132, 0, "quad tier, first lane"),
-            (132, 127, "quad tier, last lane"),
+            (36, 31, "single tier"),
+            (37, 36, "scalar tail"),
+            (260, 0, "wide tier, first lane"),
+            (260, 255, "wide tier, last lane"),
+            (292, 288, "wide tier then single tier, last lane"),
         ] {
             let mut input = vec![b'A'; len];
             input[bad_at] = b'$';
@@ -838,6 +835,58 @@ mod avx2_decode_lut_exhaustive {
             padding: true,
         };
         check_all_byte_values(&config);
+    }
+}
+
+/// Covers the encoder's non-temporal store path, which needs an input at least
+/// [`NT_STORE_MIN_LEN`] long and so is out of reach for Miri (and for the length
+/// sweep below). The hazard it guards is `_mm_stream_si128`'s 16-byte alignment
+/// requirement, so the destinations here straddle the alignment gate: only the
+/// 0- and 16-shifted ones can take the path, and all must agree with the oracle.
+#[cfg(test)]
+#[cfg(not(miri))]
+mod avx2_encode_non_temporal {
+    use super::*;
+    use base64::Engine as _;
+    use base64::engine::general_purpose::{STANDARD as REF_STANDARD, URL_SAFE as REF_URL_SAFE};
+
+    #[test]
+    fn avx2_encode_above_non_temporal_threshold() {
+        // One length exactly at the threshold and one comfortably past it with a
+        // remainder that leaves both a wide-tier and a single-tier round plus a
+        // scalar tail.
+        for len in [NT_STORE_MIN_LEN, NT_STORE_MIN_LEN + 4099] {
+            let input = crate::simd::testutil::bytes(len);
+
+            for (config, oracle) in [
+                (
+                    Config {
+                        url_safe: false,
+                        padding: true,
+                    },
+                    &REF_STANDARD,
+                ),
+                (
+                    Config {
+                        url_safe: true,
+                        padding: true,
+                    },
+                    &REF_URL_SAFE,
+                ),
+            ] {
+                let expected = oracle.encode(&input);
+                for shift in [0usize, 1, 8, 16] {
+                    let mut dst = vec![0u8; expected.len() + shift];
+                    unsafe { encode_slice_avx2(&config, &input, &mut dst[shift..]) };
+                    assert_eq!(
+                        core::str::from_utf8(&dst[shift..]).unwrap(),
+                        expected,
+                        "len {len}, url_safe {}, dst shift {shift}",
+                        config.url_safe
+                    );
+                }
+            }
+        }
     }
 }
 
