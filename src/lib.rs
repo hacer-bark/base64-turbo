@@ -601,7 +601,7 @@ impl Engine {
                 return;
             }
             #[cfg(feature = "avx512")]
-            if len >= 64 && tier >= cpu::AVX512 {
+            if len >= 32 && tier >= cpu::AVX512 {
                 // SAFETY: tier() confirmed AVX-512F/BW on this CPU.
                 unsafe { simd::encode_slice_avx512(&self.config, input, dst) };
                 return;
@@ -643,7 +643,7 @@ impl Engine {
                 return unsafe { simd::decode_slice_avx512_vbmi(&self.config, input, dst) };
             }
             #[cfg(feature = "avx512")]
-            if len >= 64 && tier >= cpu::AVX512 {
+            if len >= 32 && tier >= cpu::AVX512 {
                 // SAFETY: tier() confirmed AVX-512F/BW on this CPU.
                 return unsafe { simd::decode_slice_avx512(&self.config, input, dst) };
             }

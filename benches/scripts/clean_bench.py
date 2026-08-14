@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import sys
 import re
 
@@ -5,6 +6,7 @@ def clean_benchmark_output(text):
     lines = text.splitlines()
     cleaned = []
     current_bench = None
+    in_change = False
 
     for line in lines:
         stripped = line.strip()
@@ -20,6 +22,16 @@ def clean_benchmark_output(text):
                     cleaned.append("")
                 cleaned.append(f"Benchmarking {bench_name}")
                 current_bench = bench_name
+                in_change = False
+
+        # A "change:" block reports relative deltas vs. the previous run, not
+        # absolute measurements - skip its time/thrpt lines so they don't get
+        # mistaken for a second measurement of the same benchmark.
+        if stripped == 'change:':
+            in_change = True
+            continue
+        if in_change:
+            continue
 
         # Extract time line
         if 'time:' in stripped:
@@ -37,7 +49,7 @@ def clean_benchmark_output(text):
 
 
 if __name__ == "__main__":
-    print("🚀 Benchmark Output Cleaner")
+    print("Benchmark Output Cleaner")
     print("Paste your messy benchmark text below (Ctrl+D / Ctrl+Z+Enter to finish):")
     print("-" * 70)
 
@@ -50,7 +62,7 @@ if __name__ == "__main__":
     result = clean_benchmark_output(messy_text)
 
     print("\n" + "=" * 70)
-    print("✅ CLEANED OUTPUT (ready to copy)")
+    print("CLEANED OUTPUT (ready to copy)")
     print("=" * 70)
     print(result)
     print("=" * 70)
