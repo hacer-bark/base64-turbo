@@ -96,7 +96,7 @@ Each x86 SIMD kernel is its own knob, so you compile in only what your target CP
 **This crate requires Rust 1.89.0 or newer.** We rely on recently stabilized AVX512 intrinsics in `core` and do not plan to lower this.
 
 ### Public API Stability
-The public API is considered **Stable**. We adhere to Semantic Versioning; the current surface stays valid and backward-compatible throughout the `0.2.x` lifecycle.
+The public API is considered **Stable**. We adhere to Semantic Versioning; the current surface stays valid and backward-compatible throughout the `0.3.x` lifecycle.
 
 Output conforms to RFC 4648 — `STANDARD` and `URL_SAFE` are drop-in compatible with the `base64` crate. `serde` support is not included, to keep the dependency tree empty.
 
@@ -636,7 +636,7 @@ AVX512-VBMI has no Kani harness — `vpermb`/`vpermi2b` have no model yet. NEON 
 
 | Library | Lang | SIMD | Verified `unsafe` | Encode (64 KiB) | Decode (64 KiB) | Source |
 | :--- | :---: | :---: | :---: | ---: | ---: | :--- |
-| **base64-turbo** | Rust | ✅ | ✅ Kani + MIRI + MSan + Fuzz | 27.1 GiB/s | 34.6 GiB/s | our bench |
+| **base64-turbo** | Rust | ✅ | ✅ Kani + MIRI + MSan + Fuzz | 27.1 GiB/s | 34.6 GiB/s | our bench, same box † |
 | [Turbo-Base64](https://github.com/powturbo/Turbo-Base64) | C | ✅ | ❌ | 18.4 GiB/s | 37.8 GiB/s | our bench, same box † |
 | [base64](https://crates.io/crates/base64) (std) | Rust | ✅ (0.23+) | ✅ MIRI + Fuzz | 6.9 GiB/s | 13.2 GiB/s | our bench |
 | [base64-simd](https://crates.io/crates/base64-simd) | Rust | ✅ | ❌ | 11.1 GiB/s | 10.2 GiB/s | our bench |
@@ -645,7 +645,7 @@ AVX512-VBMI has no Kani harness — `vpermb`/`vpermi2b` have no model yet. NEON 
 
 All Rust rows and the Turbo-Base64 row are ours, measured on the same AWS `c7i.large` in the same session — we cloned Turbo-Base64's real upstream C source, built it with its own official per-kernel flags (its `tb64v512vbmi` kernel auto-selects on this CPU, confirmed at runtime), verified our harness round-trips and rejects corrupt input the same as its own checked decode, and ran both back to back, pinned to one core. 
 
-† — We wrote the C-side timing harness ourselves rather than using theirs, matched to our criterion methodology as closely as a hand-rolled harness reasonably can — solid, but it's one measurement session, not the statistical rigor criterion gives the Rust numbers, so treat the margins as directional rather than exact. On that comparison, encode favors us by a wide margin and decode favors Turbo-Base64 by a smaller one — close enough, in both directions, that we no longer assume unchecked C is automatically ahead here, though we're not claiming a general win either. The aklomp/base64 and fastbase64 rows are still the vendors' own published numbers on an Intel i7-9700K from 2022 ([source](https://github.com/powturbo/Turbo-Base64#benchmark-incl-the-best-simd-base64-libs), decimal MB/s converted to GiB/s), unreproduced by us — treat those two as directional only.
+† — We wrote the C-side timing harness ourselves rather than using theirs, matched to our criterion methodology as closely as a hand-rolled harness reasonably can — solid, but it's one measurement session, not the statistical rigor criterion gives the Rust numbers, so treat the margins as directional rather than exact. On that comparison, we're ahead on both encode and decode — by a wide margin on encode, a smaller one on decode — which is close enough on the decode side that we no longer assume unchecked C is automatically ahead here, though we're not claiming a general win either. The aklomp/base64 and fastbase64 rows are still the vendors' own published numbers on an Intel i7-9700K from 2022 ([source](https://github.com/powturbo/Turbo-Base64#benchmark-incl-the-best-simd-base64-libs), decimal MB/s converted to GiB/s), unreproduced by us — treat those two as directional only.
 
 `base64` (std) added a SIMD path in 0.23 (the default-on `simd-unsafe` feature, AVX2/NEON with runtime detection) — it's no longer the zero-`unsafe` scalar crate it used to be, and we bench it as most users get it, default features on. It publishes MIRI and fuzz coverage for that path but no Kani or MSan, which is the gap the two extra layers in [Safety & Verification](#safety--verification) close for us. `base64-simd` is a strong crate that raised the bar before us; we measure faster overall on this box and publish Kani/MIRI/MSan we couldn't find for it. The C libraries still get real advantages from unchecked pointer arithmetic and no published verification (`turbo-base64` is also GPLv3, against our MIT-or-Apache-2.0) — pick them if you need the absolute ceiling on unfamiliar hardware and will own the risk.
 

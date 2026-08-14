@@ -576,8 +576,6 @@ impl Engine {
     // Internal Dispatchers
     // ========================================================================
 
-    // TODO: Recalculate lengths for SIMDs paths.
-
     // `&self` (a 2-byte Copy `Engine`) is kept by-ref for consistency with the
     // rest of the `Engine` methods, not because the reference is required.
     #[allow(clippy::trivially_copy_pass_by_ref)]
@@ -589,10 +587,15 @@ impl Engine {
             let tier = cpu::tier();
 
             // Smart degrade by length: a kernel is only worth entering once the
-            // input fills its vector width (64 for AVX512, 32 for AVX2). VBMI is
-            // the exception -- its tails are masked vector passes rather than a
-            // scalar loop, so it pays off from 32 bytes up; measured on a Xeon
-            // 8488C it breaks even around 24 and is 1.9x by 48.
+            // input fills its vector width. AVX2's single tier runs from 32
+            // bytes up; AVX512's needs 64 (its 48-in/64-out block plus a
+            // 16-byte read-ahead margin, see `avx512::encode_slice_avx512`) —
+            // below that it would just fall straight through to the tail with
+            // nothing vectorized, so it's better to leave the length to AVX2.
+            // VBMI is the exception -- its tails are masked vector passes
+            // rather than a scalar loop, so it pays off from 32 bytes up;
+            // measured on a Xeon 8488C it breaks even around 24 and is 1.9x by
+            // 48.
             #[cfg(feature = "avx512-vbmi")]
             if len >= 32 && tier == cpu::AVX512_VBMI {
                 // VBMI fast-path: vpermb replaces the 8-instruction char mapping.
@@ -601,7 +604,7 @@ impl Engine {
                 return;
             }
             #[cfg(feature = "avx512")]
-            if len >= 32 && tier >= cpu::AVX512 {
+            if len >= 64 && tier >= cpu::AVX512 {
                 // SAFETY: tier() confirmed AVX-512F/BW on this CPU.
                 unsafe { simd::encode_slice_avx512(&self.config, input, dst) };
                 return;
@@ -635,7 +638,10 @@ impl Engine {
             let tier = cpu::tier();
 
             // As in `encode_dispatch`, the masked tails let VBMI start earlier
-            // than the other kernels.
+            // than the other kernels. AVX2 and AVX512 both need one extra
+            // 4-byte read-ahead margin on decode (see `avx2::decode_slice_avx2`
+            // / `avx512::decode_slice_avx512`), so their single-tier blocks
+            // (32 and 64 bytes) only actually run from 36 and 68 bytes up.
             #[cfg(feature = "avx512-vbmi")]
             if len >= 32 && tier == cpu::AVX512_VBMI {
                 // VBMI fast-path: vpermi2b collapses decode+validate to ~4 instructions.
@@ -643,20 +649,22 @@ impl Engine {
                 return unsafe { simd::decode_slice_avx512_vbmi(&self.config, input, dst) };
             }
             #[cfg(feature = "avx512")]
-            if len >= 32 && tier >= cpu::AVX512 {
+            if len >= 68 && tier >= cpu::AVX512 {
                 // SAFETY: tier() confirmed AVX-512F/BW on this CPU.
                 return unsafe { simd::decode_slice_avx512(&self.config, input, dst) };
             }
             #[cfg(feature = "avx2")]
-            if len >= 32 && tier >= cpu::AVX2 {
+            if len >= 36 && tier >= cpu::AVX2 {
                 // SAFETY: tier() confirmed AVX2 on this CPU.
                 return unsafe { simd::decode_slice_avx2(&self.config, input, dst) };
             }
         }
 
         // NEON path (aarch64): compile-time dispatch, no runtime detection.
+        // Its single tier is a 16-in/12-out block plus a 4-byte read-ahead
+        // margin (see `neon::decode_slice_neon`), so it needs 20 bytes to run.
         #[cfg(all(target_arch = "aarch64", feature = "neon"))]
-        if input.len() >= 16 {
+        if input.len() >= 20 {
             // SAFETY: NEON is baseline on aarch64.
             return unsafe { simd::decode_slice_neon(&self.config, input, dst) };
         }

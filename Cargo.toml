@@ -1,6 +1,6 @@
 [package]
 name = "base64-turbo"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.89"
 description = "A Base64 engine that peaks past 100 GiB/s, formally verified (Kani/MIRI/MSan). Runtime AVX2/AVX512 detection, NEON acceleration, zero-allocation API, no_std support."
