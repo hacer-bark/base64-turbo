@@ -20,14 +20,16 @@ use crate::{Config, Error};
 #[cfg(target_arch = "x86")]
 use std::arch::x86::{
     __m512i, _mm512_loadu_si512, _mm512_madd_epi16, _mm512_maddubs_epi16, _mm512_mask_loadu_epi8,
-    _mm512_mask_storeu_epi8, _mm512_maskz_loadu_epi8, _mm512_movepi8_mask, _mm512_set1_epi16,
-    _mm512_set1_epi32, _mm512_set1_epi64, _mm512_set1_epi8, _mm512_setzero_si512, _mm512_storeu_si512, _mm512_ternarylogic_epi32,
+    _mm512_mask_storeu_epi8, _mm512_maskz_loadu_epi8, _mm512_movepi8_mask, _mm512_set1_epi8,
+    _mm512_set1_epi16, _mm512_set1_epi32, _mm512_set1_epi64, _mm512_setzero_si512,
+    _mm512_storeu_si512, _mm512_ternarylogic_epi32,
 };
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::{
     __m512i, _mm512_loadu_si512, _mm512_madd_epi16, _mm512_maddubs_epi16, _mm512_mask_loadu_epi8,
-    _mm512_mask_storeu_epi8, _mm512_maskz_loadu_epi8, _mm512_movepi8_mask, _mm512_set1_epi16,
-    _mm512_set1_epi32, _mm512_set1_epi64, _mm512_set1_epi8, _mm512_setzero_si512, _mm512_storeu_si512, _mm512_ternarylogic_epi32,
+    _mm512_mask_storeu_epi8, _mm512_maskz_loadu_epi8, _mm512_movepi8_mask, _mm512_set1_epi8,
+    _mm512_set1_epi16, _mm512_set1_epi32, _mm512_set1_epi64, _mm512_setzero_si512,
+    _mm512_storeu_si512, _mm512_ternarylogic_epi32,
 };
 
 #[cfg(all(not(miri), target_arch = "x86"))]
