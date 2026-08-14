@@ -19,7 +19,10 @@ use std::time::Duration;
 use base64_turbo::STANDARD as TURBO_ENGINE;
 
 // 2. Competitor 1: The standard 'base64' crate
-use base64::{Engine as _, prelude::BASE64_STANDARD as STD_ENGINE};
+use base64::{
+    Engine as _,
+    engine::{GeneralPurposeConfig, Simd},
+};
 
 // 3. Competitor 2: The 'base64-simd' crate
 use base64_simd::STANDARD as SIMD_ENGINE;
@@ -42,6 +45,9 @@ fn should_run(target_name: &str) -> bool {
 }
 
 fn bench_comparison(c: &mut Criterion) {
+    // Runtime-detects AVX2/NEON once; matches BASE64_STANDARD's alphabet/padding.
+    let std_engine = Simd::standard(GeneralPurposeConfig::new());
+
     let mut group = c.benchmark_group("Base64_Performances");
 
     // Logarithmic scaling is essential for viewing 32B vs 10MB
@@ -105,7 +111,7 @@ fn bench_comparison(c: &mut Criterion) {
         // 2. Base64 Standard
         if should_run("std") || should_run("base64") {
             group.bench_with_input(BenchmarkId::new("Encode/Std", size), &input_data, |b, d| {
-                b.iter(|| STD_ENGINE.encode(black_box(d)));
+                b.iter(|| std_engine.encode(black_box(d)));
             });
         }
 
@@ -125,7 +131,7 @@ fn bench_comparison(c: &mut Criterion) {
         // ======================================================================
 
         // Prepare valid Base64 string for decoding
-        let encoded_str = STD_ENGINE.encode(&input_data);
+        let encoded_str = std_engine.encode(&input_data);
 
         // We measure throughput based on the INPUT text size (bytes processed per second)
         group.throughput(Throughput::Bytes(encoded_str.len() as u64));
@@ -164,7 +170,7 @@ fn bench_comparison(c: &mut Criterion) {
                 BenchmarkId::new("Decode/Std", size),
                 &encoded_str,
                 |b, s| {
-                    b.iter(|| STD_ENGINE.decode(black_box(s)));
+                    b.iter(|| std_engine.decode(black_box(s)));
                 },
             );
         }
