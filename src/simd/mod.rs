@@ -2,18 +2,66 @@
 mod avx2;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 mod avx512;
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+mod avx512_vbmi;
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub(crate) use avx2::{decode_slice_avx2, encode_slice_avx2};
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-pub(crate) use avx512::{
-    decode_slice_avx512, decode_slice_avx512_vbmi, encode_slice_avx512, encode_slice_avx512_vbmi,
-};
+pub(crate) use avx512::{decode_slice_avx512, encode_slice_avx512};
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+pub(crate) use avx512_vbmi::{decode_slice_avx512_vbmi, encode_slice_avx512_vbmi};
 
 #[cfg(target_arch = "aarch64")]
 mod neon;
 #[cfg(target_arch = "aarch64")]
 pub(crate) use neon::{decode_slice_neon, encode_slice_neon};
+
+#[cfg(test)]
+mod testutil;
+
+/// Shared SIMD -> scalar handoff. Each backend runs its vectorized loops, then
+/// calls these with the pointer/offset state they left off at; `src` points at
+/// the first unconsumed input byte and `dst_off` is how many bytes the loops
+/// already wrote.
+#[cfg(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64"))]
+mod tail {
+    use crate::{Config, Error, scalar};
+
+    /// # Safety
+    /// `src` must point within `input`.
+    pub(super) unsafe fn encode(
+        config: &Config,
+        input: &[u8],
+        src: *const u8,
+        dst: &mut [u8],
+        dst_off: usize,
+    ) {
+        let done = unsafe { src.offset_from(input.as_ptr()) }.cast_unsigned();
+        if done < input.len() {
+            scalar::encode_slice(config, &input[done..], &mut dst[dst_off..]);
+        }
+    }
+
+    /// Returns the total bytes written (`dst_off` plus the scalar remainder).
+    ///
+    /// # Safety
+    /// `src` must point within `input`.
+    pub(super) unsafe fn decode(
+        config: &Config,
+        input: &[u8],
+        src: *const u8,
+        dst: &mut [u8],
+        dst_off: usize,
+    ) -> Result<usize, Error> {
+        let done = unsafe { src.offset_from(input.as_ptr()) }.cast_unsigned();
+        if done < input.len() {
+            Ok(dst_off + scalar::decode_slice(config, &input[done..], &mut dst[dst_off..])?)
+        } else {
+            Ok(dst_off)
+        }
+    }
+}
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 const PACK_L1: [i8; 32] = [

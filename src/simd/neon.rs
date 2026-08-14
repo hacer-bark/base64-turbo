@@ -1,4 +1,4 @@
-use crate::{Config, Error, scalar};
+use crate::{Config, Error};
 
 use core::arch::aarch64::{
     int8x16_t, int16x8_t, int32x4_t, uint8x16_t, uint16x8_t, vaddq_s8, vandq_s8, vandq_u8,
@@ -11,11 +11,8 @@ use core::arch::aarch64::{
     vshrn_n_u32, vshrq_n_u8, vst1q_u8,
 };
 
-// ======================================================================
-// Helper: unsigned multiply-high for u16x8
-// NEON lacks a direct mulhi_u16; we emulate via widening multiply.
-// ======================================================================
-
+/// Unsigned multiply-high for u16x8. NEON has no `mulhi_u16`, so emulate it
+/// with a widening multiply and narrowing shift.
 #[inline]
 unsafe fn vmulhq_u16(a: uint16x8_t, b: uint16x8_t) -> uint16x8_t {
     unsafe {
@@ -25,36 +22,18 @@ unsafe fn vmulhq_u16(a: uint16x8_t, b: uint16x8_t) -> uint16x8_t {
     }
 }
 
-// ======================================================================
-// Helper: maddubs equivalent (unsigned × signed bytes, pairwise add → i16)
-// Equivalent to _mm_maddubs_epi16(a, b)
-// result[k] = saturate_i16(a[2k]*b[2k] + a[2k+1]*b[2k+1])
-// ======================================================================
-
+/// Equivalent of `_mm_maddubs_epi16`: widen u8*s8 to s16, then pairwise-add
+/// adjacent lanes to `[a0*b0+a1*b1, ...]`.
 #[inline]
 unsafe fn vmaddubs_s16(a: uint8x16_t, b: int8x16_t) -> int16x8_t {
     unsafe {
-        // Widening multiply: u8 * s8 → s16 (low and high halves)
         let prod_lo = vmull_s8(vreinterpret_s8_u8(vget_low_u8(a)), vget_low_s8(b));
         let prod_hi = vmull_high_s8(vreinterpretq_s8_u8(a), b);
-
-        // Pairwise add adjacent s16 within each vector → s32, then narrow back
-        // prod_lo = [a0*b0, a1*b1, a2*b2, a3*b3, a4*b4, a5*b5, a6*b6, a7*b7]
-        // We need [a0*b0+a1*b1, a2*b2+a3*b3, a4*b4+a5*b5, a6*b6+a7*b7]
-        let sum_lo = vpaddq_s16(prod_lo, prod_hi);
-        // vpaddq gives [lo_pairs..., hi_pairs...] in lane order
-        // prod_lo pairs: [p0+p1, p2+p3, p4+p5, p6+p7] in low 4 lanes
-        // prod_hi pairs: [p8+p9, p10+p11, p12+p13, p14+p15] in high 4 lanes
-        sum_lo
+        vpaddq_s16(prod_lo, prod_hi)
     }
 }
 
-// ======================================================================
-// Helper: madd equivalent (signed i16 pairwise multiply-add → i32)
-// Equivalent to _mm_madd_epi16(a, b)
-// result[k] = a[2k]*b[2k] + a[2k+1]*b[2k+1]
-// ======================================================================
-
+/// Equivalent of `_mm_madd_epi16`: pairwise s16*s16 multiply-add into s32.
 #[inline]
 unsafe fn vmadd_s32(a: int16x8_t, b: int16x8_t) -> int32x4_t {
     unsafe {
@@ -64,9 +43,7 @@ unsafe fn vmadd_s32(a: int16x8_t, b: int16x8_t) -> int32x4_t {
     }
 }
 
-// ======================================================================
-// NEON Encoder
-// ======================================================================
+// --- NEON encoder ---
 
 #[target_feature(enable = "neon")]
 pub(crate) unsafe fn encode_slice_neon(config: &Config, input: &[u8], dst_slice: &mut [u8]) {
@@ -117,14 +94,12 @@ pub(crate) unsafe fn encode_slice_neon(config: &Config, input: &[u8], dst_slice:
         vld1q_s8(l.as_ptr())
     };
 
-    // Encode one 128-bit vector (12 input bytes → 16 output bytes)
+    // Encode one 128-bit vector: 12 input bytes -> 16 output bytes.
     macro_rules! encode_vec {
         ($in_vec:expr) => {{
-            // Byte shuffle: rearrange for 6-bit extraction
+            // Shuffle, then extract the 6-bit indices via multiply-shift.
             let v = vqtbl1q_u8($in_vec, shuffle);
             let v_u16 = vreinterpretq_u16_u8(v);
-
-            // Multiply-shift to extract 6-bit indices
             let lo = vmulq_u16(v_u16, mul_left_shift);
             let hi = unsafe { vmulhq_u16(v_u16, mul_right_shift) };
             let indices_u8 = vreinterpretq_u8_u16(vorrq_u16(
@@ -132,19 +107,18 @@ pub(crate) unsafe fn encode_slice_neon(config: &Config, input: &[u8], dst_slice:
                 vandq_u16(hi, mask_lo_6bits),
             ));
 
-            // Map indices → Base64 characters (branchless)
+            // Map indices -> characters branchlessly, then fix digits/+//.
             let indices_s8 = vreinterpretq_s8_u8(indices_u8);
             let mut char_val = vaddq_s8(indices_s8, offset_base);
             let gt25 = vcgtq_s8(indices_s8, set_25);
             char_val = vaddq_s8(char_val, vandq_s8(vreinterpretq_s8_u8(gt25), delta_lower));
 
-            // Special chars (digits, +, /)
             let offset_special = vqtbl1q_s8(lut_offsets, vqsubq_u8(indices_u8, set_51));
             vreinterpretq_u8_s8(vaddq_s8(char_val, offset_special))
         }};
     }
 
-    // --- Quad-unrolled loop: 48 input → 64 output ---
+    // Quad tier: 48 input bytes -> 64 output.
     let safe_len_48 = len.saturating_sub(4);
     let aligned_len_48 = safe_len_48 - (safe_len_48 % 48);
     let src_end_48 = unsafe { src.add(aligned_len_48) };
@@ -164,7 +138,7 @@ pub(crate) unsafe fn encode_slice_neon(config: &Config, input: &[u8], dst_slice:
         dst = unsafe { dst.add(64) };
     }
 
-    // --- Single-vector loop: 12 input → 16 output ---
+    // Single tier: 12 input bytes -> 16 output.
     let safe_len_12 = len.saturating_sub(4);
     let aligned_len_12 = safe_len_12 - (safe_len_12 % 12);
     let src_end_12 = unsafe { input.as_ptr().add(aligned_len_12) };
@@ -177,21 +151,14 @@ pub(crate) unsafe fn encode_slice_neon(config: &Config, input: &[u8], dst_slice:
         dst = unsafe { dst.add(16) };
     }
 
-    // --- Scalar fallback for tail ---
-    let processed_len = unsafe { src.offset_from(input.as_ptr()) }.cast_unsigned();
-    if processed_len < len {
-        let out_off = unsafe { dst.offset_from(dst_start) }.cast_unsigned();
-        scalar::encode_slice(config, &input[processed_len..], &mut dst_slice[out_off..]);
-    }
+    let dst_off = unsafe { dst.offset_from(dst_start) }.cast_unsigned();
+    unsafe { super::tail::encode(config, input, src, dst_slice, dst_off) };
 }
 
-// ======================================================================
-// NEON Decoder
-// ======================================================================
+// --- NEON decoder ---
 
-/// Precomputed NEON vector constants shared by every lane processed in
-/// [`decode_slice_neon`]. Factored out purely to keep that function's body
-/// under clippy's line-count threshold; the values themselves are unchanged.
+/// Precomputed NEON decode constants, factored out of [`decode_slice_neon`]
+/// only to keep its body under clippy's line-count threshold.
 struct DecodeConstantsNeon {
     lut_hi_nibble: int8x16_t,
     sym_62: uint8x16_t,
@@ -310,15 +277,15 @@ pub(crate) unsafe fn decode_slice_neon(
         mask_hi_nibble,
     } = unsafe { decode_constants_neon(config) };
 
-    // Decode & validate one 128-bit vector
+    // Validate + decode one 128-bit vector.
     macro_rules! decode_vec {
         ($input_vec:expr) => {{
-            // High nibble → LUT offset
+            // High nibble picks the index offset from the LUT.
             let hi = vandq_u8(vshrq_n_u8($input_vec, 4), mask_hi_nibble);
             let offset = vqtbl1q_s8(lut_hi_nibble, hi);
             let mut indices = vaddq_s8(vreinterpretq_s8_u8($input_vec), offset);
 
-            // Fix special characters
+            // Fixups for the two special characters.
             let mask_62 = vceqq_u8($input_vec, sym_62);
             let mask_63 = vceqq_u8($input_vec, sym_63);
             let fix = vorrq_s8(
@@ -327,7 +294,7 @@ pub(crate) unsafe fn decode_slice_neon(
             );
             indices = vaddq_s8(indices, fix);
 
-            // Validate: check that every byte is in a valid range
+            // Valid iff the byte is a symbol, digit, upper, or lower letter.
             let is_sym = vorrq_u8(mask_62, mask_63);
             let is_num = vandq_u8(
                 vcgeq_u8($input_vec, range_0),
@@ -340,29 +307,25 @@ pub(crate) unsafe fn decode_slice_neon(
             );
             let is_valid = vorrq_u8(is_sym, vorrq_u8(is_num, vorrq_u8(is_upper, is_lower)));
 
-            // err_any != 0 means there are invalid bytes
-            let err = vmvnq_u8(is_valid); // NOT valid = error
-            let err_any = vmaxvq_u8(err);
+            // Reduce the per-byte "not valid" mask; nonzero means an error.
+            let err_any = vmaxvq_u8(vmvnq_u8(is_valid));
 
             (vreinterpretq_u8_s8(indices), err_any)
         }};
     }
 
-    // Pack 6-bit indices → bytes and store 12 bytes
+    // Pack 6-bit indices to bytes: maddubs, madd, then shuffle out 3 bytes per
+    // 4-byte lane. Writes 16 bytes; the high 4 are overwritten next iteration.
     macro_rules! pack_and_store {
         ($indices:expr, $dst_ptr:expr) => {{
-            // Step 1: maddubs — pair adjacent 6-bit values
             let m = unsafe { vmaddubs_s16($indices, pack_l1) };
-            // Step 2: madd — pair adjacent 12-bit values → 24-bit in i32
             let p = unsafe { vmadd_s32(m, pack_l2) };
-            // Step 3: shuffle to extract 3 bytes from each 4-byte lane
             let out = vqtbl1q_u8(vreinterpretq_u8_s32(p), pack_shuffle);
-            // Store 12 bytes (write 16, last 4 are garbage overwritten next iter)
             unsafe { vst1q_u8($dst_ptr, out) };
         }};
     }
 
-    // --- Quad-unrolled loop: 64 input → 48 output ---
+    // Quad tier: 64 input bytes -> 48 output.
     let safe_len_64 = len.saturating_sub(4);
     let aligned_len_64 = safe_len_64 - (safe_len_64 % 64);
     let src_end_64 = unsafe { src.add(aligned_len_64) };
@@ -391,7 +354,7 @@ pub(crate) unsafe fn decode_slice_neon(
         dst = unsafe { dst.add(48) };
     }
 
-    // --- Single-vector loop: 16 input → 12 output ---
+    // Single tier: 16 input bytes -> 12 output.
     let safe_len_16 = len.saturating_sub(4);
     let aligned_len_16 = safe_len_16 - (safe_len_16 % 16);
     let src_end_16 = unsafe { input.as_ptr().add(aligned_len_16) };
@@ -411,159 +374,80 @@ pub(crate) unsafe fn decode_slice_neon(
     }
 
     let dst_off = unsafe { dst.offset_from(dst_start) }.cast_unsigned();
-    unsafe { decode_scalar_tail(config, input, src, dst_slice, dst_off) }
-}
-
-/// Decodes any bytes left over after the vectorized main/tail loops via the
-/// scalar fallback, then returns the total number of bytes written.
-///
-/// `dst_off` is how many bytes the SIMD loops already wrote into `dst_slice`.
-///
-/// # Safety
-/// `src` must point within `input`.
-unsafe fn decode_scalar_tail(
-    config: &Config,
-    input: &[u8],
-    src: *const u8,
-    dst_slice: &mut [u8],
-    dst_off: usize,
-) -> Result<usize, Error> {
-    let processed_len = unsafe { src.offset_from(input.as_ptr()) }.cast_unsigned();
-    if processed_len < input.len() {
-        let written =
-            scalar::decode_slice(config, &input[processed_len..], &mut dst_slice[dst_off..])?;
-        Ok(dst_off + written)
-    } else {
-        Ok(dst_off)
-    }
+    unsafe { super::tail::decode(config, input, src, dst_slice, dst_off) }
 }
 
 #[cfg(all(test, miri))]
 mod miri_neon_coverage {
     use super::*;
-    use base64::{
-        Engine,
-        engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE},
+    use crate::simd::testutil::{check_decode, check_encode};
+    use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE};
+
+    fn enc(config: &Config, oracle: &impl base64::Engine, len: usize) {
+        check_encode(config, oracle, encode_slice_neon, len);
+    }
+    fn dec(config: &Config, oracle: &impl base64::Engine, len: usize) {
+        check_decode(config, oracle, decode_slice_neon, len);
+    }
+
+    const STD: Config = Config {
+        url_safe: false,
+        padding: true,
     };
-    use rand::{RngExt, rng};
 
-    fn random_bytes(len: usize) -> Vec<u8> {
-        let mut rng = rng();
-        (0..len).map(|_| rng.random()).collect()
-    }
-
-    fn verify_encode_neon(config: &Config, oracle: &impl Engine, input_len: usize) {
-        let input = random_bytes(input_len);
-        let expected = oracle.encode(&input);
-        let mut dst = vec![0u8; expected.len() * 2];
-
-        unsafe {
-            encode_slice_neon(config, &input, &mut dst);
-        }
-
-        let result = &dst[..expected.len()];
-        assert_eq!(
-            std::str::from_utf8(result).unwrap(),
-            expected,
-            "Encode len {input_len}"
-        );
-    }
-
-    fn verify_decode_neon(config: &Config, oracle: &impl Engine, original_len: usize) {
-        let input_bytes = random_bytes(original_len);
-        let encoded = oracle.encode(&input_bytes);
-        let encoded_bytes = encoded.as_bytes();
-        let mut dst = vec![0u8; original_len + 64];
-
-        let len = unsafe {
-            decode_slice_neon(config, encoded_bytes, &mut dst)
-                .expect("Valid input failed to decode")
-        };
-
-        assert_eq!(&dst[..len], &input_bytes, "Decode len {original_len}");
-    }
-
-    // ----------------------------------------------------------------------
-    // 1. Encoder Coverage Tests
-    // ----------------------------------------------------------------------
-
+    // Encoder tiers: single-vector is 12 bytes, quad is 48.
     #[test]
     fn miri_neon_encode_scalar_fallback() {
-        let config = Config {
-            url_safe: false,
-            padding: true,
-        };
-        // < 12 bytes → pure scalar
-        verify_encode_neon(&config, &STANDARD, 1);
-        verify_encode_neon(&config, &STANDARD, 11);
+        enc(&STD, &STANDARD, 1); // < 12 -> pure scalar
+        enc(&STD, &STANDARD, 11);
     }
 
     #[test]
     fn miri_neon_encode_single_vector_loop() {
-        let config = Config {
-            url_safe: false,
-            padding: true,
-        };
-        verify_encode_neon(&config, &STANDARD, 12); // Exactly 1 loop
-        verify_encode_neon(&config, &STANDARD, 24); // Exactly 2 loops
-        verify_encode_neon(&config, &STANDARD, 13); // 1 loop + 1 byte scalar
+        enc(&STD, &STANDARD, 12); // 1 loop
+        enc(&STD, &STANDARD, 24); // 2 loops
+        enc(&STD, &STANDARD, 13); // 1 loop + scalar
     }
 
     #[test]
     fn miri_neon_encode_quad_vector_loop() {
-        let config = Config {
-            url_safe: false,
-            padding: true,
-        };
-        verify_encode_neon(&config, &STANDARD, 48); // Exactly 1 quad loop
-        verify_encode_neon(&config, &STANDARD, 96); // Exactly 2 quad loops
-        verify_encode_neon(&config, &STANDARD, 49); // 1 quad + scalar
-        verify_encode_neon(&config, &STANDARD, 60); // 1 quad + 1 single
+        enc(&STD, &STANDARD, 48); // 1 quad
+        enc(&STD, &STANDARD, 96); // 2 quads
+        enc(&STD, &STANDARD, 49); // 1 quad + scalar
+        enc(&STD, &STANDARD, 60); // 1 quad + 1 single
     }
 
     #[test]
     fn miri_neon_encode_url_safe() {
-        let config = Config {
-            url_safe: true,
-            padding: true,
-        };
-        verify_encode_neon(&config, &URL_SAFE, 50);
+        enc(
+            &Config {
+                url_safe: true,
+                padding: true,
+            },
+            &URL_SAFE,
+            50,
+        );
     }
 
-    // ----------------------------------------------------------------------
-    // 2. Decoder Coverage Tests
-    // ----------------------------------------------------------------------
-
+    // Decoder tiers: single-vector is 16 bytes, quad is 64.
     #[test]
     fn miri_neon_decode_scalar_fallback() {
-        let config = Config {
-            url_safe: false,
-            padding: true,
-        };
-        verify_decode_neon(&config, &STANDARD, 3); // 4 chars
-        verify_decode_neon(&config, &STANDARD, 9); // 12 chars (< 16)
+        dec(&STD, &STANDARD, 3); // 4 chars
+        dec(&STD, &STANDARD, 9); // 12 chars, < 16
     }
 
     #[test]
     fn miri_neon_decode_single_vector_loop() {
-        let config = Config {
-            url_safe: false,
-            padding: true,
-        };
-        verify_decode_neon(&config, &STANDARD, 12); // 16 chars → 1 loop
-        verify_decode_neon(&config, &STANDARD, 24); // 32 chars → 2 loops
-        verify_decode_neon(&config, &STANDARD, 13); // 16 chars + scalar
+        dec(&STD, &STANDARD, 12); // 1 loop
+        dec(&STD, &STANDARD, 24); // 2 loops
+        dec(&STD, &STANDARD, 13); // 1 loop + scalar
     }
 
     #[test]
     fn miri_neon_decode_quad_vector_loop() {
-        let config = Config {
-            url_safe: false,
-            padding: true,
-        };
-        verify_decode_neon(&config, &STANDARD, 48); // 64 chars → 1 quad loop
-        verify_decode_neon(&config, &STANDARD, 96); // 128 chars → 2 quad loops
-        verify_decode_neon(&config, &STANDARD, 49); // 1 quad + remainder
+        dec(&STD, &STANDARD, 48); // 1 quad
+        dec(&STD, &STANDARD, 96); // 2 quads
+        dec(&STD, &STANDARD, 49); // 1 quad + remainder
     }
 
     #[test]
@@ -579,69 +463,28 @@ mod miri_neon_coverage {
         }
     }
 
-    // ----------------------------------------------------------------------
-    // 3. Error Logic Coverage
-    // ----------------------------------------------------------------------
-
+    /// An invalid byte must be caught in every tier and the scalar tail.
     #[test]
     fn miri_neon_decode_error_detection() {
-        let config = Config {
-            url_safe: false,
-            padding: true,
-        };
         let mut dst = [0u8; 128];
-
-        // Error in Quad Loop
-        let mut bad_input_64 = vec![b'A'; 64];
-        bad_input_64[63] = b'$';
-        let res = unsafe { decode_slice_neon(&config, &bad_input_64, &mut dst) };
-        assert!(res.is_err(), "Failed to catch error in Quad Loop");
-
-        // Error in Single Loop
-        let mut bad_input_16 = vec![b'A'; 16];
-        bad_input_16[15] = b'?';
-        let res = unsafe { decode_slice_neon(&config, &bad_input_16, &mut dst) };
-        assert!(res.is_err(), "Failed to catch error in Single Loop");
-
-        // Error in Quad Loop (first byte)
-        let mut bad_input_64_first = vec![b'A'; 64];
-        bad_input_64_first[0] = b'$';
-        let res = unsafe { decode_slice_neon(&config, &bad_input_64_first, &mut dst) };
-        assert!(
-            res.is_err(),
-            "Failed to catch error in Quad Loop first byte"
-        );
-
-        // Error in Scalar Fallback
-        let mut bad_input_17 = vec![b'A'; 17];
-        bad_input_17[16] = b'?';
-        let res = unsafe { decode_slice_neon(&config, &bad_input_17, &mut dst) };
-        assert!(res.is_err(), "Failed to catch error in Scalar Fallback");
+        for &(len, bad_at, where_) in &[
+            (64, 63, "quad tier, last lane"),
+            (16, 15, "single tier"),
+            (64, 0, "quad tier, first byte"),
+            (17, 16, "scalar tail"),
+        ] {
+            let mut input = vec![b'A'; len];
+            input[bad_at] = b'$';
+            let res = unsafe { decode_slice_neon(&STD, &input, &mut dst) };
+            assert!(res.is_err(), "missed invalid byte in {where_}");
+        }
     }
-
-    // ----------------------------------------------------------------------
-    // 4. Roundtrip & Config Coverage
-    // ----------------------------------------------------------------------
 
     #[test]
     fn miri_neon_roundtrip_standard() {
-        let config = Config {
-            url_safe: false,
-            padding: true,
-        };
         for &len in &[12, 24, 48, 49, 60, 96] {
-            let input = random_bytes(len);
-            let expected = STANDARD.encode(&input);
-            let mut enc = vec![0u8; expected.len() * 2];
-            unsafe {
-                encode_slice_neon(&config, &input, &mut enc);
-            }
-            let encoded = &enc[..expected.len()];
-            assert_eq!(std::str::from_utf8(encoded).unwrap(), expected);
-
-            let mut dec = vec![0u8; len + 64];
-            let dec_len = unsafe { decode_slice_neon(&config, encoded, &mut dec).unwrap() };
-            assert_eq!(&dec[..dec_len], &input, "Roundtrip len {len}");
+            enc(&STD, &STANDARD, len);
+            dec(&STD, &STANDARD, len);
         }
     }
 
@@ -652,7 +495,7 @@ mod miri_neon_coverage {
             padding: false,
         };
         for &len in &[1, 12, 13, 24, 48, 49] {
-            verify_encode_neon(&config, &STANDARD_NO_PAD, len);
+            enc(&config, &STANDARD_NO_PAD, len);
         }
     }
 
@@ -663,22 +506,19 @@ mod miri_neon_coverage {
             padding: false,
         };
         for &len in &[3, 12, 13, 24, 48, 49] {
-            let input_bytes = random_bytes(len);
-            let encoded = STANDARD_NO_PAD.encode(&input_bytes);
-            let mut dst = vec![0u8; len + 64];
-            let dec_len = unsafe {
-                decode_slice_neon(&config, encoded.as_bytes(), &mut dst).unwrap()
-            };
-            assert_eq!(&dst[..dec_len], &input_bytes, "No-pad decode len {len}");
+            dec(&config, &STANDARD_NO_PAD, len);
         }
     }
 
     #[test]
     fn miri_neon_decode_url_safe_padded() {
-        let config = Config {
-            url_safe: true,
-            padding: true,
-        };
-        verify_decode_neon(&config, &URL_SAFE, 50);
+        dec(
+            &Config {
+                url_safe: true,
+                padding: true,
+            },
+            &URL_SAFE,
+            50,
+        );
     }
 }
