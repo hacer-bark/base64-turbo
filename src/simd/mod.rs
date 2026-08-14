@@ -65,20 +65,21 @@ mod tail {
     }
 }
 
-#[cfg(x86_simd)]
+#[cfg(all(x86_simd, any(feature = "avx2", feature = "avx512")))]
 const PACK_L1: [i8; 32] = [
     0x40, 0x01, 0x40, 0x01, 0x40, 0x01, 0x40, 0x01, 0x40, 0x01, 0x40, 0x01, 0x40, 0x01, 0x40, 0x01,
     0x40, 0x01, 0x40, 0x01, 0x40, 0x01, 0x40, 0x01, 0x40, 0x01, 0x40, 0x01, 0x40, 0x01, 0x40, 0x01,
 ];
 
-#[cfg(x86_simd)]
+#[cfg(all(x86_simd, any(feature = "avx2", feature = "avx512")))]
 const PACK_L2: [i16; 16] = [
     0x1000, 0x0001, 0x1000, 0x0001, 0x1000, 0x0001, 0x1000, 0x0001, 0x1000, 0x0001, 0x1000, 0x0001,
     0x1000, 0x0001, 0x1000, 0x0001,
 ];
 
-// PACK_SHUFFLE is used by the AVX2 and plain-AVX512 packers; the VBMI kernel
-// does its own permute, so it is absent from a VBMI-only build.
+// These three are used by the AVX2 and plain-AVX512 packers; the VBMI kernel
+// builds its multipliers from immediates and does its own permute, so all three
+// are absent from a VBMI-only build.
 #[cfg(all(x86_simd, any(feature = "avx2", feature = "avx512")))]
 const PACK_SHUFFLE: [i8; 32] = [
     2, 1, 0, 6, 5, 4, 10, 9, 8, 14, 13, 12, -1, -1, -1, -1, 2, 1, 0, 6, 5, 4, 10, 9, 8, 14, 13, 12,

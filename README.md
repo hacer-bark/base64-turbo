@@ -122,18 +122,18 @@ Output conforms to RFC 4648 — `STANDARD` and `URL_SAFE` are drop-in compatible
 
 ## Performance
 
-Throughput at 64 KiB, our own `cargo bench` runs (chart at the top of this README). `simd` = `base64-simd`, `std` = the `base64` crate.
+Throughput at 64 KiB, our own `cargo bench` runs (chart at the top of this README). `simd` = `base64-simd`, `std` = the `base64` crate. The Xeon row is current; the EPYC and i7 rows are from earlier runs and predate the latest scalar and VBMI work, so they understate those machines.
 
 | Machine | Encode | vs `simd` | Decode | vs `simd` | `std` (enc/dec) |
 | :--- | ---: | ---: | ---: | ---: | ---: |
-| Xeon Platinum 8488C, AVX512 (AWS `c7i.large`) | 12.48 GiB/s | +18% | **21.04 GiB/s** | +110% | 2.42 / 2.78 |
+| Xeon Platinum 8488C, AVX512-VBMI (AWS `c7i.large`) | 31.31 GiB/s | +183% | **46.60 GiB/s** | +340% | 2.52 / 2.93 |
 | EPYC Genoa (Zen 4), AVX512 (Vultr) | 11.08 GiB/s | **−3.6%** | 15.44 GiB/s | +46% | 2.02 / 2.51 |
 | Core i7-8750H, AVX2 | 8.93 GiB/s | +3.8% | 12.14 GiB/s | +52% | 1.66 / 1.66 |
 | Core i7-8750H, SIMD forced off (scalar) | 1.77 GiB/s | — | 2.44 GiB/s | — | 1.81 / 1.50 |
 
 Small-input latency (32 B, zero-alloc `encode_into`): ~10 ns on Xeon and EPYC, ~17 ns on the i7, ~21 ns scalar — roughly 1.5–1.8x ahead of `base64-simd` and 2–4x ahead of `base64`.
 
-Two honest notes: decode is where the real win is, and on Zen 4 `base64-simd` **beats us on streaming encode by ~4%**. Encode is compute-bound (3→4 byte expansion, complex bit-interleaving); decode is closer to memory-bound and saturates the test harness's bandwidth on the larger boxes. The scalar row is the same i7 with SIMD forcibly disabled, which is what an embedded or non-x86 target would see.
+Two honest notes: decode is where the real win is, and on Zen 4 (which has no VBMI, so it runs the plain AVX512 kernel) `base64-simd` **beats us on streaming encode by ~4%**. Encode is compute-bound (3→4 byte expansion, complex bit-interleaving); decode is closer to memory-bound and saturates the test harness's bandwidth on the larger boxes. The scalar row is the same i7 with SIMD forcibly disabled, which is what an embedded or non-x86 target would see.
 
 <details>
 <summary><b>Benchmark methodology &amp; reproduction</b></summary>
@@ -162,7 +162,7 @@ BENCH_TARGET=turbo-buff cargo bench   # zero-alloc only
 | **NEON** | ✅ | ✅ | ❌ | ❌ |
 
 *   **Kani** — the model checker proves the kernels do not panic, do not read or write out of bounds, and round-trip exactly. For AVX2 the bounds result holds for *every* input length, by a machine-checked induction; for the other paths it holds at the lengths the harnesses pin. Details below.
-*   **MIRI** — checks for Undefined Behavior (strict provenance, alignment, OOB pointer arithmetic, data races) on the inputs it runs. Every distinct code path — single-vector loop, wide unrolled loop, scalar tail — is exercised for Scalar, AVX2, AVX512 and AVX512-VBMI. This is branch coverage, not exhaustive input coverage.
+*   **MIRI** — checks for Undefined Behavior (strict provenance, alignment, OOB pointer arithmetic, data races) on the inputs it runs. Every distinct code path — single-vector loop, wide unrolled loop, masked tail, scalar tail — is exercised for Scalar, AVX2, AVX512 and AVX512-VBMI. This is branch coverage, not exhaustive input coverage.
 *   **MSan** — the whole standard library is rebuilt with instrumentation (`-Z build-std -Z sanitizer=memory`) to confirm we never branch on or emit uninitialized memory, which matters given how much AVX512 masking we do.
 *   **Fuzzing** — 2.5B+ `cargo-fuzz` iterations across all paths, no crashes to date.
 
@@ -232,7 +232,9 @@ The design goal is maximum throughput *within* Rust's safety guarantees, by trad
 
 **AVX2.** Tuned for execution-port balance: `vpshufb` shuffles contend for port 5, so we interleave AND/OR/shift work that can issue on ports 0/1/5 to keep the shuffle port from becoming the bottleneck. AVX2's 256-bit registers behave as two independent 128-bit lanes, which a sliding bit-stream like Base64 must cross — we bridge that with an offset load plus a permute ("lane stitching") instead of dropping to scalar.
 
-**AVX512.** Two gains over AVX2: `k`-mask registers let the 1–31 byte tail be processed in a single masked vector op rather than a scalar fallback, and 32 `zmm` registers (vs 16 `ymm`) let us keep every LUT and constant resident while unrolling harder. The VBMI variant adds `vpermb`/`vpermi2b` and is dispatched only where supported.
+**AVX512.** Two gains over AVX2: `k`-mask registers let the 1–31 byte tail be processed in a single masked vector op rather than a scalar fallback, and 32 `zmm` registers (vs 16 `ymm`) let us keep every LUT and constant resident while unrolling harder.
+
+**AVX512-VBMI.** Dispatched only where supported, and the fastest path we have. Every byte permute issues on port 5, so the kernel is written to retire as few ops per vector as possible. Encode is three ops for 48 bytes — a `vpermb` gather, one `vpmultishiftqb` that extracts all eight 6-bit fields at once (the gather's job is to reorder each triple big-endian, which is what makes those fields contiguous bit runs), then a `vpermb` through the alphabet. Decode looks characters up with `vpermi2b` across a 128-byte reverse LUT and folds validity into a single `vpternlogd` OR tree — a bad character sets bit 7 of `input | index` whether it was out of range or ≥ 0x80, so one accumulator covers the whole buffer. Both kernels finish their remainder with masked vector passes instead of a scalar loop: a masked `vmovdqu8` cannot fault on a masked-off element, so the loops need no read-ahead slack and scalar only ever sees the final partial group. That is also why VBMI is dispatched from 32 bytes rather than 64.
 
 **NEON.** 128-bit `q` registers, 12→16 bytes per encode step, 16→12 per decode. `vqtbl1q_u8` gives the same shuffle primitive as `vpshufb`, and NEON has full cross-lane access within the register, so no stitching is needed. Mandatory on ARMv8-A, hence compile-time dispatch and `no_std` compatibility.
 

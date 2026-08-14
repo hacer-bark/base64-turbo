@@ -589,9 +589,12 @@ impl Engine {
             let tier = cpu::tier();
 
             // Smart degrade by length: a kernel is only worth entering once the
-            // input fills its vector width (64 for AVX512, 32 for AVX2).
+            // input fills its vector width (64 for AVX512, 32 for AVX2). VBMI is
+            // the exception -- its tails are masked vector passes rather than a
+            // scalar loop, so it pays off from 32 bytes up; measured on a Xeon
+            // 8488C it breaks even around 24 and is 1.9x by 48.
             #[cfg(feature = "avx512-vbmi")]
-            if len >= 64 && tier == cpu::AVX512_VBMI {
+            if len >= 32 && tier == cpu::AVX512_VBMI {
                 // VBMI fast-path: vpermb replaces the 8-instruction char mapping.
                 // SAFETY: tier() confirmed AVX-512F/BW/VBMI on this CPU.
                 unsafe { simd::encode_slice_avx512_vbmi(&self.config, input, dst) };
@@ -631,8 +634,10 @@ impl Engine {
             let len = input.len();
             let tier = cpu::tier();
 
+            // As in `encode_dispatch`, the masked tails let VBMI start earlier
+            // than the other kernels.
             #[cfg(feature = "avx512-vbmi")]
-            if len >= 64 && tier == cpu::AVX512_VBMI {
+            if len >= 32 && tier == cpu::AVX512_VBMI {
                 // VBMI fast-path: vpermi2b collapses decode+validate to ~4 instructions.
                 // SAFETY: tier() confirmed AVX-512F/BW/VBMI on this CPU.
                 return unsafe { simd::decode_slice_avx512_vbmi(&self.config, input, dst) };
