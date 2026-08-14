@@ -443,19 +443,19 @@ fn test_unstable_apis() {
     let input = random_bytes(1024);
     let expected = REF_STANDARD.encode(&input);
 
-    // --- Scalar (Always Available) ---
-    unsafe {
+    // --- Scalar (Always Available, and now a safe API) ---
+    {
         let mut dst = vec![0u8; STANDARD.encoded_len(input.len())];
         STANDARD.encode_scalar(&input, &mut dst);
-        assert_eq!(&dst, expected.as_bytes(), "Scalar Unsafe Encode");
+        assert_eq!(&dst, expected.as_bytes(), "Scalar Safe Encode");
 
         let mut dec = vec![0u8; STANDARD.estimate_decoded_len(dst.len())];
         let len = STANDARD.decode_scalar(&dst, &mut dec).unwrap();
-        assert_eq!(&dec[..len], &input, "Scalar Unsafe Decode");
+        assert_eq!(&dec[..len], &input, "Scalar Safe Decode");
     }
 
     // --- AVX2 ---
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    #[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), feature = "avx2"))]
     if std::is_x86_feature_detected!("avx2") {
         unsafe {
             let mut dst = vec![0u8; STANDARD.encoded_len(input.len())];

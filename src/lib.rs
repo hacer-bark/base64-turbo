@@ -61,14 +61,24 @@
 //!
 //! ## Feature Flags
 //!
-//! This crate is highly configurable via Cargo features:
+//! Each x86 SIMD kernel is an independent knob, so a target can compile in only
+//! what its CPUs are likely to support. Runtime detection still gates every call,
+//! so a kernel the host lacks simply falls back to scalar.
 //!
 //! | Feature | Default | Description |
 //! |---------|---------|-------------|
 //! | **`std`** | **Yes** | Enables `String` and `Vec` support. Disable this for `no_std` environments. |
-//! | **`simd`** | **Yes** | Enables runtime detection for **AVX512** and **AVX2** intrinsics. If disabled or unsupported by hardware, the crate falls back to scalar logic automatically. |
-//! | **`neon`** | **Yes** | Enables **NEON** SIMD acceleration on aarch64 (ARM64). No `std` required — uses compile-time dispatch. |
-//! | **`unstable`** | **No** | Enables access to the raw, unsafe internal functions (e.g. `encode_avx2`). |
+//! | **`avx2`** | **Yes** | AVX2 kernel + runtime detection on `x86`/`x86_64`. Implies `std`. |
+//! | **`avx512`** | **Yes** | AVX-512F/BW kernel + runtime detection on `x86`/`x86_64`. Implies `std`. |
+//! | **`avx512-vbmi`** | **Yes** | AVX-512 VBMI fast-path kernel on `x86`/`x86_64`. Implies `std`. |
+//! | **`simd`** | **Yes** | Convenience meta-feature: enables `avx2` + `avx512` + `avx512-vbmi` at once. |
+//! | **`neon`** | **Yes** | **NEON** acceleration on aarch64 (ARM64). No `std` required — compile-time dispatch. |
+//! | **`unstable`** | **No** | Exposes the raw internal kernels (e.g. `encode_avx2`; the `*_scalar` accessors are safe). |
+//!
+//! If **no** SIMD kernel is enabled (no `avx2`/`avx512`/`avx512-vbmi` on x86, no
+//! `neon` on aarch64), the build is pure scalar Rust and the crate carries
+//! `#![forbid(unsafe_code)]` — memory safety then holds by construction, with no
+//! `unsafe` anywhere to audit.
 //!
 //! ## Safety & Verification
 //!
@@ -92,34 +102,75 @@
 
 #![cfg_attr(not(any(feature = "std", test)), no_std)]
 #![doc(issue_tracker_base_url = "https://github.com/hacer-bark/base64-turbo/issues/")]
+// When no SIMD kernel is compiled in (`unsafe_simd` off, set by build.rs), the
+// crate is pure scalar Rust with no `unsafe` anywhere — so we forbid it
+// crate-wide and memory safety stops resting on review at all.
+#![cfg_attr(not(unsafe_simd), forbid(unsafe_code))]
 #![forbid(elided_lifetimes_in_paths)]
 // This crate casts pointers to wider SIMD vector types (`__m128i`, `__m256i`, `__m512i`)
 // purely to call `_mm*_loadu_*`/`_mm*_storeu_*` intrinsics, which are explicitly
-// documented to work on any alignment ("u" = unaligned). Clippy cannot see through
-// the intrinsic to know alignment isn't required here, so this lint is a crate-wide
-// false positive for our SIMD code paths. The one exception, the AVX2 encoder's
-// non-temporal `_mm_stream_si128` store, does require 16-byte alignment and checks
-// for it at run time before taking that path.
+// documented to work on any alignment ("u" = unaligned).
 #![allow(clippy::cast_ptr_alignment)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-// The README's examples are compiled and run as doctests so they can't drift from the
-// real API. Not attached to the crate docs — this is a test harness, not documentation.
 #[cfg(all(doctest, feature = "std"))]
 #[doc = include_str!("../README.md")]
 struct ReadmeDoctests;
 
 // Scalar implementation
 mod scalar;
-// SIMD implementation (x86/x86_64 only)
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-#[cfg(feature = "simd")]
+// SIMD implementations, compiled when any vectorized kernel is enabled.
+#[cfg(unsafe_simd)]
 mod simd;
-// SIMD implementation (aarch64 NEON)
-#[cfg(target_arch = "aarch64")]
-#[cfg(feature = "neon")]
-mod simd;
+
+/// Runtime CPU capability detection for the x86 kernels, resolved once and cached.
+///
+/// `std::is_x86_feature_detected!` already caches its answer internally, but this
+/// collapses the whole *tier* decision — which of the compiled kernels to run —
+/// into a single load after the first call, instead of re-checking each feature
+/// bit on every encode/decode.
+#[cfg(x86_simd)]
+mod cpu {
+    use std::sync::OnceLock;
+
+    // Tier levels, ordered least- to most-capable so callers compare with `>=`.
+    // Each level exists only when its kernel was compiled in, which keeps the
+    // detection and dispatch arms in lockstep with the feature set.
+    #[cfg(feature = "avx2")]
+    pub(crate) const AVX2: u8 = 1;
+    #[cfg(feature = "avx512")]
+    pub(crate) const AVX512: u8 = 2;
+    #[cfg(feature = "avx512-vbmi")]
+    pub(crate) const AVX512_VBMI: u8 = 3;
+
+    fn detect() -> u8 {
+        #[cfg(feature = "avx512-vbmi")]
+        if std::is_x86_feature_detected!("avx512f")
+            && std::is_x86_feature_detected!("avx512bw")
+            && std::is_x86_feature_detected!("avx512vbmi")
+        {
+            return AVX512_VBMI;
+        }
+        #[cfg(feature = "avx512")]
+        if std::is_x86_feature_detected!("avx512f") && std::is_x86_feature_detected!("avx512bw") {
+            return AVX512;
+        }
+        #[cfg(feature = "avx2")]
+        if std::is_x86_feature_detected!("avx2") {
+            return AVX2;
+        }
+        0 // scalar
+    }
+
+    /// The best compiled-in kernel tier the current CPU supports. Detected on the
+    /// first call and cached for the lifetime of the process.
+    #[inline]
+    pub(crate) fn tier() -> u8 {
+        static CACHE: OnceLock<u8> = OnceLock::new();
+        *CACHE.get_or_init(detect)
+    }
+}
 
 // ======================================================================
 // ERROR DEFINITION
@@ -292,6 +343,57 @@ pub const URL_SAFE_NO_PAD: Engine = Engine {
     },
 };
 
+// ======================================================================
+// Allocating-API helpers (std only)
+//
+// These isolate the one place the SIMD and scalar-only builds genuinely differ:
+// the SIMD build already contains `unsafe`, so it skips zeroing and validation;
+// the scalar-only build forbids `unsafe`, so it pays a linear pass for the same
+// result. `encode`/`decode` themselves stay identical across both.
+// ======================================================================
+
+/// A `len`-byte buffer for a dispatcher to fill: uninitialized on SIMD builds.
+#[cfg(all(feature = "std", unsafe_simd))]
+#[inline]
+fn spare(len: usize) -> Vec<u8> {
+    let mut out = Vec::with_capacity(len);
+    // SAFETY: the caller passes `out` straight to a dispatcher, which writes the
+    // whole `len`-byte encode output / the decoded prefix; `encode` reads all of
+    // it and `decode` truncates to the written prefix, so no uninitialized byte
+    // is ever observed.
+    #[allow(clippy::uninit_vec)]
+    unsafe {
+        out.set_len(len);
+    }
+    out
+}
+
+/// A `len`-byte buffer for a dispatcher to fill: zeroed on the safe scalar build.
+#[cfg(all(feature = "std", not(unsafe_simd)))]
+#[inline]
+fn spare(len: usize) -> Vec<u8> {
+    vec![0u8; len]
+}
+
+/// Wraps encoder output (guaranteed ASCII) as a `String` without re-validating.
+#[cfg(all(feature = "std", unsafe_simd))]
+#[inline]
+fn into_ascii_string(bytes: Vec<u8>) -> String {
+    // SAFETY: the Base64 alphabet is strictly ASCII, hence valid UTF-8.
+    unsafe { String::from_utf8_unchecked(bytes) }
+}
+
+/// Safe-build counterpart: validate on the way out. The bytes are always ASCII,
+/// so the happy path reuses the buffer's allocation and the `Err` arm is dead.
+#[cfg(all(feature = "std", not(unsafe_simd)))]
+#[inline]
+fn into_ascii_string(bytes: Vec<u8>) -> String {
+    match String::from_utf8(bytes) {
+        Ok(s) => s,
+        Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
+    }
+}
+
 impl Engine {
     // ======================================================================
     // Length Calculators
@@ -361,11 +463,7 @@ impl Engine {
     /// Returns [`Error::BufferTooSmall`] if `output` is not large enough to hold the
     /// encoded data (see [`encoded_len`](Self::encoded_len)).
     #[inline]
-    pub fn encode_into<T: AsRef<[u8]> + Sync>(
-        &self,
-        input: T,
-        output: &mut [u8],
-    ) -> Result<usize, Error> {
+    pub fn encode_into<T: AsRef<[u8]>>(&self, input: T, output: &mut [u8]) -> Result<usize, Error> {
         let input = input.as_ref();
         let len = input.len();
 
@@ -398,11 +496,7 @@ impl Engine {
     /// [`Error::InvalidLength`] / [`Error::InvalidCharacter`] if `input` is not
     /// valid Base64.
     #[inline]
-    pub fn decode_into<T: AsRef<[u8]> + Sync>(
-        &self,
-        input: T,
-        output: &mut [u8],
-    ) -> Result<usize, Error> {
+    pub fn decode_into<T: AsRef<[u8]>>(&self, input: T, output: &mut [u8]) -> Result<usize, Error> {
         let input = input.as_ref();
         let len = input.len();
 
@@ -438,36 +532,16 @@ impl Engine {
     /// ```
     #[inline]
     #[cfg(feature = "std")]
-    pub fn encode<T: AsRef<[u8]> + Sync>(&self, input: T) -> String {
+    pub fn encode<T: AsRef<[u8]>>(&self, input: T) -> String {
         let input = input.as_ref();
 
-        // 1. Calculate EXACT required size. Base64 encoding is deterministic.
-        let len = Self::encoded_len(self, input.len());
-
-        // 2. Allocate uninitialized buffer
-        let mut out = Vec::with_capacity(len);
-
-        // 3. Set length immediately
-        // SAFETY: We are about to overwrite the entire buffer in `encode_into`.
-        // We require a valid `&mut [u8]` slice for the internal logic (especially Rayon) to work.
-        // Since `encode_into` guarantees it writes exactly `len` bytes or fails (and we panic on fail),
-        // we won't expose uninitialized memory.
-        #[allow(clippy::uninit_vec)]
-        unsafe {
-            out.set_len(len);
-        }
-
-        // 4. Encode
-        // We already sized `out` to the exact required length, so we call the
-        // (infallible) dispatcher directly instead of the bounds-checked
-        // `encode_into`, which would otherwise force us to handle an
-        // unreachable `Err(BufferTooSmall)`.
+        // Base64 encoding is deterministic, so this is the EXACT output size.
+        // `spare` hands the dispatcher a full-length buffer (uninitialized on
+        // SIMD builds, zeroed on the scalar-only safe build); the dispatcher then
+        // overwrites every byte, and the output is pure ASCII.
+        let mut out = spare(Self::encoded_len(self, input.len()));
         Self::encode_dispatch(self, input, &mut out);
-
-        // 5. Convert to String
-        // SAFETY: The Base64 alphabet consists strictly of ASCII characters,
-        // which are valid UTF-8.
-        unsafe { String::from_utf8_unchecked(out) }
+        into_ascii_string(out)
     }
 
     /// Allocates a new `Vec<u8>` and decodes the input data into it.
@@ -484,45 +558,18 @@ impl Engine {
     /// ```
     #[inline]
     #[cfg(feature = "std")]
-    pub fn decode<T: AsRef<[u8]> + Sync>(&self, input: T) -> Result<Vec<u8>, Error> {
+    pub fn decode<T: AsRef<[u8]>>(&self, input: T) -> Result<Vec<u8>, Error> {
         let input = input.as_ref();
 
-        // 1. Calculate MAXIMUM required size (upper bound)
-        let max_len = Self::estimate_decoded_len(self, input.len());
-
-        // 2. Allocate buffer
-        let mut out = Vec::with_capacity(max_len);
-
-        // 3. Set length to MAX
-        // SAFETY: We temporarily expose uninitialized memory to the `decode_into` function
-        // so it can write into the slice. We strictly sanitize the length in step 5.
-        #[allow(clippy::uninit_vec)]
-        unsafe {
-            out.set_len(max_len);
-        }
-
-        // 4. Decode
-        // `decode_into` handles parallel/serial dispatch and returns the `actual_len`.
-        match Self::decode_into(self, input, &mut out) {
-            Ok(actual_len) => {
-                // 5. Shrink to fit the real data
-                // SAFETY: `decode_into` reported it successfully wrote `actual_len` valid bytes.
-                // We truncate the Vec to this length, discarding any trailing garbage/uninitialized memory.
-                unsafe {
-                    out.set_len(actual_len);
-                }
-                Ok(out)
-            }
-            Err(e) => {
-                // SAFETY: If an error occurred, we force the length to 0.
-                // This prevents the caller from accidentally inspecting uninitialized memory
-                // if they were to (incorrectly) reuse the Vec from a partial result.
-                unsafe {
-                    out.set_len(0);
-                }
-                Err(e)
-            }
-        }
+        // `spare` gives us the upper-bound-sized buffer; `decode_into` writes the
+        // decoded prefix and reports its exact length, then `truncate` drops the
+        // unwritten tail. `truncate` is safe on both buffer flavors — for `u8`
+        // there is nothing to run, it just shortens the live length — and on error
+        // the whole buffer is dropped without exposing an unwritten byte.
+        let mut out = spare(Self::estimate_decoded_len(self, input.len()));
+        let written = Self::decode_into(self, input, &mut out)?;
+        out.truncate(written);
+        Ok(out)
     }
 
     // ========================================================================
@@ -536,100 +583,80 @@ impl Engine {
     #[allow(clippy::trivially_copy_pass_by_ref)]
     #[inline]
     fn encode_dispatch(&self, input: &[u8], dst: &mut [u8]) {
-        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-        #[cfg(feature = "simd")]
+        #[cfg(x86_simd)]
         {
             let len = input.len();
+            let tier = cpu::tier();
 
-            // Smart degrade: If len < 64, don't bother checking AVX512 features or setting up ZMM register
-            if len >= 64
-                && std::is_x86_feature_detected!("avx512f")
-                && std::is_x86_feature_detected!("avx512bw")
-            {
-                // VBMI fast-path: vpermb replaces 8-instruction char mapping with 1 instruction
-                if std::is_x86_feature_detected!("avx512vbmi") {
-                    // SAFETY: AVX-512F/BW/VBMI availability checked above.
-                    unsafe {
-                        simd::encode_slice_avx512_vbmi(&self.config, input, dst);
-                    }
-                    return;
-                }
-                // SAFETY: AVX-512F/BW availability checked above.
-                unsafe {
-                    simd::encode_slice_avx512(&self.config, input, dst);
-                }
+            // Smart degrade by length: a kernel is only worth entering once the
+            // input fills its vector width (64 for AVX512, 32 for AVX2).
+            #[cfg(feature = "avx512-vbmi")]
+            if len >= 64 && tier == cpu::AVX512_VBMI {
+                // VBMI fast-path: vpermb replaces the 8-instruction char mapping.
+                // SAFETY: tier() confirmed AVX-512F/BW/VBMI on this CPU.
+                unsafe { simd::encode_slice_avx512_vbmi(&self.config, input, dst) };
                 return;
             }
-
-            // Smart degrade: If len < 32, skip AVX2.
-            if len >= 32 && std::is_x86_feature_detected!("avx2") {
-                // SAFETY: AVX2 availability checked above.
-                unsafe {
-                    simd::encode_slice_avx2(&self.config, input, dst);
-                }
+            #[cfg(feature = "avx512")]
+            if len >= 64 && tier >= cpu::AVX512 {
+                // SAFETY: tier() confirmed AVX-512F/BW on this CPU.
+                unsafe { simd::encode_slice_avx512(&self.config, input, dst) };
+                return;
+            }
+            #[cfg(feature = "avx2")]
+            if len >= 32 && tier >= cpu::AVX2 {
+                // SAFETY: tier() confirmed AVX2 on this CPU.
+                unsafe { simd::encode_slice_avx2(&self.config, input, dst) };
                 return;
             }
         }
 
-        // NEON path (aarch64): compile-time dispatch, no runtime detection
-        #[cfg(target_arch = "aarch64")]
-        #[cfg(feature = "neon")]
-        {
-            let len = input.len();
-            if len >= 16 {
-                // SAFETY: NEON is baseline on aarch64.
-                unsafe {
-                    simd::encode_slice_neon(&self.config, input, dst);
-                }
-                return;
-            }
+        // NEON path (aarch64): compile-time dispatch, no runtime detection.
+        #[cfg(all(target_arch = "aarch64", feature = "neon"))]
+        if input.len() >= 16 {
+            // SAFETY: NEON is baseline on aarch64.
+            unsafe { simd::encode_slice_neon(&self.config, input, dst) };
+            return;
         }
 
-        // Fallback: Scalar / Non-x86 / Short inputs
+        // Fallback: Scalar / non-SIMD target / short inputs.
         scalar::encode_slice(&self.config, input, dst);
     }
 
     #[allow(clippy::trivially_copy_pass_by_ref)]
     #[inline]
     fn decode_dispatch(&self, input: &[u8], dst: &mut [u8]) -> Result<usize, Error> {
-        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-        #[cfg(feature = "simd")]
+        #[cfg(x86_simd)]
         {
             let len = input.len();
+            let tier = cpu::tier();
 
-            // Smart degrade: Don't enter AVX512 path if we don't have a full vector of input.
-            if len >= 64
-                && std::is_x86_feature_detected!("avx512f")
-                && std::is_x86_feature_detected!("avx512bw")
-            {
-                // VBMI fast-path: vpermi2b replaces 13-instruction decode+validate with ~4 instructions
-                if std::is_x86_feature_detected!("avx512vbmi") {
-                    // SAFETY: AVX-512F/BW/VBMI availability checked above.
-                    return unsafe { simd::decode_slice_avx512_vbmi(&self.config, input, dst) };
-                }
-                // SAFETY: AVX-512F/BW availability checked above.
+            #[cfg(feature = "avx512-vbmi")]
+            if len >= 64 && tier == cpu::AVX512_VBMI {
+                // VBMI fast-path: vpermi2b collapses decode+validate to ~4 instructions.
+                // SAFETY: tier() confirmed AVX-512F/BW/VBMI on this CPU.
+                return unsafe { simd::decode_slice_avx512_vbmi(&self.config, input, dst) };
+            }
+            #[cfg(feature = "avx512")]
+            if len >= 64 && tier >= cpu::AVX512 {
+                // SAFETY: tier() confirmed AVX-512F/BW on this CPU.
                 return unsafe { simd::decode_slice_avx512(&self.config, input, dst) };
             }
-
-            // Smart degrade: Fallback to AVX2 if len is between 32 and 64, or if AVX512 is missing.
-            if len >= 32 && std::is_x86_feature_detected!("avx2") {
-                // SAFETY: AVX2 availability checked above.
+            #[cfg(feature = "avx2")]
+            if len >= 32 && tier >= cpu::AVX2 {
+                // SAFETY: tier() confirmed AVX2 on this CPU.
                 return unsafe { simd::decode_slice_avx2(&self.config, input, dst) };
             }
         }
 
-        // NEON path (aarch64): compile-time dispatch, no runtime detection
-        #[cfg(target_arch = "aarch64")]
-        #[cfg(feature = "neon")]
-        {
-            let len = input.len();
-            if len >= 16 {
-                // SAFETY: NEON is baseline on aarch64.
-                return unsafe { simd::decode_slice_neon(&self.config, input, dst) };
-            }
+        // NEON path (aarch64): compile-time dispatch, no runtime detection.
+        #[cfg(all(target_arch = "aarch64", feature = "neon"))]
+        if input.len() >= 16 {
+            // SAFETY: NEON is baseline on aarch64.
+            return unsafe { simd::decode_slice_neon(&self.config, input, dst) };
         }
 
-        // Fallback: Scalar / Non-x86 / Short inputs
+        // Fallback: Scalar / non-SIMD target / short inputs.
         scalar::decode_slice(&self.config, input, dst)
     }
 
@@ -661,9 +688,7 @@ impl Engine {
     /// This is a low-level, unsafe primitive. Misuse can lead to undefined behavior regardless
     /// of other crate guarantees. For better memory safety, use the safe higher-level APIs
     /// (e.g., `Engine::encode`).
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    #[cfg(feature = "simd")]
-    #[cfg(feature = "unstable")]
+    #[cfg(all(x86_simd, feature = "avx2", feature = "unstable"))]
     pub unsafe fn encode_avx2(&self, input: &[u8], dst: &mut [u8]) {
         // SAFETY: Caller must uphold the contracts documented on this function.
         unsafe { simd::encode_slice_avx2(&self.config, input, dst) }
@@ -699,59 +724,48 @@ impl Engine {
     ///
     /// Returns [`Error::InvalidLength`] or [`Error::InvalidCharacter`] if `input` is not
     /// valid Base64.
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    #[cfg(feature = "simd")]
-    #[cfg(feature = "unstable")]
+    #[cfg(all(x86_simd, feature = "avx2", feature = "unstable"))]
     pub unsafe fn decode_avx2(&self, input: &[u8], dst: &mut [u8]) -> Result<usize, Error> {
         // SAFETY: Caller must uphold the contracts documented on this function.
         unsafe { simd::decode_slice_avx2(&self.config, input, dst) }
     }
 
-    /// Encodes a byte slice into Base64 using a highly optimized scalar (non-SIMD) algorithm.
+    /// Encodes a byte slice into Base64 using the optimized scalar (non-SIMD) algorithm.
     ///
-    /// This provides raw access to the direct scalar encoding logic.
+    /// This provides raw access to the direct scalar encoding logic. Unlike the SIMD
+    /// accessors, this is a **safe** function: the scalar kernel uses no `unsafe`,
+    /// so every write is bounds-checked.
     ///
-    /// # Safety
+    /// # Panics
     ///
-    /// This function is **unsafe** and requires the caller to uphold strict memory contracts.
-    /// Failure to do so will result in **undefined behavior** (e.g., buffer overflow).
-    ///
-    /// - The destination pointer `dst` must be valid and point to a mutable memory region with
-    ///   sufficient capacity. The required size depends on `config.padding`:
-    ///   - With padding: `input.len().div_ceil(3) * 4`
-    ///   - Without padding: `(input.len() * 4).div_ceil(3)`
-    ///   - Highly recommended: use `Engine::encoded_len` to compute length.
-    ///
-    /// # Warning
-    ///
-    /// This is a low-level, unsafe primitive. Misuse can lead to undefined behavior regardless
-    /// of other crate guarantees. For better memory safety, use the safe higher-level APIs
-    /// (e.g., `Engine::encode`).
+    /// Panics if `dst` is smaller than the encoded length (a bounds check, not memory
+    /// corruption). Size it with [`Engine::encoded_len`]:
+    /// - With padding: `input.len().div_ceil(3) * 4`
+    /// - Without padding: `(input.len() * 4).div_ceil(3)`
     #[cfg(feature = "unstable")]
-    pub unsafe fn encode_scalar(&self, input: &[u8], dst: &mut [u8]) {
+    pub fn encode_scalar(&self, input: &[u8], dst: &mut [u8]) {
         scalar::encode_slice(&self.config, input, dst);
     }
 
-    /// Decodes a Base64 byte slice using a highly optimized scalar (non-SIMD) algorithm.
+    /// Decodes a Base64 byte slice using the optimized scalar (non-SIMD) algorithm.
     ///
-    /// This provides raw access to the direct scalar decoding logic.
+    /// This provides raw access to the direct scalar decoding logic. Like
+    /// [`Engine::encode_scalar`], it is a **safe** function — the scalar kernel
+    /// contains no `unsafe`, so a too-small `dst` panics on a bounds check rather
+    /// than corrupting memory.
     ///
-    /// # Safety
+    /// Size `dst` with [`Engine::estimate_decoded_len`].
     ///
-    /// This function is **unsafe** and requires the caller to uphold strict memory contracts.
-    /// Failure to do so will result in **undefined behavior** (e.g., buffer overflow).
+    /// # Panics
     ///
-    /// - `dst` must be large enough to hold the decoded output; a buffer that is too small
-    ///   panics (bounds check) rather than corrupting memory. The scalar decoder writes exactly
-    ///   the decoded bytes (no overlapping over-writes).
-    ///  - Highly recommended: use `Engine::estimate_decoded_len` to compute length.
+    /// Panics if `dst` is too small to hold the decoded output.
     ///
     /// # Errors
     ///
     /// Returns [`Error::InvalidLength`] or [`Error::InvalidCharacter`] if `input` is not
     /// valid Base64.
     #[cfg(feature = "unstable")]
-    pub unsafe fn decode_scalar(&self, input: &[u8], dst: &mut [u8]) -> Result<usize, Error> {
+    pub fn decode_scalar(&self, input: &[u8], dst: &mut [u8]) -> Result<usize, Error> {
         scalar::decode_slice(&self.config, input, dst)
     }
 
@@ -772,9 +786,7 @@ impl Engine {
     /// This is a low-level, unsafe primitive. Misuse can lead to undefined behavior regardless
     /// of other crate guarantees. For better memory safety, use the safe higher-level APIs
     /// (e.g., `Engine::decode`).
-    #[cfg(target_arch = "aarch64")]
-    #[cfg(feature = "neon")]
-    #[cfg(feature = "unstable")]
+    #[cfg(all(target_arch = "aarch64", feature = "neon", feature = "unstable"))]
     pub unsafe fn encode_neon(&self, input: &[u8], dst: &mut [u8]) {
         // SAFETY: Caller must uphold the contracts documented on this function.
         unsafe { simd::encode_slice_neon(&self.config, input, dst) }
@@ -802,9 +814,7 @@ impl Engine {
     ///
     /// Returns [`Error::InvalidLength`] or [`Error::InvalidCharacter`] if `input` is not
     /// valid Base64.
-    #[cfg(target_arch = "aarch64")]
-    #[cfg(feature = "neon")]
-    #[cfg(feature = "unstable")]
+    #[cfg(all(target_arch = "aarch64", feature = "neon", feature = "unstable"))]
     pub unsafe fn decode_neon(&self, input: &[u8], dst: &mut [u8]) -> Result<usize, Error> {
         // SAFETY: Caller must uphold the contracts documented on this function.
         unsafe { simd::decode_slice_neon(&self.config, input, dst) }

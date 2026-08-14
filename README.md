@@ -1,17 +1,22 @@
-# Base64 Turbo
+<div align="center">
+  <h1>Base64 Turbo</h1>
+  <p><strong>A SIMD Base64 implementation whose <code>unsafe</code> paths are checked by a model checker, not just by review.</strong></p>
 
-[![Crates.io](https://img.shields.io/crates/v/base64-turbo.svg)](https://crates.io/crates/base64-turbo)
-[![License](https://img.shields.io/crates/l/base64-turbo.svg)](https://crates.io/crates/base64-turbo)
-[![Kani Verified](https://img.shields.io/github/actions/workflow/status/hacer-bark/base64-turbo/verification.yml?label=Kani%20Verified)](https://github.com/hacer-bark/base64-turbo/actions/workflows/verification.yml)
-[![MIRI Verified](https://img.shields.io/github/actions/workflow/status/hacer-bark/base64-turbo/miri.yml?label=MIRI%20Verified)](https://github.com/hacer-bark/base64-turbo/actions/workflows/miri.yml)
+  [![Crates.io](https://img.shields.io/crates/v/base64-turbo.svg?style=for-the-badge&color=fc8d62)](https://crates.io/crates/base64-turbo)
+  [![License](https://img.shields.io/crates/l/base64-turbo.svg?style=for-the-badge&color=8da0cb)](https://crates.io/crates/base64-turbo)
+  [![Kani Verified](https://img.shields.io/github/actions/workflow/status/hacer-bark/base64-turbo/verification.yml?label=Kani%20Verified&style=for-the-badge&color=e78ac3)](https://github.com/hacer-bark/base64-turbo/actions/workflows/verification.yml)
+  [![MIRI Verified](https://img.shields.io/github/actions/workflow/status/hacer-bark/base64-turbo/miri.yml?label=MIRI%20Verified&style=for-the-badge&color=66c2a5)](https://github.com/hacer-bark/base64-turbo/actions/workflows/miri.yml)
+</div>
 
-**A SIMD Base64 implementation whose `unsafe` paths are checked by a model checker, not just by review.**
+<br/>
 
-`base64-turbo` is built for high-throughput systems where CPU cycles are scarce and Undefined Behavior is unacceptable. It picks the best kernel available at runtime:
+`base64-turbo` is built for high-throughput systems where CPU cycles are scarce and Undefined Behavior is unacceptable. It picks the **best kernel available at runtime**, without ever giving up on portability:
 
 *   **x86_64:** AVX512 (incl. a VBMI fast path) or AVX2, via runtime CPU detection.
 *   **ARM (aarch64):** NEON, via compile-time dispatch — no detection overhead.
 *   **Other:** An optimized table-driven scalar kernel, in 100% safe Rust.
+
+<!-- <img alt="Base64 throughput on a Xeon Platinum 8488C (AVX512) — base64-turbo vs base64-simd and the base64 crate" src="https://github.com/hacer-bark/base64-turbo/blob/main/benches/img/base64_intel.png?raw=true"> -->
 
 ### What we actually claim
 
@@ -21,26 +26,52 @@ We are **not** faster than unchecked C/assembly — we aren't and don't try to b
 
 ## Quick Start
 
+### Encoding
+
 ```rust
 use base64_turbo::STANDARD;
 
-let encoded = STANDARD.encode(b"Speed and Safety");
-assert_eq!(encoded, "U3BlZWQgYW5kIFNhZmV0eQ==");
+fn main() {
+    let data = b"Speed and Safety";
 
-let decoded = STANDARD.decode(&encoded).unwrap();
-assert_eq!(decoded, b"Speed and Safety");
+    // Returns String
+    let encoded = STANDARD.encode(data);
+
+    assert_eq!(encoded, "U3BlZWQgYW5kIFNhZmV0eQ==");
+}
 ```
 
-### Zero-allocation (stack / `no_std`)
+### Decoding
 
 ```rust
 use base64_turbo::STANDARD;
 
-let input = b"Low Latency";
-let mut output = [0u8; 64];
+fn main() {
+    let encoded = "U3BlZWQgYW5kIFNhZmV0eQ==";
 
-let len = STANDARD.encode_into(input, &mut output).unwrap();
-assert_eq!(&output[..len], b"TG93IExhdGVuY3k=");
+    // Returns Result<Vec<u8>, Error>
+    let decoded = STANDARD.decode(encoded).unwrap();
+
+    assert_eq!(decoded, b"Speed and Safety");
+}
+```
+
+### Zero-Allocation (Stack / `no_std`)
+
+For scenarios where heap allocation is too slow (e.g., hot paths), write directly to stack buffers — the `_into` APIs need no allocator:
+
+```rust
+use base64_turbo::STANDARD;
+
+fn main() {
+    let input = b"Low Latency";
+    let mut output = [0u8; 64];
+
+    // Returns Result<usize, Error>
+    let len = STANDARD.encode_into(input, &mut output).unwrap();
+
+    assert_eq!(&output[..len], b"TG93IExhdGVuY3k=");
+}
 ```
 
 Size the buffers with the helpers rather than guessing:
@@ -48,37 +79,50 @@ Size the buffers with the helpers rather than guessing:
 ```rust
 use base64_turbo::STANDARD;
 
-let input = b"Low Latency";
-let mut enc_buf = vec![0u8; STANDARD.encoded_len(input.len())];
-let enc_len = STANDARD.encode_into(input, &mut enc_buf).unwrap();
+fn main() {
+    let input = b"Low Latency";
 
-let mut dec_buf = vec![0u8; STANDARD.estimate_decoded_len(enc_len)];
-let dec_len = STANDARD.decode_into(&enc_buf[..enc_len], &mut dec_buf).unwrap();
-assert_eq!(&dec_buf[..dec_len], input);
+    let mut enc_buf = vec![0u8; STANDARD.encoded_len(input.len())];
+    let enc_len = STANDARD.encode_into(input, &mut enc_buf).unwrap();
+
+    let mut dec_buf = vec![0u8; STANDARD.estimate_decoded_len(enc_len)];
+    let dec_len = STANDARD.decode_into(&enc_buf[..enc_len], &mut dec_buf).unwrap();
+
+    assert_eq!(&dec_buf[..dec_len], input);
+}
 ```
 
 ## Feature Flags
 
+Each x86 SIMD kernel is its own knob, so you compile in only what your target CPUs are likely to support and leave the rest out of the binary. Runtime detection still gates every call, so enabling a kernel the host lacks just falls back to scalar.
+
 | Feature | Default | Description |
 | :--- | :---: | :--- |
-| `std` | ✅ | `String`/`Vec` support. Disable for `no_std` (the `_into` APIs need no allocator). |
-| `simd` | ✅ | Runtime detection for AVX512/AVX2 on x86/x86_64. |
-| `neon` | ✅ | NEON acceleration on aarch64. No `std` required. |
-| `unstable` | ❌ | Exposes the raw `unsafe` internals (`encode_avx2`, `encode_neon`, …). |
+| `std` | **Yes** | `String`/`Vec` support. Disable for `no_std` (the `_into` APIs need no allocator). |
+| `avx2` | **Yes** | AVX2 kernel + runtime detection on x86/x86_64. Implies `std`. |
+| `avx512` | **Yes** | AVX-512F/BW kernel + runtime detection on x86/x86_64. Implies `std`. |
+| `avx512-vbmi` | **Yes** | AVX-512 VBMI fast-path kernel on x86/x86_64. Implies `std`. |
+| `simd` | **Yes** | Convenience meta-feature — turns on `avx2` + `avx512` + `avx512-vbmi` at once. |
+| `neon` | **Yes** | NEON acceleration on aarch64. No `std` required. |
+| `unstable` | **No** | Exposes the raw internal kernels (`encode_avx2`, `encode_neon`, …). The `*_scalar` accessors are **safe** (they may panic on a too-small buffer, but never invoke UB). |
+
+**Scalar-only builds are `#![forbid(unsafe_code)]`.** If you enable no SIMD kernel at all — no `avx2`/`avx512`/`avx512-vbmi` on x86, no `neon` on aarch64 — the crate is pure scalar Rust with `unsafe` forbidden crate-wide. There is then nothing to verify and nothing to audit: memory safety holds by construction. The allocating `encode`/`decode` swap their uninitialized-buffer fast path for a zero-filled, fully-checked one in this configuration.
 
 ## Compatibility & Stability
 
-**MSRV: Rust 1.89.0.** We rely on recently stabilized AVX512 intrinsics in `core`. We do not plan to lower this or to gate it behind feature flags.
+### Minimum Supported Rust Version (MSRV)
+**This crate requires Rust 1.89.0 or newer.** We rely on recently stabilized AVX512 intrinsics in `core`, and we do not plan to lower this or to gate it behind feature flags.
 
-The public API is **stable** and follows SemVer; it stays backward-compatible across the `0.2.x` line.
+### Public API Stability
+The public API is considered **Stable**.
+*   We adhere to **Semantic Versioning**.
+*   The current API surface will remain valid and backward-compatible throughout the `0.2.x` lifecycle.
 
 Output conforms to RFC 4648 — `STANDARD` and `URL_SAFE` are drop-in compatible with the `base64` crate. `serde` support is not included, to keep the dependency tree empty; wrap the API in your own serializer if you need it.
 
 ## Performance
 
-![Benchmark Graph](https://github.com/hacer-bark/base64-turbo/blob/main/benches/img/base64_intel.png?raw=true)
-
-Throughput at 64 KiB, our own `cargo bench` runs. `simd` = `base64-simd`, `std` = the `base64` crate.
+Throughput at 64 KiB, our own `cargo bench` runs (chart at the top of this README). `simd` = `base64-simd`, `std` = the `base64` crate.
 
 | Machine | Encode | vs `simd` | Decode | vs `simd` | `std` (enc/dec) |
 | :--- | ---: | ---: | ---: | ---: | ---: |

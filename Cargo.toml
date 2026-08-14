@@ -15,9 +15,20 @@ exclude = ["benches/scripts/", "benches/results/"]
 
 [features]
 default = ["std", "simd", "neon"]
-unstable = []
+
+# Core
 std = []
-simd = ["std"]
+unstable = []
+
+# x86/x86_64 SIMD kernels.
+avx2 = ["std"]
+avx512 = ["std"]
+avx512-vbmi = ["std"]
+
+# Convenience meta-feature: every x86 SIMD kernel at once.
+simd = ["avx2", "avx512", "avx512-vbmi"]
+
+# aarch64 NEON kernel (compile-time dispatch, no runtime detection, no std).
 neon = []
 
 [dev-dependencies]
@@ -27,7 +38,7 @@ base64 = "0.23"
 base64-simd = "0.8"
 
 [lints.rust]
-warnings = { level = "deny", priority = -1 }
+warnings = "deny"
 future_incompatible = { level = "deny", priority = -1 }
 unused = { level = "deny", priority = -1 }
 missing_docs = "deny"

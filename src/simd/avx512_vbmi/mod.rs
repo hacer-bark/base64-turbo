@@ -38,9 +38,7 @@ const VBMI_ENCODE_URL_SAFE: [u8; 64] =
 
 /// 128-byte reverse lookup for the `vpermi2b` decoder: ASCII 0-127 -> 6-bit
 /// index, `0xFF` for invalid.
-#[allow(clippy::cast_possible_truncation)] // `i` is always < 64, fits in u8
 const VBMI_DECODE_STANDARD: [u8; 128] = build_decode_lut(&VBMI_ENCODE_STANDARD);
-#[allow(clippy::cast_possible_truncation)]
 const VBMI_DECODE_URL_SAFE: [u8; 128] = build_decode_lut(&VBMI_ENCODE_URL_SAFE);
 
 #[allow(clippy::cast_possible_truncation)] // `i` is always < 64, fits in u8
