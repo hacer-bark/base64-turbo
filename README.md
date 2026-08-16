@@ -236,7 +236,18 @@ that cover each other's blind spots.
 * **MSan** rebuilds the standard library with instrumentation
   (`-Z build-std -Z sanitizer=memory`) to confirm we never branch on or emit
   uninitialized memory, which matters given how much AVX512-VBMI masking we do.
-* **Fuzzing** — 2.5B+ `cargo-fuzz` iterations across all paths, no crashes to date.
+* **Fuzzing** — 250M+ `cargo-fuzz` iterations across all paths, no crashes to date.
+
+<details>
+<summary>Raw <code>cargo fuzz</code> output — AWS <code>c8a.large</code>, 1h run, <code>-fork=2</code></summary>
+
+See [`fuzz/logs/2026-08-16-c8a-large.log`](fuzz/logs/2026-08-16-c8a-large.log) for the
+full unedited `libFuzzer` output: 328,814,323 executions in 3606s, `oom/timeout/crash: 0/0/0`
+throughout. The corpus this run accumulated is checked in at
+[`fuzz/corpus/`](fuzz/corpus/) so the coverage is reproducible and future runs start
+from it instead of from scratch.
+
+</details>
 
 <details>
 <summary>What still rests on human judgment</summary>
