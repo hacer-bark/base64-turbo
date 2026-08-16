@@ -12,98 +12,48 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
-  CARGO_BUILD_JOBS: 2
 
 jobs:
-  clippy-x86_64:
-    name: Clippy (x86_64)
-    runs-on: ubuntu-latest
+  clippy:
+    name: "clippy (${{ matrix.name }})"
+    runs-on: ${{ matrix.os || 'ubuntu-latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: no_std
+            flags: --no-default-features --lib --tests
+          - name: std only
+            flags: --no-default-features --features std --lib --tests
+          - name: all features (x86_64)
+            flags: --all-targets --all-features
+          - name: all features (aarch64, exercises neon.rs)
+            os: ubuntu-24.04-arm
+            flags: --all-targets --all-features
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Install Rust Stable
-        uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-
-      - name: Run Parallel Clippy (x86_64)
-        run: |
-          set +e
-          echo "Starting Parallel Clippy Suite (x86_64)..."
-
-          # --- 1. NO_STD ---
-          # Deliberately --lib --tests only (not --all-targets): the benches depend on
-          # std-only dev-dependencies (criterion, base64, base64-simd) and were never
-          # meant to build under no_std.
-          (
-            echo "[no_std] Running..."
-            cargo clippy --no-default-features --lib --tests > nostd.log 2>&1
-          ) &
-          PID_NOSTD=$!
-
-          # --- 2. STD ONLY ---
-          (
-            echo "[std] Running..."
-            cargo clippy --no-default-features --features "std" --lib --tests > std.log 2>&1
-          ) &
-          PID_STD=$!
-
-          # --- 3. FULL (all features, all targets: lib, tests, benches, unstable API) ---
-          (
-            echo "[full] Running..."
-            cargo clippy --all-targets --all-features > full.log 2>&1
-          ) &
-          PID_FULL=$!
-
-          # --- WAIT AND REPORT ---
-          FAILED=0
-
-          wait $PID_NOSTD
-          if [ $? -ne 0 ]; then echo "[no_std] FAILED. Logs:"; cat nostd.log; FAILED=1; else echo "[no_std] PASSED"; fi
-
-          wait $PID_STD
-          if [ $? -ne 0 ]; then echo "[std] FAILED. Logs:"; cat std.log; FAILED=1; else echo "[std] PASSED"; fi
-
-          wait $PID_FULL
-          if [ $? -ne 0 ]; then echo "[full] FAILED. Logs:"; cat full.log; FAILED=1; else echo "[full] PASSED"; fi
-
-          if [ $FAILED -ne 0 ]; then exit 1; fi
-          set -e
-          echo "All Clippy suites passed!"
-
-      - name: Cleanup Artifacts
-        if: always()
-        run: rm -f *.log
-
-  clippy-aarch64:
-    name: Clippy (aarch64)
-    runs-on: ubuntu-24.04-arm
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Install Rust Stable
-        uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
         with:
-          components: clippy
-
-      - name: "Run Clippy (all features, all targets: exercises neon.rs)"
-        run: cargo clippy --all-targets --all-features
+          prefix-key: v1-rust-clippy
+          key: ${{ matrix.name }}
+      - name: clippy
+        run: cargo clippy --locked ${{ matrix.flags }}
 
   fmt:
-    name: Rustfmt
+    name: rustfmt
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Install Rust Stable
-        uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-
-      - name: Check formatting
-        run: cargo fmt --all -- --check
+      - name: fmt
+        run: cargo fmt --all --check

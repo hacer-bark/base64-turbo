@@ -137,6 +137,6 @@ fuzz_target!(|data: &[u8]| {
         }
     }
 
-    // Note: Dispatch logic (AVX512/AVX2/scalar selection)
-    // TODO: In feature will add explicit support for AVX512 instructions.
+    // Note: Dispatch logic (AVX512-VBMI/AVX2/scalar selection)
+    // TODO: In future will add explicit support for AVX512-VBMI instructions.
 });

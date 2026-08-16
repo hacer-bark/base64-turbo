@@ -1,4 +1,4 @@
-//! Throughput benchmarks comparing `base64-turbo` against the `base64` and `base64-simd` crates.
+//! Throughput benchmarks comparing `base64-turbo` against the `base64`, `base64-simd` and `base64-ng` crates.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -26,6 +26,9 @@ use base64::{
 
 // 3. Competitor 2: The 'base64-simd' crate
 use base64_simd::STANDARD as SIMD_ENGINE;
+
+// 4. Competitor 3: The 'base64-ng' crate
+use base64_ng::STANDARD as NG_ENGINE;
 
 fn generate_random_data(size: usize) -> Vec<u8> {
     let mut data = vec![0u8; size];
@@ -126,6 +129,13 @@ fn bench_comparison(c: &mut Criterion) {
             );
         }
 
+        // 4. Base64 NG
+        if should_run("ng") {
+            group.bench_with_input(BenchmarkId::new("Encode/Ng", size), &input_data, |b, d| {
+                b.iter(|| NG_ENGINE.encode_string(black_box(d)));
+            });
+        }
+
         // ======================================================================
         // DECODE
         // ======================================================================
@@ -184,6 +194,13 @@ fn bench_comparison(c: &mut Criterion) {
                     b.iter(|| SIMD_ENGINE.decode_to_vec(black_box(s)));
                 },
             );
+        }
+
+        // 4. Base64 NG Decode
+        if should_run("ng") {
+            group.bench_with_input(BenchmarkId::new("Decode/Ng", size), &encoded_str, |b, s| {
+                b.iter(|| NG_ENGINE.decode_vec(black_box(s.as_bytes())));
+            });
         }
     }
 

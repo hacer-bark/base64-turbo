@@ -12,6 +12,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   CARGO_BUILD_JOBS: 2
@@ -23,7 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Rust Nightly with MIRI
         uses: dtolnay/rust-toolchain@nightly
@@ -34,7 +37,7 @@ jobs:
         env:
           RUSTFLAGS: "-C target-feature=+avx2,+avx512f,+avx512bw,+avx512vbmi"
         run: |
-          echo "Running MIRI with AVX2 + AVX512 + AVX512-VBMI all enabled..."
+          echo "Running MIRI with AVX2 + AVX512-VBMI enabled..."
           cargo miri test --features unstable --lib --bins --tests --examples
 
   miri-check-aarch64:
@@ -42,7 +45,7 @@ jobs:
     runs-on: ubuntu-24.04-arm
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Rust Nightly with MIRI
         uses: dtolnay/rust-toolchain@nightly

@@ -2,176 +2,97 @@ name: Logic & Security Tests
 
 on:
   push:
-    branches: [ "main" ]
-    tags-ignore:
-      - '**'
+    branches: [main]
+    tags-ignore: ["**"]
   pull_request:
-    branches: [ "main" ]
+    branches: [main]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
-  CARGO_BUILD_JOBS: 2
 
 jobs:
-  logic-x86_64:
-    name: Logic + MSan Tests (x86_64)
-    runs-on: ubuntu-latest
+  test:
+    name: "test (${{ matrix.name }})"
+    runs-on: ${{ matrix.os || 'ubuntu-latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: no_std
+            flags: --no-default-features
+          - name: std only
+            flags: --no-default-features --features std
+          - name: all features (x86_64)
+            flags: --all-features
+          - name: all features (aarch64)
+            os: ubuntu-24.04-arm
+            flags: --all-features
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-rust
+          key: ${{ matrix.name }}
+      - name: test
+        run: cargo test --locked ${{ matrix.flags }}
 
-      - name: Install Rust Nightly
-        uses: dtolnay/rust-toolchain@nightly
+  msan:
+    name: "MSan (${{ matrix.target }})"
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            features: std,simd,unstable
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+            features: std,neon,unstable
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@nightly
         with:
           components: rust-src
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-rust-msan
+          key: ${{ matrix.target }}
 
-      - name: Report actual CPU SIMD coverage for this run
-        # The MSan job below dispatches through the crate's real runtime CPU
-        # detection (no forced RUSTFLAGS), unlike the Miri legs. That means the
-        # AVX512 / AVX512-VBMI branches only actually get exercised here if this
-        # specific runner's CPU happens to support them, which GitHub-hosted
-        # x86_64 runners do not guarantee. Surface that as a loud, visible
-        # annotation instead of letting it pass silently as a green checkmark.
+      # silent green checkmark.
+      - name: Report detected CPU SIMD tier
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
         run: |
-          HAS_AVX2=0; HAS_AVX512F=0; HAS_AVX512BW=0; HAS_AVX512VBMI=0
+          HAS_AVX2=0
+          HAS_AVX512VBMI=0
           grep -qw avx2 /proc/cpuinfo && HAS_AVX2=1
-          grep -qw avx512f /proc/cpuinfo && HAS_AVX512F=1
-          grep -qw avx512bw /proc/cpuinfo && HAS_AVX512BW=1
-          grep -qw avx512vbmi /proc/cpuinfo && HAS_AVX512VBMI=1
-
-          echo "Detected runner CPU features: avx2=$HAS_AVX2 avx512f=$HAS_AVX512F avx512bw=$HAS_AVX512BW avx512vbmi=$HAS_AVX512VBMI"
-
-          if [ "$HAS_AVX512F" = "1" ] && [ "$HAS_AVX512BW" = "1" ]; then
-            if [ "$HAS_AVX512VBMI" = "1" ]; then
-              echo "SIMD tier under MSan this run: AVX512-VBMI"
-            else
-              echo "SIMD tier under MSan this run: AVX512 (no VBMI)"
-              echo "**WARNING** :This runner lacks AVX512-VBMI; the encode_slice_avx512_vbmi/decode_slice_avx512_vbmi paths get zero MSan coverage on this run. They are still covered by the Kani proofs and by the dedicated Miri AVX512-VBMI leg."
-            fi
-          elif [ "$HAS_AVX2" = "1" ]; then
-            echo "SIMD tier under MSan this run: AVX2"
-            echo "**WARNING** This runner lacks AVX512; the AVX512 and AVX512-VBMI paths get zero MSan coverage on this run. They are still covered by the Kani proofs and by the dedicated Miri AVX512/AVX512-VBMI legs."
-          else
-            echo "SIMD tier under MSan this run: Scalar fallback"
-            echo "**WARNING** This runner lacks AVX2 and AVX512; only the scalar path gets MSan coverage on this run. The SIMD paths are still covered by the Kani proofs and the dedicated Miri legs."
+          if grep -qw avx512f /proc/cpuinfo && grep -qw avx512bw /proc/cpuinfo && grep -qw avx512vbmi /proc/cpuinfo; then
+            HAS_AVX512VBMI=1
           fi
 
-      - name: Run Parallel Logic + MSan Tests (x86_64)
+          if [ "$HAS_AVX512VBMI" = "1" ]; then
+            echo "SIMD tier under MSan this run: AVX512-VBMI"
+          elif [ "$HAS_AVX2" = "1" ]; then
+            echo "SIMD tier under MSan this run: AVX2"
+            echo "::warning::Runner lacks AVX512-VBMI; encode_slice_avx512_vbmi/decode_slice_avx512_vbmi get zero MSan coverage this run. Still covered by the Kani proofs and the dedicated Miri AVX512-VBMI leg."
+          else
+            echo "SIMD tier under MSan this run: Scalar fallback"
+            echo "::warning::Runner lacks AVX2 and AVX512-VBMI; only the scalar path gets MSan coverage this run. The SIMD paths are still covered by the Kani proofs and the dedicated Miri legs."
+          fi
+
+      - name: test (build-std, MemorySanitizer)
+        env:
+          RUSTFLAGS: -Z sanitizer=memory
         run: |
-          set +e
-          echo "Starting Parallel Logic + MSan Suite (x86_64)..."
-
-          # --- 1. NO_STD ---
-          (
-            export CARGO_TARGET_DIR="target_logic_nostd"
-            echo "[no_std] Running..."
-            cargo test --no-default-features --features "" > nostd.log 2>&1
-          ) &
-          PID_NOSTD=$!
-
-          # --- 2. STD ONLY ---
-          (
-            export CARGO_TARGET_DIR="target_logic_std"
-            echo "[std] Running..."
-            cargo test --no-default-features --features "std" > std.log 2>&1
-          ) &
-          PID_STD=$!
-
-          # --- 3. SIMD + MSan ---
-          (
-            export CARGO_TARGET_DIR="target_logic_simd"
-            echo "[SIMD+MSan] Running..."
-            RUSTFLAGS="-Z sanitizer=memory" cargo test -Z build-std \
-              --target x86_64-unknown-linux-gnu \
-              --no-default-features --features "std,simd,unstable" \
-              --lib --tests > simd.log 2>&1
-          ) &
-          PID_SIMD=$!
-
-          # --- WAIT AND REPORT ---
-          FAILED=0
-
-          wait $PID_NOSTD
-          if [ $? -ne 0 ]; then echo "[no_std] FAILED. Logs:"; cat nostd.log; FAILED=1; else echo "[no_std] PASSED"; fi
-
-          wait $PID_STD
-          if [ $? -ne 0 ]; then echo "[std] FAILED. Logs:"; cat std.log; FAILED=1; else echo "[std] PASSED"; fi
-
-          wait $PID_SIMD
-          if [ $? -ne 0 ]; then echo "[SIMD+MSan] FAILED. Logs:"; cat simd.log; FAILED=1; else echo "[SIMD+MSan] PASSED"; fi
-
-          if [ $FAILED -ne 0 ]; then exit 1; fi
-          set -e
-          echo "All Logic + MSan tests passed!"
-
-      - name: Cleanup Artifacts
-        if: always()
-        run: rm -rf target_logic_* *.log
-
-  logic-aarch64:
-    name: Logic + MSan Tests (aarch64)
-    runs-on: ubuntu-24.04-arm
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Install Rust Nightly
-        uses: dtolnay/rust-toolchain@nightly
-        with:
-          components: rust-src
-
-      - name: Run Parallel Logic + MSan Tests (aarch64)
-        run: |
-          set +e
-          echo "Starting Parallel Logic + MSan Suite (aarch64)..."
-
-          # --- 1. NO_STD ---
-          (
-            export CARGO_TARGET_DIR="target_logic_nostd"
-            echo "[no_std] Running..."
-            cargo test --no-default-features --features "" > nostd.log 2>&1
-          ) &
-          PID_NOSTD=$!
-
-          # --- 2. STD ONLY ---
-          (
-            export CARGO_TARGET_DIR="target_logic_std"
-            echo "[std] Running..."
-            cargo test --no-default-features --features "std" > std.log 2>&1
-          ) &
-          PID_STD=$!
-
-          # --- 3. NEON + MSan ---
-          (
-            export CARGO_TARGET_DIR="target_logic_neon"
-            echo "[NEON+MSan] Running..."
-            RUSTFLAGS="-Z sanitizer=memory" cargo test -Z build-std \
-              --target aarch64-unknown-linux-gnu \
-              --no-default-features --features "std,neon,unstable" \
-              --lib --tests > neon.log 2>&1
-          ) &
-          PID_NEON=$!
-
-          # --- WAIT AND REPORT ---
-          FAILED=0
-
-          wait $PID_NOSTD
-          if [ $? -ne 0 ]; then echo "[no_std] FAILED. Logs:"; cat nostd.log; FAILED=1; else echo "[no_std] PASSED"; fi
-
-          wait $PID_STD
-          if [ $? -ne 0 ]; then echo "[std] FAILED. Logs:"; cat std.log; FAILED=1; else echo "[std] PASSED"; fi
-
-          wait $PID_NEON
-          if [ $? -ne 0 ]; then echo "[NEON+MSan] FAILED. Logs:"; cat neon.log; FAILED=1; else echo "[NEON+MSan] PASSED"; fi
-
-          if [ $FAILED -ne 0 ]; then exit 1; fi
-          set -e
-          echo "All Logic + MSan tests passed!"
-
-      - name: Cleanup Artifacts
-        if: always()
-        run: rm -rf target_logic_* *.log
+          cargo test --locked -Z build-std \
+            --target ${{ matrix.target }} \
+            --no-default-features --features "${{ matrix.features }}" \
+            --lib --tests

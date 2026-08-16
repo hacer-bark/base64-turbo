@@ -15,10 +15,7 @@ fn main() {
     let feat = |name: &str| std::env::var_os(name).is_some();
 
     let x86 = matches!(arch.as_str(), "x86" | "x86_64");
-    let x86_simd = x86
-        && (feat("CARGO_FEATURE_AVX2")
-            || feat("CARGO_FEATURE_AVX512")
-            || feat("CARGO_FEATURE_AVX512_VBMI"));
+    let x86_simd = x86 && (feat("CARGO_FEATURE_AVX2") || feat("CARGO_FEATURE_AVX512_VBMI"));
     let unsafe_simd = x86_simd || (arch == "aarch64" && feat("CARGO_FEATURE_NEON"));
 
     if x86_simd {

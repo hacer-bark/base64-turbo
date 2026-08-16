@@ -15,9 +15,9 @@
 //! "Safety & Verification" section below for what each layer does and does not cover per
 //! architecture. This crate is **not** faster than unchecked C/assembly implementations and does
 //! not claim to be; within the narrower set of crates combining SIMD-accelerated Base64 with
-//! Kani + MIRI verification, we are not aware of another one that reaches AVX512 speeds.
+//! Kani + MIRI verification, we are not aware of another one that reaches AVX-512 VBMI speeds.
 //!
-//! This crate provides runtime CPU detection to utilize **AVX512** or **AVX2** intrinsics on `x86_64`,
+//! This crate provides runtime CPU detection to utilize **AVX-512 VBMI** or **AVX2** intrinsics on `x86_64`,
 //! and compile-time **NEON** acceleration on `aarch64`.
 //! It includes a highly optimized scalar fallback for non-SIMD targets and supports `no_std` environments.
 //!
@@ -69,13 +69,12 @@
 //! |---------|---------|-------------|
 //! | **`std`** | **Yes** | Enables `String` and `Vec` support. Disable this for `no_std` environments. |
 //! | **`avx2`** | **Yes** | AVX2 kernel + runtime detection on `x86`/`x86_64`. Implies `std`. |
-//! | **`avx512`** | **Yes** | AVX-512F/BW kernel + runtime detection on `x86`/`x86_64`. Implies `std`. |
 //! | **`avx512-vbmi`** | **Yes** | AVX-512 VBMI fast-path kernel on `x86`/`x86_64`. Implies `std`. |
-//! | **`simd`** | **Yes** | Convenience meta-feature: enables `avx2` + `avx512` + `avx512-vbmi` at once. |
+//! | **`simd`** | **Yes** | Convenience meta-feature: enables `avx2` + `avx512-vbmi` at once. |
 //! | **`neon`** | **Yes** | **NEON** acceleration on aarch64 (ARM64). No `std` required — compile-time dispatch. |
 //! | **`unstable`** | **No** | Exposes the raw internal kernels (e.g. `encode_avx2`; the `*_scalar` accessors are safe). |
 //!
-//! If **no** SIMD kernel is enabled (no `avx2`/`avx512`/`avx512-vbmi` on x86, no
+//! If **no** SIMD kernel is enabled (no `avx2`/`avx512-vbmi` on x86, no
 //! `neon` on aarch64), the build is pure scalar Rust and the crate carries
 //! `#![forbid(unsafe_code)]` — memory safety then holds by construction, with no
 //! `unsafe` anywhere to audit.
@@ -85,7 +84,7 @@
 //! This crate utilizes `unsafe` code for SIMD intrinsics and pointer arithmetic to achieve maximum performance.
 //! To ensure safety, we employ a "Swiss Cheese" model of verification layers:
 //!
-//! *   **Model checking (Kani):** For the Scalar, AVX2 and plain AVX512 kernels, Kani explores
+//! *   **Model checking (Kani):** For the Scalar and AVX2 kernels, Kani explores
 //!     *every possible input byte value* at lengths chosen to exercise each loop tier and the
 //!     scalar-tail handoff, proving the kernel does not panic, does not read or write out of
 //!     bounds, and round-trips exactly. On AVX2 a second layer of proofs takes the loop
@@ -93,7 +92,7 @@
 //!     the in-bounds result there is a machine-checked induction covering every length rather
 //!     than the ones a harness happens to pin. The README spells out what that does and does not
 //!     buy you, along with the AVX512-VBMI and NEON gaps.
-//! *   **MIRI Audited:** All SIMD paths (AVX512, AVX2, NEON) and Scalar fallbacks are run under
+//! *   **MIRI Audited:** All SIMD paths (AVX512-VBMI, AVX2, NEON) and Scalar fallbacks are run under
 //!     **MIRI** (Undefined Behavior checker) in CI, covering every distinct code path at least once.
 //! *   **`MemorySanitizer`:** The codebase is audited with `MSan` to prevent logic errors derived from reading uninitialized memory.
 //! *   **Fuzzing:** The codebase is fuzz-tested via `cargo-fuzz` (2.5B+ iterations).
@@ -139,10 +138,8 @@ mod cpu {
     // detection and dispatch arms in lockstep with the feature set.
     #[cfg(feature = "avx2")]
     pub(crate) const AVX2: u8 = 1;
-    #[cfg(feature = "avx512")]
-    pub(crate) const AVX512: u8 = 2;
     #[cfg(feature = "avx512-vbmi")]
-    pub(crate) const AVX512_VBMI: u8 = 3;
+    pub(crate) const AVX512_VBMI: u8 = 2;
 
     fn detect() -> u8 {
         #[cfg(feature = "avx512-vbmi")]
@@ -151,10 +148,6 @@ mod cpu {
             && std::is_x86_feature_detected!("avx512vbmi")
         {
             return AVX512_VBMI;
-        }
-        #[cfg(feature = "avx512")]
-        if std::is_x86_feature_detected!("avx512f") && std::is_x86_feature_detected!("avx512bw") {
-            return AVX512;
         }
         #[cfg(feature = "avx2")]
         if std::is_x86_feature_detected!("avx2") {
@@ -588,25 +581,12 @@ impl Engine {
 
             // Smart degrade by length: a kernel is only worth entering once the
             // input fills its vector width. AVX2's single tier runs from 32
-            // bytes up; AVX512's needs 64 (its 48-in/64-out block plus a
-            // 16-byte read-ahead margin, see `avx512::encode_slice_avx512`) —
-            // below that it would just fall straight through to the tail with
-            // nothing vectorized, so it's better to leave the length to AVX2.
-            // VBMI is the exception -- its tails are masked vector passes
-            // rather than a scalar loop, so it pays off from 32 bytes up;
-            // measured on a Xeon 8488C it breaks even around 24 and is 1.9x by
-            // 48.
+            // bytes up.
             #[cfg(feature = "avx512-vbmi")]
             if len >= 32 && tier == cpu::AVX512_VBMI {
                 // VBMI fast-path: vpermb replaces the 8-instruction char mapping.
                 // SAFETY: tier() confirmed AVX-512F/BW/VBMI on this CPU.
                 unsafe { simd::encode_slice_avx512_vbmi(&self.config, input, dst) };
-                return;
-            }
-            #[cfg(feature = "avx512")]
-            if len >= 64 && tier >= cpu::AVX512 {
-                // SAFETY: tier() confirmed AVX-512F/BW on this CPU.
-                unsafe { simd::encode_slice_avx512(&self.config, input, dst) };
                 return;
             }
             #[cfg(feature = "avx2")]
@@ -638,20 +618,12 @@ impl Engine {
             let tier = cpu::tier();
 
             // As in `encode_dispatch`, the masked tails let VBMI start earlier
-            // than the other kernels. AVX2 and AVX512 both need one extra
-            // 4-byte read-ahead margin on decode (see `avx2::decode_slice_avx2`
-            // / `avx512::decode_slice_avx512`), so their single-tier blocks
-            // (32 and 64 bytes) only actually run from 36 and 68 bytes up.
+            // than AVX2.
             #[cfg(feature = "avx512-vbmi")]
             if len >= 32 && tier == cpu::AVX512_VBMI {
                 // VBMI fast-path: vpermi2b collapses decode+validate to ~4 instructions.
                 // SAFETY: tier() confirmed AVX-512F/BW/VBMI on this CPU.
                 return unsafe { simd::decode_slice_avx512_vbmi(&self.config, input, dst) };
-            }
-            #[cfg(feature = "avx512")]
-            if len >= 68 && tier >= cpu::AVX512 {
-                // SAFETY: tier() confirmed AVX-512F/BW on this CPU.
-                return unsafe { simd::decode_slice_avx512(&self.config, input, dst) };
             }
             #[cfg(feature = "avx2")]
             if len >= 36 && tier >= cpu::AVX2 {

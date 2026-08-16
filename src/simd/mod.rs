@@ -2,15 +2,11 @@
 // only needs to add its own feature.
 #[cfg(all(x86_simd, feature = "avx2"))]
 mod avx2;
-#[cfg(all(x86_simd, feature = "avx512"))]
-mod avx512;
 #[cfg(all(x86_simd, feature = "avx512-vbmi"))]
 mod avx512_vbmi;
 
 #[cfg(all(x86_simd, feature = "avx2"))]
 pub(crate) use avx2::{decode_slice_avx2, encode_slice_avx2};
-#[cfg(all(x86_simd, feature = "avx512"))]
-pub(crate) use avx512::{decode_slice_avx512, encode_slice_avx512};
 #[cfg(all(x86_simd, feature = "avx512-vbmi"))]
 pub(crate) use avx512_vbmi::{decode_slice_avx512_vbmi, encode_slice_avx512_vbmi};
 
@@ -65,22 +61,22 @@ mod tail {
     }
 }
 
-#[cfg(all(x86_simd, any(feature = "avx2", feature = "avx512")))]
+#[cfg(all(x86_simd, feature = "avx2"))]
 const PACK_L1: [i8; 32] = [
     0x40, 0x01, 0x40, 0x01, 0x40, 0x01, 0x40, 0x01, 0x40, 0x01, 0x40, 0x01, 0x40, 0x01, 0x40, 0x01,
     0x40, 0x01, 0x40, 0x01, 0x40, 0x01, 0x40, 0x01, 0x40, 0x01, 0x40, 0x01, 0x40, 0x01, 0x40, 0x01,
 ];
 
-#[cfg(all(x86_simd, any(feature = "avx2", feature = "avx512")))]
+#[cfg(all(x86_simd, feature = "avx2"))]
 const PACK_L2: [i16; 16] = [
     0x1000, 0x0001, 0x1000, 0x0001, 0x1000, 0x0001, 0x1000, 0x0001, 0x1000, 0x0001, 0x1000, 0x0001,
     0x1000, 0x0001, 0x1000, 0x0001,
 ];
 
-// These three are used by the AVX2 and plain-AVX512 packers; the VBMI kernel
-// builds its multipliers from immediates and does its own permute, so all three
-// are absent from a VBMI-only build.
-#[cfg(all(x86_simd, any(feature = "avx2", feature = "avx512")))]
+// These are used by the AVX2 packer; the VBMI kernel builds its multipliers
+// from immediates and does its own permute, so all three are absent from a
+// VBMI-only build.
+#[cfg(all(x86_simd, feature = "avx2"))]
 const PACK_SHUFFLE: [i8; 32] = [
     2, 1, 0, 6, 5, 4, 10, 9, 8, 14, 13, 12, -1, -1, -1, -1, 2, 1, 0, 6, 5, 4, 10, 9, 8, 14, 13, 12,
     -1, -1, -1, -1,

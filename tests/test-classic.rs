@@ -86,7 +86,7 @@ fn test_oracle_standard_exhaustive_small() {
 #[test]
 #[cfg(not(miri))]
 fn test_oracle_fuzz_large() {
-    // Random sizes up to 64KB to trigger AVX2/AVX512 loops multiple times.
+    // Random sizes up to 64KB to trigger AVX2/AVX512-VBMI loops multiple times.
     let mut rng = rng();
     for _ in 0..100 {
         let len = rng.random_range(1024..65536);
@@ -417,7 +417,7 @@ fn test_simd_threshold_boundaries() {
         11, 12, 13, 15, 16, 17, 23, 24, 25,
         // AVX2 boundaries (32-byte vectors, 24-byte chunks)
         47, 48, 49, 71, 72, 73, 95, 96, 97,
-        // AVX512 boundaries (64-byte vectors, 48-byte chunks)
+        // AVX512-VBMI boundaries (64-byte vectors, 48-byte chunks)
         47, 48, 49, 95, 96, 97, 143, 144, 145, 191, 192, 193,
         // NEON boundaries (128-bit vectors, 12-byte encode chunks, 16-byte decode chunks)
         11, 12, 13, 23, 24, 25, 35, 36, 37, 47, 48, 49, 59, 60, 61,

@@ -3,13 +3,13 @@ name = "base64-turbo"
 version = "0.3.0"
 edition = "2024"
 rust-version = "1.89"
-description = "A Base64 engine that peaks past 100 GiB/s, formally verified (Kani/MIRI/MSan). Runtime AVX2/AVX512 detection, NEON acceleration, zero-allocation API, no_std support."
+description = "A Base64 engine that peaks past 100 GiB/s, formally verified (Kani/MIRI/MSan). Runtime AVX2/AVX512-VBMI detection, NEON acceleration, zero-allocation API, no_std support."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/hacer-bark/base64-turbo"
 documentation = "https://docs.rs/base64-turbo"
 readme = "README.md"
 authors = ["Hacer"]
-keywords = ["base64", "simd", "avx512", "neon", "encoding"]
+keywords = ["base64", "simd", "avx512-vbmi", "neon", "encoding"]
 categories = ["encoding", "hardware-support", "no-std", "web-programming"]
 exclude = ["benches/scripts/", "benches/results/"]
 
@@ -22,11 +22,10 @@ unstable = []
 
 # x86/x86_64 SIMD kernels.
 avx2 = ["std"]
-avx512 = ["std"]
 avx512-vbmi = ["std"]
 
 # Convenience meta-feature: every x86 SIMD kernel at once.
-simd = ["avx2", "avx512", "avx512-vbmi"]
+simd = ["avx2", "avx512-vbmi"]
 
 # aarch64 NEON kernel (compile-time dispatch, no runtime detection, no std).
 neon = []
@@ -36,6 +35,7 @@ rand = "0.10"
 criterion = { version = "0.8", features = ["html_reports"] }
 base64 = "0.23"
 base64-simd = "0.8"
+base64-ng = { version = "2", features = ["simd"] }
 
 [lints.rust]
 warnings = "deny"
