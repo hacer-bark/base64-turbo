@@ -15,20 +15,18 @@ mod kani_verification_avx2 {
 
     // Layer 1 — index proofs: reason over a symbolic `len` and an arbitrary
     // iteration index (no vectors), giving an induction (base/step/exit) that
-    // covers all N cheaply. The consts mirror the kernels' offset arithmetic;
-    // keep them in sync by hand. See the README's "How the Kani proofs work".
+    // covers all N cheaply. Every stride is imported from the kernel module
+    // rather than restated, so a stride that changes there changes these proofs
+    // too. See the README's "Safety & Verification".
 
     /// Largest `len` considered: above `usize::MAX / 4` the unpadded
     /// `encoded_len`'s `len * 4` overflows, so the API can't size a buffer.
     const MAX_LEN: usize = usize::MAX / 4;
 
     // Encoder model, mirroring `encode_slice_avx2`.
-    const ENC_ROUND_IN: usize = 24; // logical input bytes per round
-    const ENC_ROUND_OUT: usize = 32; // output bytes per round
-    const ENC_LOAD: usize = 32; // bytes each `_mm256_loadu_si256` reads
-    const ENC_FIRST_ADVANCE: usize = 20; // `src.add(20)` after the first round
-    /// Rounds per iteration of the wide tier; mirrors the kernel's `ENC_UNROLL`.
-    const ENC_UNROLL: usize = super::super::ENC_UNROLL;
+    use super::super::{
+        ENC_FIRST_ADVANCE, ENC_LEAD, ENC_ROUND_IN, ENC_ROUND_OUT, ENC_UNROLL, ENC_VEC as ENC_LOAD,
+    };
 
     fn enc_cap(len: usize, padding: bool) -> usize {
         if padding {
@@ -43,25 +41,25 @@ mod kani_verification_avx2 {
     fn any_enc_rounds(len: usize) -> usize {
         let rounds: usize = kani::any();
         kani::assume(rounds <= MAX_LEN / ENC_ROUND_IN);
-        kani::assume(ENC_ROUND_IN * rounds <= len - 4);
-        kani::assume(len - 4 < ENC_ROUND_IN * (rounds + 1));
+        kani::assume(ENC_ROUND_IN * rounds <= len - ENC_LEAD);
+        kani::assume(len - ENC_LEAD < ENC_ROUND_IN * (rounds + 1));
         rounds
     }
 
     /// `(src_off, dst_off)` after `done >= 1` rounds: the first round advances
     /// `src` by only 20, giving the uniform `24 * done - 4`.
     fn enc_state(done: usize) -> (usize, usize) {
-        (ENC_ROUND_IN * done - 4, ENC_ROUND_OUT * done)
+        (ENC_ROUND_IN * done - ENC_LEAD, ENC_ROUND_OUT * done)
     }
 
     /// Isolated so the suite's one non-power-of-two division owns its run.
     #[kani::proof]
     fn check_enc_rounds_model() {
         let len: usize = kani::any();
-        kani::assume((32..=MAX_LEN).contains(&len));
+        kani::assume((ENC_LOAD..=MAX_LEN).contains(&len));
 
         let rounds = any_enc_rounds(len);
-        assert_eq!(rounds, (len - 4) / ENC_ROUND_IN);
+        assert_eq!(rounds, (len - ENC_LEAD) / ENC_ROUND_IN);
         // `remaining = rounds - 1` must not underflow (why the guard is >= 32).
         assert!(rounds >= 1);
     }
@@ -71,7 +69,7 @@ mod kani_verification_avx2 {
     fn check_enc_first_block() {
         let len: usize = kani::any();
         let padding: bool = kani::any();
-        kani::assume((32..=MAX_LEN).contains(&len));
+        kani::assume((ENC_LOAD..=MAX_LEN).contains(&len));
 
         let rounds = any_enc_rounds(len);
         let cap = enc_cap(len, padding);
@@ -91,7 +89,7 @@ mod kani_verification_avx2 {
     fn check_enc_wide_step() {
         let len: usize = kani::any();
         let padding: bool = kani::any();
-        kani::assume((32..=MAX_LEN).contains(&len));
+        kani::assume((ENC_LOAD..=MAX_LEN).contains(&len));
 
         let rounds = any_enc_rounds(len);
         let cap = enc_cap(len, padding);
@@ -133,7 +131,7 @@ mod kani_verification_avx2 {
     fn check_enc_single_step() {
         let len: usize = kani::any();
         let padding: bool = kani::any();
-        kani::assume((32..=MAX_LEN).contains(&len));
+        kani::assume((ENC_LOAD..=MAX_LEN).contains(&len));
 
         let rounds = any_enc_rounds(len);
         let cap = enc_cap(len, padding);
@@ -162,18 +160,18 @@ mod kani_verification_avx2 {
     fn check_enc_tail_handoff() {
         let len: usize = kani::any();
         let padding: bool = kani::any();
-        kani::assume((32..=MAX_LEN).contains(&len));
+        kani::assume((ENC_LOAD..=MAX_LEN).contains(&len));
 
         let rounds = any_enc_rounds(len);
         let (src_off, dst_off) = enc_state(rounds);
 
-        let processed = src_off + 4; // repays the first round's deficit
+        let processed = src_off + ENC_LEAD; // repays the first round's deficit
         assert_eq!(processed, ENC_ROUND_IN * rounds);
 
         // `rounds` caps at `(len - 4) / 24`, so the tail is non-empty (>= 4).
         assert!(processed < len);
         let tail = len - processed;
-        assert!(tail >= 4);
+        assert!(tail >= ENC_LEAD);
 
         // Prefix + scalar tail is exactly the encoded length (no over/short write).
         assert_eq!(
@@ -184,14 +182,14 @@ mod kani_verification_avx2 {
     }
 
     // Decoder model, mirroring `decode_slice_avx2`.
-    const DEC_LOAD: usize = 32; // bytes each `_mm256_loadu_si256` reads
-    const DEC_BLOCK_IN: usize = 32; // input bytes per single-vector pass
-    const DEC_BLOCK_OUT: usize = 24; // dst advance per single-vector pass
+    use super::super::{
+        DEC_BLOCK_IN, DEC_BLOCK_IN as DEC_LOAD, DEC_BLOCK_OUT, DEC_LEAD, DEC_PACK_LANE_OFF,
+        DEC_UNROLL,
+    };
+
     /// Bytes `pack_and_store!` touches (16 at `dst` + 16 at `dst.add(12)`),
     /// 4 wider than the 24 it advances.
-    const DEC_STORE_SPAN: usize = 28;
-    /// Vectors per iteration of the wide tier; mirrors the kernel's `DEC_UNROLL`.
-    const DEC_UNROLL: usize = super::super::DEC_UNROLL;
+    const DEC_STORE_SPAN: usize = DEC_PACK_LANE_OFF + 16;
     const DEC_WIDE_IN: usize = DEC_BLOCK_IN * DEC_UNROLL; // input bytes per wide-tier iteration
     const DEC_WIDE_OUT: usize = DEC_BLOCK_OUT * DEC_UNROLL; // dst advance per wide-tier iteration
 
@@ -202,7 +200,7 @@ mod kani_verification_avx2 {
     /// The `aligned_len_128` / `aligned_len_32` loop windows (from the
     /// `saturating_sub(4)` margin that keeps a 32-byte load in bounds).
     fn dec_windows(len: usize) -> (usize, usize) {
-        let safe = len.saturating_sub(4);
+        let safe = len.saturating_sub(DEC_LEAD);
         (safe - safe % DEC_WIDE_IN, safe - safe % DEC_BLOCK_IN)
     }
 
@@ -298,22 +296,34 @@ mod kani_verification_avx2 {
     // arithmetic, so each reaches its kernel once. Buffers are the exact
     // public-API capacities, so any real overrun fails.
 
-    /// One first round + 13-byte scalar tail.
-    const ENC_KERNEL_LEN: usize = 37;
-    /// One single-vector pass + 5-byte scalar tail.
-    const DEC_KERNEL_LEN: usize = 37;
+    /// The permuted first round, *one steady-state round*, and a 13-byte scalar
+    /// tail. The second round is the point: at 37 bytes `rounds` is 1, so
+    /// `encode_rounds_avx2` never ran and nothing executed the steady-state
+    /// `src[24n-4 .. 24n+20]` window — a wrong per-round stride would have
+    /// passed. Layer 1 asserts that arithmetic; this makes a round live with it.
+    const ENC_KERNEL_LEN: usize = 61;
+    /// One single-vector pass + a 4-character scalar tail.
+    const DEC_KERNEL_LEN: usize = 36;
 
     // Guard: a length below its tier's threshold would prove nothing (a past
     // revision silently verified only the scalar fallback). Fail the build.
     const _: () = assert!(
-        ENC_KERNEL_LEN >= 32
-            && (ENC_KERNEL_LEN - 4) / ENC_ROUND_IN == 1
+        ENC_KERNEL_LEN >= ENC_LOAD
+            && (ENC_KERNEL_LEN - ENC_LEAD) / ENC_ROUND_IN >= 2
             && ENC_KERNEL_LEN % ENC_ROUND_IN != 0,
-        "ENC_KERNEL_LEN must run one AVX2 round and leave an unaligned tail"
+        "ENC_KERNEL_LEN must run a first round plus a steady-state round, and \
+         leave an unaligned tail"
     );
     const _: () = assert!(
-        (DEC_KERNEL_LEN - 4) / DEC_BLOCK_IN == 1,
+        (DEC_KERNEL_LEN - DEC_LEAD) / DEC_BLOCK_IN == 1,
         "DEC_KERNEL_LEN must run one single-vector decode pass"
+    );
+    // A length that is not a multiple of 4 can only ever decode to `Err` under a
+    // padded config, which would make the `Ok` half of the equivalence proof
+    // below vacuous.
+    const _: () = assert!(
+        DEC_KERNEL_LEN % 4 == 0,
+        "DEC_KERNEL_LEN must be able to decode successfully"
     );
 
     const ENC_KERNEL_CAP: usize = TURBO_STANDARD.encoded_len(ENC_KERNEL_LEN);
@@ -365,33 +375,86 @@ mod kani_verification_avx2 {
         roundtrip_kernel(true);
     }
 
-    /// Every 37-byte garbage input decodes or returns `Err`, never panicking or
-    /// overrunning — covers the validation LUTs over all 256 byte values.
+    /// The vectorized decoder agrees with the scalar one on every 36-character
+    /// input, which is strictly stronger than the panic-freedom this harness
+    /// used to prove: it pins *rejection* as well, over all 256 values in every
+    /// lane at once. `crate::scalar` is `#![forbid(unsafe_code)]` and separately
+    /// tested, so it is the natural oracle.
+    ///
+    /// Error *kinds* are deliberately not compared. The two decoders reach a bad
+    /// input at different points — the vector path ORs every lane's verdict into
+    /// one accumulator and reports it before the scalar tail ever runs, so an
+    /// input that is both mis-sized and mis-charactered can legitimately be
+    /// `InvalidLength` for one and `InvalidCharacter` for the other. Rejecting
+    /// it at all is the contract.
     #[kani::proof]
     #[kani::stub(_mm256_shuffle_epi8, m::_mm256_shuffle_epi8_stub)]
     #[kani::stub(_mm256_subs_epu8, m::_mm256_subs_epu8_stub)]
     #[kani::stub(_mm256_testz_si256, m::_mm256_testz_si256_stub)]
     #[kani::stub(_mm256_maddubs_epi16, m::_mm256_maddubs_epi16_stub)]
     #[kani::stub(_mm256_madd_epi16, m::_mm256_madd_epi16_stub)]
-    fn check_avx2_decode_robustness() {
+    fn check_avx2_decode_matches_scalar() {
         let config = Config {
             url_safe: kani::any(),
             padding: true,
         };
         let input: [u8; DEC_KERNEL_LEN] = kani::any();
-        let mut output = [0u8; DEC_KERNEL_CAP];
-        unsafe {
-            let _ = decode_slice_avx2(&config, &input, &mut output);
+
+        // Both sized as the public API sizes them, so a real overrun still fails.
+        let mut simd_out = [0u8; DEC_KERNEL_CAP];
+        let mut scalar_out = [0u8; DEC_KERNEL_CAP];
+
+        let simd = unsafe { decode_slice_avx2(&config, &input, &mut simd_out) };
+        let scalar = crate::scalar::decode_slice(&config, &input, &mut scalar_out);
+
+        match scalar {
+            Ok(n) => {
+                assert_eq!(simd, Ok(n), "scalar accepted an input the kernel rejected");
+                assert_eq!(
+                    &simd_out[..n],
+                    &scalar_out[..n],
+                    "kernel and scalar decoded to different bytes"
+                );
+            }
+            Err(_) => assert!(simd.is_err(), "kernel accepted an input scalar rejected"),
         }
     }
 }
 
 /// Rust models of every AVX2 intrinsic the kernels use, for the Kani proofs.
+///
+/// Each is a transcription of the `<operation>` pseudocode published in the Intel
+/// Intrinsics Guide (data version 3.6.9), quoted line for line in the comments
+/// with the Rust statement it became directly beneath it. Nothing is
+/// paraphrased, condensed or "improved": if Intel writes a branch where a
+/// ternary would do, so does the model, because the comments are the
+/// specification these proofs are checked against and a reader has to be able to
+/// diff them against the guide symbol by symbol.
+///
+/// One systematic departure, and only one. Intel addresses vectors by **bit**
+/// offset — `i := j*8`, then `dst[i+7:i]` for the byte at that offset. Rust
+/// indexes bytes, so every transcription keeps Intel's bit-offset variables
+/// verbatim and divides by 8 at the point of access (`dst[i / 8]`). Where Intel
+/// addresses an individual bit, [`bit`] does it. Lines carrying no Intel text
+/// are marked `NOTE:`.
 #[cfg(any(kani, test))]
+// Every consumer of this module is invisible to rustc's dead-code pass: the
+// Kani proofs reach the models through `#[kani::stub(...)]` attribute
+// arguments, and a Miri build reaches the real instructions instead of these.
+// So which models look "used" depends on which harness is being compiled, and
+// the answer is never the whole set.
+#[allow(dead_code)]
 #[allow(non_snake_case)]
+// These are all "the transcription is more literal than idiomatic Rust would
+// be" lints: Intel writes a late-initialized `IF/ELSE/FI` where Rust would use
+// an `if` expression, and a plain `RETURN` where Rust would use a tail
+// expression. Following the pseudocode is the point, so they are turned off
+// rather than the transcriptions being reshaped to satisfy them.
 #[allow(
     clippy::cast_lossless,
     clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::missing_const_for_fn,
     clippy::missing_transmute_annotations,
     clippy::needless_late_init,
     clippy::needless_range_loop,
@@ -402,6 +465,21 @@ pub(super) mod intrinsic_models {
     use super::*;
     use std::mem::transmute;
 
+    // NOTE: scaffolding, not from Intel. Reads bit `n` of a little-endian byte
+    // vector, for the places the pseudocode indexes a single bit.
+    fn bit(v: &[u8; 32], n: usize) -> u8 {
+        (v[n / 8] >> (n % 8)) & 1
+    }
+
+    // NOTE: scaffolding, not from Intel. The `SaturateU8` and `Saturate16`
+    // helpers the pseudocode calls by name.
+    fn SaturateU8(x: i16) -> u8 {
+        x.clamp(0, 255) as u8
+    }
+    fn Saturate16(x: i32) -> i16 {
+        x.clamp(-32768, 32767) as i16
+    }
+
     // STUB: _mm256_shuffle_epi8
     // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm256_shuffle_epi8
     pub(super) unsafe fn _mm256_shuffle_epi8_stub(a: __m256i, b: __m256i) -> __m256i {
@@ -411,38 +489,36 @@ pub(super) mod intrinsic_models {
 
         // FOR j := 0 to 15
         for j in 0..16 {
-            // i := j*8
-            // (In Rust we access bytes 'j' so '*8' offset is not needed)
-            let i = j;
-
-            // IF b[i+7] == 1
-            if (b[i] & 0x80) != 0 {
-                // dst[i+7:i] := 0
-                dst[i] = 0;
+            // 	i := j*8
+            let i = j * 8;
+            // 	IF b[i+7] == 1
+            if bit(&b, i + 7) == 1 {
+                // 		dst[i+7:i] := 0
+                dst[i / 8] = 0;
+            // 	ELSE
             } else {
-                // index[3:0] := b[i+3:i]
-                let index = b[i] & 0x0F;
-                // dst[i+7:i] := a[index*8+7:index*8]
-                dst[i] = a[index as usize];
+                // 		index[3:0] := b[i+3:i]
+                let index = usize::from(b[i / 8] & 0x0F);
+                // 		dst[i+7:i] := a[index*8+7:index*8]
+                dst[i / 8] = a[(index * 8) / 8];
             }
-            // FI
-
-            // IF b[128+i+7] == 1
-            if (b[16 + i] & 0x80) != 0 {
-                // dst[128+i+7:128+i] := 0
-                dst[16 + i] = 0;
+            // 	FI
+            // 	IF b[128+i+7] == 1
+            if bit(&b, 128 + i + 7) == 1 {
+                // 		dst[128+i+7:128+i] := 0
+                dst[(128 + i) / 8] = 0;
+            // 	ELSE
             } else {
-                // index[3:0] := b[128+i+3:128+i]
-                let index = b[16 + i] & 0x0F;
-                // dst[128+i+7:128+i] := a[128+index*8+7:128+index*8]
-                dst[16 + i] = a[(16 + index) as usize];
+                // 		index[3:0] := b[128+i+3:128+i]
+                let index = usize::from(b[(128 + i) / 8] & 0x0F);
+                // 		dst[128+i+7:128+i] := a[128+index*8+7:128+index*8]
+                dst[(128 + i) / 8] = a[(128 + index * 8) / 8];
             }
-            // FI
+            // 	FI
         }
         // ENDFOR
-
         // dst[MAX:256] := 0
-        // (__m256i is exactly 256 bits. There are no bits beyond 256 to zero out)
+        // NOTE: `__m256i` is exactly 256 bits; there is nothing above to zero.
 
         unsafe { transmute(dst) }
     }
@@ -456,14 +532,12 @@ pub(super) mod intrinsic_models {
 
         // FOR j := 0 to 31
         for j in 0..32 {
-            // i := j*8
-            let i = j;
-
-            // dst[i+7:i] := SaturateU8(a[i+7:i] - b[i+7:i])
-            dst[i] = a[i].saturating_sub(b[i]);
+            // 	i := j*8
+            let i = j * 8;
+            // 	dst[i+7:i] := SaturateU8(a[i+7:i] - b[i+7:i])
+            dst[i / 8] = SaturateU8(i16::from(a[i / 8]) - i16::from(b[i / 8]));
         }
         // ENDFOR
-
         // dst[MAX:256] := 0
 
         unsafe { transmute(dst) }
@@ -471,41 +545,40 @@ pub(super) mod intrinsic_models {
 
     // STUB: _mm256_testz_si256
     // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm256_testz_si256
-    // Split into four u64 lanes since Rust has no native 256-bit integer type.
     pub(super) unsafe fn _mm256_testz_si256_stub(a: __m256i, b: __m256i) -> i32 {
+        // NOTE: Rust has no 256-bit integer, so `a[255:0]` and `b[255:0]` are
+        // held as four u64 limbs and every whole-vector operation below is
+        // applied limb-wise.
         let a: [u64; 4] = unsafe { transmute(a) };
         let b: [u64; 4] = unsafe { transmute(b) };
         let zf: i32;
         let _cf: i32;
 
-        // Perform 256 bit AND
-        let res_and = [a[0] & b[0], a[1] & b[1], a[2] & b[2], a[3] & b[3]];
-
+        let a_and_b = [a[0] & b[0], a[1] & b[1], a[2] & b[2], a[3] & b[3]];
         // IF ((a[255:0] AND b[255:0]) == 0)
-        if res_and[0] == 0 && res_and[1] == 0 && res_and[2] == 0 && res_and[3] == 0 {
-            // ZF := 1
+        if a_and_b == [0, 0, 0, 0] {
+            // 	ZF := 1
             zf = 1;
+        // ELSE
         } else {
-            // ZF := 0
+            // 	ZF := 0
             zf = 0;
         }
         // FI
 
-        // Perform 256 bit (NOT a) AND b
-        let res_not_and = [
+        let not_a_and_b = [
             (!a[0]) & b[0],
             (!a[1]) & b[1],
             (!a[2]) & b[2],
             (!a[3]) & b[3],
         ];
-
         // IF (((NOT a[255:0]) AND b[255:0]) == 0)
-        if res_not_and[0] == 0 && res_not_and[1] == 0 && res_not_and[2] == 0 && res_not_and[3] == 0
-        {
-            // CF := 1
+        if not_a_and_b == [0, 0, 0, 0] {
+            // 	CF := 1
             _cf = 1;
+        // ELSE
         } else {
-            // CF := 0
+            // 	CF := 0
             _cf = 0;
         }
         // FI
@@ -517,47 +590,22 @@ pub(super) mod intrinsic_models {
     // STUB: _mm256_maddubs_epi16
     // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm256_maddubs_epi16
     pub(super) unsafe fn _mm256_maddubs_epi16_stub(a: __m256i, b: __m256i) -> __m256i {
+        // NOTE: `a` holds unsigned bytes, `b` signed ones.
         let a: [u8; 32] = unsafe { transmute(a) };
         let b: [i8; 32] = unsafe { transmute(b) };
         let mut dst = [0i16; 16];
 
         // FOR j := 0 to 15
         for j in 0..16 {
-            // i := j*16
-            let i = j * 2;
-
-            // dst[i+15:i] := Saturate16( a[i+15:i+8]*b[i+15:i+8] + a[i+7:i]*b[i+7:i] )
-            dst[j] = ((a[i + 1] as i16) * (b[i + 1] as i16))
-                .saturating_add((a[i] as i16) * (b[i] as i16));
+            // 	i := j*16
+            let i = j * 16;
+            // 	dst[i+15:i] := Saturate16( a[i+15:i+8]*b[i+15:i+8] + a[i+7:i]*b[i+7:i] )
+            dst[i / 16] = Saturate16(
+                i32::from(a[(i + 8) / 8]) * i32::from(b[(i + 8) / 8])
+                    + i32::from(a[i / 8]) * i32::from(b[i / 8]),
+            );
         }
         // ENDFOR
-
-        // dst[MAX:256] := 0
-
-        unsafe { transmute(dst) }
-    }
-
-    // STUB: _mm256_mullo_epi16
-    // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm256_mullo_epi16
-    pub(super) unsafe fn _mm256_mullo_epi16_stub(a: __m256i, b: __m256i) -> __m256i {
-        let a: [i16; 16] = unsafe { transmute(a) };
-        let b: [i16; 16] = unsafe { transmute(b) };
-        let mut dst = [0i16; 16];
-
-        // FOR j := 0 to 15
-        for j in 0..16 {
-            // i := j*16
-            let i = j;
-
-            // tmp[31:0] := a[i+15:i] * b[i+15:i]
-            // dst[i+15:i] := tmp[15:0]
-            // (Keeping the low 16 bits of the product is a wrapping 16-bit
-            // multiply; the real instruction discards the overflow that Kani's
-            // `simd_mul` otherwise flags.)
-            dst[i] = a[i].wrapping_mul(b[i]);
-        }
-        // ENDFOR
-
         // dst[MAX:256] := 0
 
         unsafe { transmute(dst) }
@@ -572,16 +620,38 @@ pub(super) mod intrinsic_models {
 
         // FOR j := 0 to 7
         for j in 0..8 {
-            // i := j*32
-            let i = j * 2;
-
-            // dst[i+31:i] := SignExtend32(a[i+31:i+16]*b[i+31:i+16]) + SignExtend32(a[i+15:i]*b[i+15:i])
-            dst[j] = (a[i + 1] as i32)
-                .wrapping_mul(b[i + 1] as i32)
-                .wrapping_add((a[i] as i32).wrapping_mul(b[i] as i32));
+            // 	i := j*32
+            let i = j * 32;
+            // 	dst[i+31:i] := SignExtend32(a[i+31:i+16]*b[i+31:i+16]) + SignExtend32(a[i+15:i]*b[i+15:i])
+            // NOTE: an i16*i16 product *is* its own sign-extended 32-bit value;
+            // the sum is `wrapping` because it lands in a 32-bit destination,
+            // which the two extreme products can overflow.
+            dst[i / 32] = (i32::from(a[(i + 16) / 16]) * i32::from(b[(i + 16) / 16]))
+                .wrapping_add(i32::from(a[i / 16]) * i32::from(b[i / 16]));
         }
         // ENDFOR
+        // dst[MAX:256] := 0
 
+        unsafe { transmute(dst) }
+    }
+
+    // STUB: _mm256_mullo_epi16
+    // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm256_mullo_epi16
+    pub(super) unsafe fn _mm256_mullo_epi16_stub(a: __m256i, b: __m256i) -> __m256i {
+        let a: [i16; 16] = unsafe { transmute(a) };
+        let b: [i16; 16] = unsafe { transmute(b) };
+        let mut dst = [0i16; 16];
+
+        // FOR j := 0 to 15
+        for j in 0..16 {
+            // 	i := j*16
+            let i = j * 16;
+            // 	tmp[31:0] := SignExtend32(a[i+15:i]) * SignExtend32(b[i+15:i])
+            let tmp: i32 = i32::from(a[i / 16]) * i32::from(b[i / 16]);
+            // 	dst[i+15:i] := tmp[15:0]
+            dst[i / 16] = tmp as i16;
+        }
+        // ENDFOR
         // dst[MAX:256] := 0
 
         unsafe { transmute(dst) }
@@ -596,13 +666,14 @@ pub(super) mod intrinsic_models {
 
         // FOR j := 0 to 7
         for j in 0..8 {
-            // id := idx[j*32+2:j*32]
-            let id = (idx[j] & 0x7) as usize;
-            // dst[j*32+31:j*32] := a[id*32+31:id*32]
-            dst[j] = a[id];
+            // 	i := j*32
+            let i = j * 32;
+            // 	id := idx[i+2:i]*32
+            let id = ((idx[i / 32] & 0x7) * 32) as usize;
+            // 	dst[i+31:i] := a[id+31:id]
+            dst[i / 32] = a[id / 32];
         }
         // ENDFOR
-
         // dst[MAX:256] := 0
 
         unsafe { transmute(dst) }

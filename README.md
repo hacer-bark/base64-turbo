@@ -92,7 +92,7 @@ lacks just falls back to scalar.
 | `avx512-vbmi` | **Yes** | AVX-512 VBMI fast-path kernel on x86/x86_64. Implies `std`. |
 | `simd` | **Yes** | Convenience meta-feature — turns on `avx2` + `avx512-vbmi` at once. |
 | `neon` | **Yes** | NEON acceleration on aarch64. No `std` required. |
-| `unstable` | **No** | Exposes the raw internal kernels (`encode_avx2`, `encode_neon`, …). The `*_scalar` accessors are **safe** (they may panic on a too-small buffer, but never invoke UB). |
+| `unstable` | **No** | Exposes the raw internal kernels (`encode_avx2`, `encode_avx512_vbmi`, `encode_neon`, …). The `*_scalar` accessors are **safe** (they may panic on a too-small buffer, but never invoke UB). |
 
 Scalar-only builds are `#![forbid(unsafe_code)]`. Disable every SIMD kernel and the crate
 is pure scalar Rust — nothing to verify, nothing to audit. The allocating `encode`/`decode`
@@ -217,14 +217,18 @@ that cover each other's blind spots.
 | Architecture | MIRI | MSan | Kani | Fuzzing |
 | :--- | :---: | :---: | :---: | :---: |
 | **AVX2** | ✅ | ✅ | ✅ | ✅ |
-| **AVX512-VBMI** | ✅ | ✅ | ❌ | ✅ |
+| **AVX512-VBMI** | ✅ | ✅ | ✅ | ✅ |
 | **NEON** | ✅ | ✅ | ❌ | ❌ |
 
-* **Kani** proves the kernels don't panic, don't read/write out of bounds, and round-trip
-  exactly. For AVX2 the bounds result holds for *every* input length by a
-  machine-checked induction over the loop's offset arithmetic — not just the lengths a
-  harness happens to unwind. For the other paths it holds at the lengths the harnesses
-  pin.
+* **Kani** proves the kernels don't panic, don't read/write out of bounds, and agree with
+  the safe scalar kernel. For AVX2 and AVX512-VBMI the bounds result holds for *every*
+  input length by a machine-checked induction over the loop's offset arithmetic — not
+  just the lengths a harness happens to unwind. Two exclusions are worth naming rather
+  than burying: AVX2's non-temporal store path (it needs a 4 MiB input, far past what a
+  model checker can unwind, so its 16-byte alignment precondition rests on a hardware
+  test instead), and AVX512-VBMI's 4×-unrolled quad tiers (256 symbolic characters
+  through four `vpermi2b` lookups is out of CBMC's reach — the *arithmetic* of those
+  tiers is proved, but no harness executes one).
 * **MIRI** catches Undefined Behavior (provenance, alignment, OOB pointer arithmetic,
   data races) on every distinct code path — single-vector loop, wide unrolled loop,
   masked tail, scalar tail — for Scalar, AVX2 and AVX512-VBMI. Branch coverage, not
@@ -237,20 +241,25 @@ that cover each other's blind spots.
 <details>
 <summary>What still rests on human judgment</summary>
 
-1. The index proofs that make the AVX2 bound hold for every length mirror the loop's
-   offset arithmetic; they don't execute it. If a stride changes without the model
-   changing too, the proofs keep passing — treat those constants as part of the code.
-2. Kani can't execute SIMD, so each AVX2 intrinsic is a Rust transcription of the Intel
-   Intrinsics Guide pseudocode. `avx2_stub_equivalence` (`cargo test`) runs every model
-   against the real instruction on real hardware to catch transcription errors, but
-   doesn't prove the models agree everywhere.
-3. AVX512-VBMI and NEON haven't had the AVX2 treatment (symbolic index proofs covering
-   every length) — for those, verification stops at the lengths MIRI's harnesses pin.
+1. The index proofs that make the bounds hold for every length mirror the loops' offset
+   arithmetic; they don't execute it. Every stride is now imported from the kernel
+   module rather than restated in the proof, so a stride can't change under a proof
+   without changing it too — but the *shape* of the model is still hand-written, and a
+   restructured loop needs a restructured proof.
+2. Kani can't execute SIMD, so each intrinsic it meets is a line-by-line Rust
+   transcription of the Intel Intrinsics Guide pseudocode. `avx2_stub_equivalence` and
+   `avx512_vbmi_stub_equivalence` (`cargo test`) run every model against the real
+   instruction on real hardware, each skipping if the host lacks the subset. They catch
+   transcription errors; they don't prove the models agree everywhere.
+3. Two paths are proved by arithmetic but never executed by a proof: AVX2's non-temporal
+   store tier (4 MiB minimum input — its `_mm_stream_si128` alignment precondition is
+   covered by `avx2_encode_non_temporal` on hardware instead) and both AVX512-VBMI quad
+   tiers (too much symbolic state for CBMC). In each case the offsets are proved for
+   every length; it is the *contents* no harness checks.
+4. NEON has no Kani harness at all, and rests on MIRI, MSan and fuzzing.
 
-AVX512-VBMI has no Kani harness — `vpermb`/`vpermi2b` have no model yet. NEON has none
-either. Both rest on MIRI, MSan and fuzzing. Read the
-[CI logs](https://github.com/hacer-bark/base64-turbo/actions) and the `unsafe` blocks
-themselves — each documents the contract it relies on.
+Read the [CI logs](https://github.com/hacer-bark/base64-turbo/actions) and the `unsafe`
+blocks themselves — each documents the contract it relies on.
 
 </details>
 
@@ -318,7 +327,7 @@ AVX-512 VBMI, that's what this crate is for.
 
 **Is NEON production-ready?**
 No. It compiles and passes MIRI/MSan/tests, but it hasn't had the symbolic Kani proofs
-that cover AVX2, and CI doesn't run it on real ARM hardware yet (see
+that cover AVX2 and AVX512-VBMI, and CI doesn't run it on real ARM hardware yet (see
 [SIMD local verification](#compatibility--stability)). Treat it as best-effort until it
 gets the same treatment as the x86 kernels.
 

@@ -44,6 +44,41 @@ jobs:
       - name: test
         run: cargo test --locked ${{ matrix.flags }}
 
+  simd-avx512-vbmi:
+    name: AVX512-VBMI Hardware Checks (opportunistic)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-rust
+          key: avx512-vbmi
+
+      - name: Report runner SIMD capability
+        run: |
+          if grep -qw avx512f /proc/cpuinfo && grep -qw avx512bw /proc/cpuinfo && grep -qw avx512vbmi /proc/cpuinfo; then
+            echo "VBMI=1" >> "$GITHUB_ENV"
+            echo "::notice::Runner has AVX-512 VBMI. The intrinsic models will be checked against real instructions this run."
+          else
+            echo "VBMI=0" >> "$GITHUB_ENV"
+            echo "::notice::Runner lacks AVX-512 VBMI; the hardware checks will skip. The models still stand on the Kani proofs, the Miri leg, and their Intel-pseudocode transcription."
+          fi
+
+      - name: test (AVX512-VBMI hardware suites)
+        run: cargo test --locked --all-features -- --nocapture avx512_vbmi unstable_apis
+
+      - name: Confirm the equivalence suite actually ran
+        if: env.VBMI == '1'
+        run: |
+          # On a VBMI runner a skip would mean runtime detection disagrees with
+          # /proc/cpuinfo, which is a real problem and must not pass silently.
+          if cargo test --locked --all-features -- --nocapture avx512_vbmi_models_match_hardware \
+               | grep -q "skipping: host CPU lacks AVX-512-VBMI"; then
+            echo "::error::Runner reports AVX-512 VBMI in /proc/cpuinfo but is_x86_feature_detected disagrees."
+            exit 1
+          fi
+
   msan:
     name: "MSan (${{ matrix.target }})"
     runs-on: ${{ matrix.os }}

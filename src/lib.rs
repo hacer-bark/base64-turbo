@@ -715,6 +715,72 @@ impl Engine {
         unsafe { simd::decode_slice_avx2(&self.config, input, dst) }
     }
 
+    /// Encodes a byte slice into Base64 using the AVX-512-VBMI SIMD implementation.
+    ///
+    /// This provides raw access to the direct AVX-512-VBMI encoding logic, the
+    /// fastest kernel in the crate.
+    ///
+    /// # Safety
+    ///
+    /// This function is **unsafe** and requires the caller to uphold strict memory contracts.
+    /// Failure to do so will result in **undefined behavior** (e.g., buffer overflow).
+    ///
+    /// - The destination pointer `dst` must be valid and point to a mutable memory region with
+    ///   sufficient capacity. The required size depends on `config.padding`:
+    ///   - With padding: `input.len().div_ceil(3) * 4`
+    ///   - Without padding: `(input.len() * 4).div_ceil(3)`
+    ///   - Highly recommended: use `Engine::encoded_len` to compute length.
+    ///
+    /// - The caller **must** ensure the target CPU supports the `avx512f`, `avx512bw` and
+    ///   `avx512vbmi` instruction subsets at runtime. Executing this function on a CPU
+    ///   without all three will cause an illegal instruction crash.
+    ///
+    /// # Warning
+    ///
+    /// This is a low-level, unsafe primitive. Misuse can lead to undefined behavior regardless
+    /// of other crate guarantees. For better memory safety, use the safe higher-level APIs
+    /// (e.g., `Engine::encode`).
+    #[cfg(all(x86_simd, feature = "avx512-vbmi", feature = "unstable"))]
+    pub unsafe fn encode_avx512_vbmi(&self, input: &[u8], dst: &mut [u8]) {
+        // SAFETY: Caller must uphold the contracts documented on this function.
+        unsafe { simd::encode_slice_avx512_vbmi(&self.config, input, dst) }
+    }
+
+    /// Decodes a Base64 byte slice using the AVX-512-VBMI SIMD implementation.
+    ///
+    /// This provides raw access to the direct AVX-512-VBMI decoding logic.
+    ///
+    /// # Safety
+    ///
+    /// This function is **unsafe** and requires the caller to uphold strict memory contracts.
+    /// Failure to do so will result in **undefined behavior** (e.g., buffer overflow).
+    ///
+    /// - The destination pointer `dst` must be valid and point to a mutable memory region with
+    ///   at least `(input.len() / 4 + 1) * 3` bytes of capacity. The extra space is required
+    ///   because the quad tier's first three stores are unmasked, each overhanging the 48
+    ///   bytes it produces by 16 before the next store rewrites that overhang.
+    ///   - Highly recommended: use `Engine::estimate_decoded_len` to compute length.
+    ///
+    /// - The caller **must** ensure the target CPU supports the `avx512f`, `avx512bw` and
+    ///   `avx512vbmi` instruction subsets at runtime. Executing this function on a CPU
+    ///   without all three will cause an illegal instruction crash.
+    ///
+    /// # Warning
+    ///
+    /// This is a low-level, unsafe primitive. Misuse can lead to undefined behavior regardless
+    /// of other crate guarantees. For better memory safety, use the safe higher-level APIs
+    /// (e.g., `Engine::decode`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidLength`] or [`Error::InvalidCharacter`] if `input` is not
+    /// valid Base64.
+    #[cfg(all(x86_simd, feature = "avx512-vbmi", feature = "unstable"))]
+    pub unsafe fn decode_avx512_vbmi(&self, input: &[u8], dst: &mut [u8]) -> Result<usize, Error> {
+        // SAFETY: Caller must uphold the contracts documented on this function.
+        unsafe { simd::decode_slice_avx512_vbmi(&self.config, input, dst) }
+    }
+
     /// Encodes a byte slice into Base64 using the optimized scalar (non-SIMD) algorithm.
     ///
     /// This provides raw access to the direct scalar encoding logic. Unlike the SIMD

@@ -13,6 +13,16 @@ use base64_turbo::{
     URL_SAFE as TURBO_URL, URL_SAFE_NO_PAD as TURBO_URL_NP,
 };
 
+/// True when the host implements every subset the VBMI kernel issues. All three
+/// are required: `vpermb`/`vpermi2b`/`vpmultishiftqb` are VBMI, the masked
+/// `vmovdqu8` tiers are BW, and the 512-bit registers are F.
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+fn has_avx512_vbmi() -> bool {
+    std::is_x86_feature_detected!("avx512f")
+        && std::is_x86_feature_detected!("avx512bw")
+        && std::is_x86_feature_detected!("avx512vbmi")
+}
+
 fuzz_target!(|data: &[u8]| {
     if data.is_empty() {
         return;
@@ -78,65 +88,88 @@ fuzz_target!(|data: &[u8]| {
     }
 
     // ----------------------------------------------------------------------
-    // 3. Raw unsafe paths (unstable feature)
-    //    - Only executed when buffer sizes are sufficient
-    //    - SIMD paths guarded by runtime feature detection to avoid illegal instructions
-    //    - Decode unsafe only on *valid* input (to avoid potential UB as low-level paths assume validity)
+    // 3. Raw unsafe kernels (unstable feature)
+    //
+    //    Every buffer below is sized to *exactly* the capacity the kernel's
+    //    safety contract asks for -- `encoded_len` to encode,
+    //    `estimate_decoded_len` to decode -- and not a byte more. Slack here
+    //    would hide the one bug class this section exists to find: a kernel
+    //    whose overlapping or masked stores reach past the bound it documents.
+    //    With ASan on, an overrun of these allocations is a hard failure.
+    //
+    //    Both valid and arbitrary input go through the decoders. The kernels
+    //    fold validation into an accumulator they only test after their loops,
+    //    so they may write garbage for invalid input -- but that garbage must
+    //    still land inside `estimate_decoded_len`, and the call must report
+    //    `Err` rather than panic.
     // ----------------------------------------------------------------------
 
     let valid_encoded = &enc_buf[..written_enc];
+    let arbitrary_dec_est = engine.estimate_decoded_len(payload.len());
 
-    // ----- Scalar (always available) -----
-    if enc_len > 0 {
-        let mut out_enc = vec![0u8; enc_len];
-        unsafe { engine.encode_scalar(payload, out_enc.as_mut_ptr()) };
-        assert_eq!(&out_enc[..enc_len], valid_encoded);
+    // Runs one kernel pair over: encode(payload), decode(valid), decode(arbitrary).
+    macro_rules! exercise_kernel {
+        ($name:literal, $encode:ident, $decode:ident) => {{
+            if enc_len > 0 {
+                let mut out_enc = vec![0u8; enc_len];
+                unsafe { engine.$encode(payload, &mut out_enc) };
+                assert_eq!(&out_enc[..], valid_encoded, concat!($name, ": encode mismatch"));
+            }
+
+            if !valid_encoded.is_empty() {
+                let mut out_dec = vec![0u8; dec_est];
+                let written = unsafe { engine.$decode(valid_encoded, &mut out_dec) }
+                    .expect(concat!($name, ": valid input failed to decode"));
+                assert_eq!(written, payload.len(), concat!($name, ": decoded length mismatch"));
+                assert_eq!(&out_dec[..written], payload, concat!($name, ": decode mismatch"));
+            }
+
+            if !payload.is_empty() {
+                let mut out_dec = vec![0u8; arbitrary_dec_est];
+                // Arbitrary bytes: any result is acceptable, a panic or an
+                // out-of-bounds write is not.
+                let _ = unsafe { engine.$decode(payload, &mut out_dec) };
+            }
+        }};
     }
 
-    if valid_encoded.len() > 0 {
-        let mut out_dec = vec![0u8; dec_est + 3]; // slight overallocation for safety
-        let res = unsafe { engine.decode_scalar(valid_encoded, out_dec.as_mut_ptr()) };
-        let written = res.unwrap();
-        assert_eq!(written, payload.len());
-        assert_eq!(&out_dec[..written], payload);
+    // ----- Scalar (always available) -----
+    // Safe, not unsafe -- the scalar kernel forbids `unsafe` -- but exercised
+    // through the same shape so the three kernels stay comparable.
+    if enc_len > 0 {
+        let mut out_enc = vec![0u8; enc_len];
+        engine.encode_scalar(payload, &mut out_enc);
+        assert_eq!(&out_enc[..], valid_encoded, "scalar: encode mismatch");
+    }
+
+    if !valid_encoded.is_empty() {
+        let mut out_dec = vec![0u8; dec_est];
+        let written = engine.decode_scalar(valid_encoded, &mut out_dec)
+            .expect("scalar: valid input failed to decode");
+        assert_eq!(written, payload.len(), "scalar: decoded length mismatch");
+        assert_eq!(&out_dec[..written], payload, "scalar: decode mismatch");
+    }
+
+    if !payload.is_empty() {
+        let mut out_dec = vec![0u8; arbitrary_dec_est];
+        let _ = engine.decode_scalar(payload, &mut out_dec);
     }
 
     // ----- AVX2 (x86/x86_64 only) -----
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     if std::is_x86_feature_detected!("avx2") {
-        if enc_len > 0 {
-            let mut out_enc = vec![0u8; enc_len];
-            unsafe { engine.encode_avx2(payload, out_enc.as_mut_ptr()) };
-            assert_eq!(&out_enc[..enc_len], valid_encoded);
-        }
+        exercise_kernel!("avx2", encode_avx2, decode_avx2);
+    }
 
-        if valid_encoded.len() > 0 {
-            let mut out_dec = vec![0u8; dec_est + 3]; // slight overallocation for safety
-            let res = unsafe { engine.decode_avx2(valid_encoded, out_dec.as_mut_ptr()) };
-            let written = res.unwrap();
-            assert_eq!(written, payload.len());
-            assert_eq!(&out_dec[..written], payload);
-        }
+    // ----- AVX-512-VBMI (x86/x86_64 only) -----
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if has_avx512_vbmi() {
+        exercise_kernel!("avx512-vbmi", encode_avx512_vbmi, decode_avx512_vbmi);
     }
 
     // ----- NEON (aarch64 only) -----
     #[cfg(target_arch = "aarch64")]
     {
-        if enc_len > 0 {
-            let mut out_enc = vec![0u8; enc_len];
-            unsafe { engine.encode_neon(payload, out_enc.as_mut_ptr()) };
-            assert_eq!(&out_enc[..enc_len], valid_encoded);
-        }
-
-        if valid_encoded.len() > 0 {
-            let mut out_dec = vec![0u8; dec_est + 3]; // slight overallocation for safety
-            let res = unsafe { engine.decode_neon(valid_encoded, out_dec.as_mut_ptr()) };
-            let written = res.unwrap();
-            assert_eq!(written, payload.len());
-            assert_eq!(&out_dec[..written], payload);
-        }
+        exercise_kernel!("neon", encode_neon, decode_neon);
     }
-
-    // Note: Dispatch logic (AVX512-VBMI/AVX2/scalar selection)
-    // TODO: In future will add explicit support for AVX512-VBMI instructions.
 });

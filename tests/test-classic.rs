@@ -470,6 +470,28 @@ fn test_unstable_apis() {
         println!("Skipping AVX2 Unstable test (hardware unsupported)");
     }
 
+    // --- AVX-512-VBMI ---
+    #[cfg(all(
+        any(target_arch = "x86", target_arch = "x86_64"),
+        feature = "avx512-vbmi"
+    ))]
+    if std::is_x86_feature_detected!("avx512f")
+        && std::is_x86_feature_detected!("avx512bw")
+        && std::is_x86_feature_detected!("avx512vbmi")
+    {
+        unsafe {
+            let mut dst = vec![0u8; STANDARD.encoded_len(input.len())];
+            STANDARD.encode_avx512_vbmi(&input, &mut dst);
+            assert_eq!(&dst, expected.as_bytes(), "AVX512-VBMI Unsafe Encode");
+
+            let mut dec = vec![0u8; STANDARD.estimate_decoded_len(dst.len())];
+            let len = STANDARD.decode_avx512_vbmi(&dst, &mut dec).unwrap();
+            assert_eq!(&dec[..len], &input, "AVX512-VBMI Unsafe Decode");
+        }
+    } else {
+        println!("Skipping AVX512-VBMI Unstable test (hardware unsupported)");
+    }
+
     // --- NEON ---
     #[cfg(target_arch = "aarch64")]
     #[cfg(feature = "neon")]

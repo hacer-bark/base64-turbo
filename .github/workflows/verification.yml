@@ -3,8 +3,7 @@ name: Formal Verification
 on:
   push:
     branches: [ "main" ]
-    tags-ignore:
-      - '**'
+    tags-ignore: ["**"]
   pull_request:
     branches: [ "main" ]
 
@@ -20,8 +19,8 @@ env:
   CARGO_BUILD_JOBS: 2
 
 jobs:
-  kani-index-proofs:
-    name: Kani Model Checker (Index / Induction)
+  kani-index-proofs-avx2:
+    name: Kani Model Checker (AVX2 Index / Induction)
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -37,17 +36,60 @@ jobs:
         if: always()
         run: cargo clean
 
-  kani-kernel-proofs:
-    name: Kani Model Checker (Kernels)
+  kani-index-proofs-avx512-vbmi:
+    name: Kani Model Checker (AVX512-VBMI Index / Induction)
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Run Kani
+        uses: model-checking/kani-github-action@v1.1
+        with:
+          args: '--jobs 2 --output-format=terse --harness check_vbmi_enc_quad_step --harness check_vbmi_enc_single_step --harness check_vbmi_enc_masked_step --harness check_vbmi_enc_masked_terminates --harness check_vbmi_enc_tail_handoff --harness check_vbmi_dec_quad_step --harness check_vbmi_dec_single_step --harness check_vbmi_dec_masked_step --harness check_vbmi_dec_tail_slack'
+
+      - name: Cleanup Artifacts
+        if: always()
+        run: cargo clean
+
+  kani-kernel-proofs-avx2:
+    name: Kani Model Checker (AVX2 Kernels)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
         harness:
           - check_avx2_roundtrip_standard
           - check_avx2_roundtrip_url_safe
-          - check_avx2_decode_robustness
+          - check_avx2_decode_matches_scalar
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Run Kani
+        uses: model-checking/kani-github-action@v1.1
+        with:
+          args: '--jobs 1 --output-format=terse --unstable stubbing --harness ${{ matrix.harness }}'
+
+      - name: Cleanup Artifacts
+        if: always()
+        run: cargo clean
+
+  kani-kernel-proofs-avx512-vbmi:
+    name: Kani Model Checker (AVX512-VBMI Kernels)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        harness:
+          - check_vbmi_encode_matches_scalar_standard
+          - check_vbmi_encode_matches_scalar_url_safe
+          - check_vbmi_decode_matches_scalar
+          - check_vbmi_decode_matches_scalar_masked
+          - check_vbmi_roundtrip_standard
     steps:
       - name: Checkout code
         uses: actions/checkout@v5

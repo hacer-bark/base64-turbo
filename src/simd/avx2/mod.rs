@@ -38,6 +38,36 @@ const ENC_UNROLL: usize = 8;
 /// Vectors per iteration of the decoder's wide tier.
 const DEC_UNROLL: usize = 8;
 
+// Stride constants. The Kani index proofs in `verify` reason over this same
+// arithmetic symbolically, and import these rather than restating them, so a
+// stride that changes here changes the proofs too instead of silently drifting
+// out from under them.
+
+/// Logical input bytes a steady-state encode round consumes.
+const ENC_ROUND_IN: usize = 24;
+/// Characters an encode round writes.
+const ENC_ROUND_OUT: usize = 32;
+/// Bytes each encode load reads: a full vector, of which only the middle
+/// [`ENC_ROUND_IN`] (offset by [`ENC_LEAD`]) are consumed.
+const ENC_VEC: usize = 32;
+/// Input bytes sitting to the left of a steady-state round's 24-byte window.
+const ENC_LEAD: usize = 4;
+/// `src` advance after the permuted first round, which manufactures its own
+/// lead instead of reading one.
+const ENC_FIRST_ADVANCE: usize = ENC_ROUND_IN - ENC_LEAD;
+
+/// Input characters a single-vector decode pass consumes, which is also exactly
+/// what each of its loads reads.
+const DEC_BLOCK_IN: usize = 32;
+/// Bytes a single-vector decode pass advances `dst` by.
+const DEC_BLOCK_OUT: usize = 24;
+/// Read-ahead margin: every pass reads a full vector per [`DEC_BLOCK_IN`]
+/// characters consumed, so no pass may start within this many bytes of the end.
+const DEC_LEAD: usize = 4;
+/// Offset of `pack_and_store!`'s second 16-byte lane, which is what makes its
+/// written span wider than the 24 bytes it advances.
+const DEC_PACK_LANE_OFF: usize = 12;
+
 /// Precomputed AVX2 encode constants, factored out of [`encode_slice_avx2`] so
 /// they are materialized once per call rather than once per round.
 ///
@@ -149,15 +179,15 @@ unsafe fn encode_rounds_avx2<const NT: bool>(
         // across a store.
         let mut chunk = [_mm256_setzero_si256(); ENC_UNROLL];
         for (i, slot) in chunk.iter_mut().enumerate() {
-            *slot = unsafe { _mm256_loadu_si256(src.add(24 * i).cast::<__m256i>()) };
+            *slot = unsafe { _mm256_loadu_si256(src.add(ENC_ROUND_IN * i).cast::<__m256i>()) };
         }
         for (i, raw) in chunk.into_iter().enumerate() {
             let chars = encode_vec_avx2(raw, k);
-            unsafe { store_chars_avx2::<NT>(dst.add(32 * i), chars) };
+            unsafe { store_chars_avx2::<NT>(dst.add(ENC_ROUND_OUT * i), chars) };
         }
 
-        src = unsafe { src.add(24 * ENC_UNROLL) };
-        dst = unsafe { dst.add(32 * ENC_UNROLL) };
+        src = unsafe { src.add(ENC_ROUND_IN * ENC_UNROLL) };
+        dst = unsafe { dst.add(ENC_ROUND_OUT * ENC_UNROLL) };
         remaining -= ENC_UNROLL;
     }
 
@@ -166,8 +196,8 @@ unsafe fn encode_rounds_avx2<const NT: bool>(
         let chars = encode_vec_avx2(raw, k);
         unsafe { store_chars_avx2::<NT>(dst, chars) };
 
-        src = unsafe { src.add(24) };
-        dst = unsafe { dst.add(32) };
+        src = unsafe { src.add(ENC_ROUND_IN) };
+        dst = unsafe { dst.add(ENC_ROUND_OUT) };
         remaining -= 1;
     }
 
@@ -186,8 +216,8 @@ pub(crate) unsafe fn encode_slice_avx2(config: &Config, input: &[u8], dst_slice:
 
     let k = encode_constants_avx2(*config);
 
-    if len >= 32 {
-        let rounds = (len - 4) / 24;
+    if len >= ENC_VEC {
+        let rounds = (len - ENC_LEAD) / ENC_ROUND_IN;
 
         // First round: the steady-state rounds read `src[4..28]`, so the very
         // first one has no four bytes to its left. Permuting the load down by
@@ -197,8 +227,8 @@ pub(crate) unsafe fn encode_slice_avx2(config: &Config, input: &[u8], dst_slice:
         let first = _mm256_permutevar8x32_epi32(first, _mm256_setr_epi32(0, 0, 1, 2, 3, 4, 5, 6));
         let out0 = encode_vec_avx2(first, &k);
         unsafe { _mm256_storeu_si256(dst.cast::<__m256i>(), out0) };
-        src = unsafe { src.add(20) };
-        dst = unsafe { dst.add(32) };
+        src = unsafe { src.add(ENC_FIRST_ADVANCE) };
+        dst = unsafe { dst.add(ENC_ROUND_OUT) };
 
         let remaining = rounds - 1;
 
@@ -211,8 +241,8 @@ pub(crate) unsafe fn encode_slice_avx2(config: &Config, input: &[u8], dst_slice:
         }
 
         // Undo the first round's 20-vs-24 pointer-advancement deficit.
-        src = unsafe { src.add(24 * remaining + 4) };
-        dst = unsafe { dst.add(32 * remaining) };
+        src = unsafe { src.add(ENC_ROUND_IN * remaining + ENC_LEAD) };
+        dst = unsafe { dst.add(ENC_ROUND_OUT * remaining) };
     }
 
     let dst_off = unsafe { dst.offset_from(dst_start) }.cast_unsigned();
@@ -365,17 +395,17 @@ pub(crate) unsafe fn decode_slice_avx2(
             let lane_0 = _mm256_castsi256_si128(out);
             unsafe { _mm_storeu_si128($dst_ptr.cast::<__m128i>(), lane_0) };
             let lane_1 = _mm256_extracti128_si256(out, 1);
-            unsafe { _mm_storeu_si128($dst_ptr.add(12).cast::<__m128i>(), lane_1) };
+            unsafe { _mm_storeu_si128($dst_ptr.add(DEC_PACK_LANE_OFF).cast::<__m128i>(), lane_1) };
         }};
     }
 
     // Every load reads a full 32-byte vector per 32 bytes consumed, so no pass
     // may start within 4 bytes of the end; each tier rounds `safe_len` down to
     // its own block size.
-    let safe_len = len.saturating_sub(4);
-    let block_wide = 32 * DEC_UNROLL;
+    let safe_len = len.saturating_sub(DEC_LEAD);
+    let block_wide = DEC_BLOCK_IN * DEC_UNROLL;
     let aligned_len_wide = safe_len - (safe_len % block_wide);
-    let aligned_len_32 = safe_len - (safe_len % 32);
+    let aligned_len_32 = safe_len - (safe_len % DEC_BLOCK_IN);
     let src_end_wide = unsafe { src.add(aligned_len_wide) };
     let src_end_32 = unsafe { src.add(aligned_len_32) };
 
@@ -390,18 +420,18 @@ pub(crate) unsafe fn decode_slice_avx2(
     while src < src_end_wide {
         let mut decoded = [_mm256_setzero_si256(); DEC_UNROLL];
         for (i, slot) in decoded.iter_mut().enumerate() {
-            let raw = unsafe { _mm256_loadu_si256(src.add(32 * i).cast::<__m256i>()) };
+            let raw = unsafe { _mm256_loadu_si256(src.add(DEC_BLOCK_IN * i).cast::<__m256i>()) };
             let (indices, err) = decode_vec!(raw);
             *slot = indices;
             err_acc = _mm256_or_si256(err_acc, err);
         }
         for (i, indices) in decoded.into_iter().enumerate() {
-            let out = unsafe { dst.add(24 * i) };
+            let out = unsafe { dst.add(DEC_BLOCK_OUT * i) };
             pack_and_store!(indices, out);
         }
 
-        src = unsafe { src.add(32 * DEC_UNROLL) };
-        dst = unsafe { dst.add(24 * DEC_UNROLL) };
+        src = unsafe { src.add(DEC_BLOCK_IN * DEC_UNROLL) };
+        dst = unsafe { dst.add(DEC_BLOCK_OUT * DEC_UNROLL) };
     }
 
     // Single tier: 32 input bytes -> 24 output.
@@ -412,8 +442,8 @@ pub(crate) unsafe fn decode_slice_avx2(
 
         pack_and_store!(indices, dst);
 
-        src = unsafe { src.add(32) };
-        dst = unsafe { dst.add(24) };
+        src = unsafe { src.add(DEC_BLOCK_IN) };
+        dst = unsafe { dst.add(DEC_BLOCK_OUT) };
     }
 
     if _mm256_testz_si256(err_acc, err_acc) != 1 {

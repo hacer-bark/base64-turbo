@@ -84,8 +84,6 @@ const fn build_encode_gather() -> [u8; 64] {
         t[o + 3] = b + 5;
         t[o + 4] = b + 4;
         t[o + 5] = b + 3;
-        // Byte 6 only ever feeds the top 2 bits of an extracted index, which
-        // `vpermb` discards; byte 7 is never read at all.
         t[o + 6] = b + 3;
         t[o + 7] = b + 3;
         q += 1;
@@ -128,39 +126,76 @@ const VBMI_PACK_SHUFFLE: [i32; 16] = [
     0,
 ];
 
+// --- Stride constants ---
+//
+// The Kani index proofs in `verify` reason over this same arithmetic
+// symbolically, and import these rather than restating them, so a stride that
+// changes here changes the proofs too instead of silently drifting out from
+// under them. The derived ones (`*_MIN`) are the point: writing the tier guards
+// as "what the tier consumes, plus the read-ahead margin" is what makes the
+// scalar tail's slack a consequence of the constants rather than a coincidence
+// of three hand-picked literals.
+
+/// Bytes a full-width load reads or a full-width store writes.
+const ENC_VEC: usize = 64;
+/// Input bytes one encode vector consumes.
+const ENC_VEC_IN: usize = 48;
+/// Characters one encode vector produces.
+const ENC_VEC_OUT: usize = 64;
+/// Vectors per iteration of the encoder's quad tier.
+const ENC_UNROLL: usize = 4;
+/// Input bytes per quad-tier iteration.
+const ENC_QUAD_IN: usize = ENC_VEC_IN * ENC_UNROLL;
+/// Characters per quad-tier iteration.
+const ENC_QUAD_OUT: usize = ENC_VEC_OUT * ENC_UNROLL;
+/// Quad-tier guard. The binding requirement is only that the last load
+/// (starting 144 bytes in, reading 64) stays in bounds, i.e. 208; this is the
+/// output-sized round number above it, and Layer 1 proves it suffices.
+const ENC_QUAD_MIN: usize = 256;
+/// Single-tier guard: a plain load reads a whole vector to consume 48 of it.
+const ENC_SINGLE_MIN: usize = ENC_VEC;
+/// Input bytes per Base64 group; the masked tier handles whole groups only.
+const ENC_GROUP: usize = 3;
+
+/// Characters one decode vector consumes, which is also its load width.
+const DEC_VEC_IN: usize = 64;
+/// Bytes one decode vector produces.
+const DEC_VEC_OUT: usize = 48;
+/// Vectors per iteration of the decoder's quad tier.
+const DEC_UNROLL: usize = 4;
+/// Characters per quad-tier iteration.
+const DEC_QUAD_IN: usize = DEC_VEC_IN * DEC_UNROLL;
+/// Bytes per quad-tier iteration.
+const DEC_QUAD_OUT: usize = DEC_VEC_OUT * DEC_UNROLL;
+/// Characters per Base64 group.
+const DEC_GROUP: usize = 4;
+/// Characters every decode tier stops short of the end, so that the final
+/// group — the only one that may legally carry `'='` — is always decided by the
+/// scalar tail, which owns the padding and length rules.
+const DEC_LEAD: usize = 4;
+/// Quad-tier guard: what it consumes, plus the margin.
+const DEC_QUAD_MIN: usize = DEC_QUAD_IN + DEC_LEAD;
+/// Single-tier guard: what it consumes, plus the margin.
+const DEC_SINGLE_MIN: usize = DEC_VEC_IN + DEC_LEAD;
+/// Masked-tier guard: one group, plus the margin.
+const DEC_MASKED_MIN: usize = DEC_GROUP + DEC_LEAD;
+
 /// Store mask selecting the low 48 bytes of a decoded vector.
-const LOW_48: u64 = 0x0000_FFFF_FFFF_FFFF;
+const LOW_48: u64 = (1u64 << DEC_VEC_OUT) - 1;
 
 // ======================================================================
 // Miri-compatible VBMI shims
 // ======================================================================
+
+#[cfg(miri)]
+use self::verify::intrinsic_models as m;
 
 #[inline]
 #[target_feature(enable = "avx512f,avx512bw,avx512vbmi")]
 unsafe fn zmm_permutexvar_epi8(idx: __m512i, a: __m512i) -> __m512i {
     #[cfg(miri)]
     {
-        // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm512_permutexvar_epi8
-        let idx: [u8; 64] = unsafe { std::mem::transmute(idx) };
-        let a: [u8; 64] = unsafe { std::mem::transmute(a) };
-        let mut dst = [0u8; 64];
-
-        // FOR j := 0 to 63
-        for j in 0..64 {
-            // i := j*8
-            // (In Rust we access bytes 'j' so '*8' offset is not needed)
-            let i = j;
-
-            // id := idx[i+5:i]*8
-            // (In Rust we index byte-wise, so no additional *8 byte-offset is needed)
-            let id = usize::from(idx[i] & 0x3F);
-            // dst[i+7:i] := a[id+7:id]
-            dst[i] = a[id];
-            // ENDFOR
-        }
-        // dst[MAX:512] := 0
-
-        unsafe { std::mem::transmute(dst) }
+        unsafe { m::permutexvar_epi8_model(idx, a) }
     }
     #[cfg(not(miri))]
     {
@@ -173,34 +208,7 @@ unsafe fn zmm_permutexvar_epi8(idx: __m512i, a: __m512i) -> __m512i {
 unsafe fn zmm_permutex2var_epi8(a: __m512i, idx: __m512i, b: __m512i) -> __m512i {
     #[cfg(miri)]
     {
-        // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm512_permutex2var_epi8
-        let a: [u8; 64] = unsafe { std::mem::transmute(a) };
-        let idx: [u8; 64] = unsafe { std::mem::transmute(idx) };
-        let b: [u8; 64] = unsafe { std::mem::transmute(b) };
-        let mut dst = [0u8; 64];
-
-        // FOR j := 0 to 63
-        for j in 0..64 {
-            // i := j*8
-            let i = j;
-
-            // off := idx[i+5:i]*8
-            let off = usize::from(idx[i] & 0x3F);
-            // IF idx[i+6]
-            if (idx[i] & 0x40) != 0 {
-                // dst[i+7:i] := b[off+7:off]
-                dst[i] = b[off];
-            // ELSE
-            } else {
-                // dst[i+7:i] := a[off+7:off]
-                dst[i] = a[off];
-                // FI
-            }
-            // ENDFOR
-        }
-        // dst[MAX:512] := 0
-
-        unsafe { std::mem::transmute(dst) }
+        unsafe { m::permutex2var_epi8_model(a, idx, b) }
     }
     #[cfg(not(miri))]
     {
@@ -213,28 +221,7 @@ unsafe fn zmm_permutex2var_epi8(a: __m512i, idx: __m512i, b: __m512i) -> __m512i
 unsafe fn zmm_multishift_epi64_epi8(a: __m512i, b: __m512i) -> __m512i {
     #[cfg(miri)]
     {
-        // REFERENCE: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm512_multishift_epi64_epi8
-        let a: [u8; 64] = unsafe { std::mem::transmute(a) };
-        let b: [u64; 8] = unsafe { std::mem::transmute(b) };
-        let mut dst = [0u8; 64];
-
-        // FOR j := 0 to 7
-        for j in 0..8 {
-            // FOR k := 0 to 7
-            for k in 0..8 {
-                // ctrl := a[j][k] & 63
-                let ctrl = u32::from(a[j * 8 + k] & 63);
-                // dst[j][k] := (b[j] >> ctrl) | (b[j] << (64 - ctrl))
-                // (expressed as a rotate, which is what that pair of shifts is
-                // and which stays defined when `ctrl` is 0)
-                dst[j * 8 + k] = (b[j].rotate_right(ctrl) & 0xFF) as u8;
-                // ENDFOR
-            }
-            // ENDFOR
-        }
-        // dst[MAX:512] := 0
-
-        unsafe { std::mem::transmute(dst) }
+        unsafe { m::multishift_epi64_epi8_model(a, b) }
     }
     #[cfg(not(miri))]
     {
@@ -277,38 +264,38 @@ pub(crate) unsafe fn encode_slice_avx512_vbmi(config: &Config, input: &[u8], dst
 
     // Quad tier: 192 input bytes -> 256 output. The last load starts 144 bytes
     // in and reads 64, so 208 <= 256 bytes are always in bounds.
-    while rem >= 256 {
+    while rem >= ENC_QUAD_MIN {
         let r0 = encode_vec!(load_48!(0));
-        let r1 = encode_vec!(load_48!(48));
-        let r2 = encode_vec!(load_48!(96));
-        let r3 = encode_vec!(load_48!(144));
+        let r1 = encode_vec!(load_48!(ENC_VEC_IN));
+        let r2 = encode_vec!(load_48!(2 * ENC_VEC_IN));
+        let r3 = encode_vec!(load_48!(3 * ENC_VEC_IN));
         unsafe { _mm512_storeu_si512(dst.cast(), r0) };
-        unsafe { _mm512_storeu_si512(dst.add(64).cast(), r1) };
-        unsafe { _mm512_storeu_si512(dst.add(128).cast(), r2) };
-        unsafe { _mm512_storeu_si512(dst.add(192).cast(), r3) };
-        src = unsafe { src.add(192) };
-        dst = unsafe { dst.add(256) };
-        rem -= 192;
+        unsafe { _mm512_storeu_si512(dst.add(ENC_VEC_OUT).cast(), r1) };
+        unsafe { _mm512_storeu_si512(dst.add(2 * ENC_VEC_OUT).cast(), r2) };
+        unsafe { _mm512_storeu_si512(dst.add(3 * ENC_VEC_OUT).cast(), r3) };
+        src = unsafe { src.add(ENC_QUAD_IN) };
+        dst = unsafe { dst.add(ENC_QUAD_OUT) };
+        rem -= ENC_QUAD_IN;
     }
 
     // Single tier: 48 input bytes -> 64 output. A plain load reads 64 bytes to
     // consume 48, so it needs 64 to exist.
-    while rem >= 64 {
+    while rem >= ENC_SINGLE_MIN {
         let r = encode_vec!(load_48!(0));
         unsafe { _mm512_storeu_si512(dst.cast(), r) };
-        src = unsafe { src.add(48) };
-        dst = unsafe { dst.add(64) };
-        rem -= 48;
+        src = unsafe { src.add(ENC_VEC_IN) };
+        dst = unsafe { dst.add(ENC_VEC_OUT) };
+        rem -= ENC_VEC_IN;
     }
 
     // Masked tier: whole triples only, so no padding logic lands here. `rem` is
     // now < 64 and `take` is capped at 48, so this runs at most twice.
-    while rem >= 3 {
-        let take = (rem - rem % 3).min(48);
-        let out = take / 3 * 4;
-        let v = unsafe { _mm512_maskz_loadu_epi8(u64::MAX >> (64 - take), src.cast()) };
+    while rem >= ENC_GROUP {
+        let take = (rem - rem % ENC_GROUP).min(ENC_VEC_IN);
+        let out = take / ENC_GROUP * 4;
+        let v = unsafe { _mm512_maskz_loadu_epi8(u64::MAX >> (ENC_VEC - take), src.cast()) };
         let chars = encode_vec!(v);
-        unsafe { _mm512_mask_storeu_epi8(dst.cast::<i8>(), u64::MAX >> (64 - out), chars) };
+        unsafe { _mm512_mask_storeu_epi8(dst.cast::<i8>(), u64::MAX >> (ENC_VEC - out), chars) };
         src = unsafe { src.add(take) };
         dst = unsafe { dst.add(out) };
         rem -= take;
@@ -367,11 +354,11 @@ pub(crate) unsafe fn decode_slice_avx512_vbmi(
     // least 4 characters short of the end so the final group -- the only one
     // that may legally carry '=' -- is always decided by the scalar tail, which
     // owns the padding and length rules.
-    while rem >= 260 {
+    while rem >= DEC_QUAD_MIN {
         let v0 = unsafe { _mm512_loadu_si512(src.cast::<__m512i>()) };
-        let v1 = unsafe { _mm512_loadu_si512(src.add(64).cast::<__m512i>()) };
-        let v2 = unsafe { _mm512_loadu_si512(src.add(128).cast::<__m512i>()) };
-        let v3 = unsafe { _mm512_loadu_si512(src.add(192).cast::<__m512i>()) };
+        let v1 = unsafe { _mm512_loadu_si512(src.add(DEC_VEC_IN).cast::<__m512i>()) };
+        let v2 = unsafe { _mm512_loadu_si512(src.add(2 * DEC_VEC_IN).cast::<__m512i>()) };
+        let v3 = unsafe { _mm512_loadu_si512(src.add(3 * DEC_VEC_IN).cast::<__m512i>()) };
 
         let i0 = unsafe { zmm_permutex2var_epi8(lut_lo, v0, lut_hi) };
         let i1 = unsafe { zmm_permutex2var_epi8(lut_lo, v1, lut_hi) };
@@ -393,43 +380,43 @@ pub(crate) unsafe fn decode_slice_avx512_vbmi(
         // its 48 bytes by 16, and the very next store in this same iteration
         // rewrites exactly that overhang.
         unsafe { _mm512_storeu_si512(dst.cast(), p0) };
-        unsafe { _mm512_storeu_si512(dst.add(48).cast(), p1) };
-        unsafe { _mm512_storeu_si512(dst.add(96).cast(), p2) };
-        unsafe { _mm512_mask_storeu_epi8(dst.add(144).cast::<i8>(), LOW_48, p3) };
+        unsafe { _mm512_storeu_si512(dst.add(DEC_VEC_OUT).cast(), p1) };
+        unsafe { _mm512_storeu_si512(dst.add(2 * DEC_VEC_OUT).cast(), p2) };
+        unsafe { _mm512_mask_storeu_epi8(dst.add(3 * DEC_VEC_OUT).cast::<i8>(), LOW_48, p3) };
 
-        src = unsafe { src.add(256) };
-        dst = unsafe { dst.add(192) };
-        rem -= 256;
+        src = unsafe { src.add(DEC_QUAD_IN) };
+        dst = unsafe { dst.add(DEC_QUAD_OUT) };
+        rem -= DEC_QUAD_IN;
     }
 
     // Single tier: 64 input characters -> 48 output bytes.
-    while rem >= 68 {
+    while rem >= DEC_SINGLE_MIN {
         let v = unsafe { _mm512_loadu_si512(src.cast::<__m512i>()) };
         let idx = unsafe { zmm_permutex2var_epi8(lut_lo, v, lut_hi) };
         bad = _mm512_ternarylogic_epi32::<0xFE>(bad, v, idx);
         let p = pack_vec!(idx);
         unsafe { _mm512_mask_storeu_epi8(dst.cast::<i8>(), LOW_48, p) };
-        src = unsafe { src.add(64) };
-        dst = unsafe { dst.add(48) };
-        rem -= 64;
+        src = unsafe { src.add(DEC_VEC_IN) };
+        dst = unsafe { dst.add(DEC_VEC_OUT) };
+        rem -= DEC_VEC_IN;
     }
 
     // Masked tier: the lanes past the end are backfilled with 'A', which decodes
     // to index 0, so they cannot trip validation.
-    if rem >= 8 {
-        let take = (rem - 4) & !3;
-        let out = take / 4 * 3;
+    if rem >= DEC_MASKED_MIN {
+        let take = (rem - DEC_LEAD) & !(DEC_GROUP - 1);
+        let out = take / DEC_GROUP * 3;
         let v = unsafe {
             _mm512_mask_loadu_epi8(
                 _mm512_set1_epi8(b'A'.cast_signed()),
-                u64::MAX >> (64 - take),
+                u64::MAX >> (DEC_VEC_IN - take),
                 src.cast(),
             )
         };
         let idx = unsafe { zmm_permutex2var_epi8(lut_lo, v, lut_hi) };
         bad = _mm512_ternarylogic_epi32::<0xFE>(bad, v, idx);
         let p = pack_vec!(idx);
-        unsafe { _mm512_mask_storeu_epi8(dst.cast::<i8>(), u64::MAX >> (64 - out), p) };
+        unsafe { _mm512_mask_storeu_epi8(dst.cast::<i8>(), u64::MAX >> (DEC_VEC_IN - out), p) };
         src = unsafe { src.add(take) };
         dst = unsafe { dst.add(out) };
     }
@@ -442,6 +429,7 @@ pub(crate) unsafe fn decode_slice_avx512_vbmi(
     unsafe { super::tail::decode(config, input, src, dst_slice, dst_off) }
 }
 
-// Verification: Miri + hardware coverage suites.
-#[cfg(test)]
+// Verification: Kani proofs, Intel-pseudocode intrinsic models, and the Miri +
+// hardware coverage suites.
+#[cfg(any(kani, test, miri))]
 mod verify;
