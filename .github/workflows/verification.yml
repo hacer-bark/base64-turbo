@@ -6,6 +6,7 @@ on:
     tags-ignore: ["**"]
   pull_request:
     branches: [ "main" ]
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -19,8 +20,38 @@ env:
   CARGO_BUILD_JOBS: 2
 
 jobs:
+  changes:
+    name: Detect relevant changes
+    runs-on: ubuntu-latest
+    if: github.event_name != 'workflow_dispatch'
+    outputs:
+      avx2: ${{ steps.filter.outputs.avx2 }}
+      avx512-vbmi: ${{ steps.filter.outputs.avx512-vbmi }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            common: &common
+              - 'src/lib.rs'
+              - 'src/scalar.rs'
+              - 'src/simd/mod.rs'
+              - 'build.rs'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.github/workflows/verification.yml'
+            avx2:
+              - *common
+              - 'src/simd/avx2/**'
+            avx512-vbmi:
+              - *common
+              - 'src/simd/avx512_vbmi/**'
+
   kani-index-proofs-avx2:
     name: Kani Model Checker (AVX2 Index / Induction)
+    needs: changes
+    if: always() && (needs.changes.result != 'success' || needs.changes.outputs.avx2 == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -38,6 +69,8 @@ jobs:
 
   kani-index-proofs-avx512-vbmi:
     name: Kani Model Checker (AVX512-VBMI Index / Induction)
+    needs: changes
+    if: always() && (needs.changes.result != 'success' || needs.changes.outputs.avx512-vbmi == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -55,6 +88,8 @@ jobs:
 
   kani-kernel-proofs-avx2:
     name: Kani Model Checker (AVX2 Kernels)
+    needs: changes
+    if: always() && (needs.changes.result != 'success' || needs.changes.outputs.avx2 == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
@@ -79,6 +114,8 @@ jobs:
 
   kani-kernel-proofs-avx512-vbmi:
     name: Kani Model Checker (AVX512-VBMI Kernels)
+    needs: changes
+    if: always() && (needs.changes.result != 'success' || needs.changes.outputs.avx512-vbmi == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:

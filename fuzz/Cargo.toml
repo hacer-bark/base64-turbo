@@ -18,10 +18,3 @@ path = "fuzz_targets/fuzz_all_modes.rs"
 test = false
 doc = false
 bench = false
-
-[[bin]]
-name = "fuzz_large_inputs"
-path = "fuzz_targets/fuzz_large_inputs.rs"
-test = false
-doc = false
-bench = false
