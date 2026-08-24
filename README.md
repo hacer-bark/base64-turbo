@@ -3,7 +3,7 @@
   <p><strong>A Rust Base64 codec that peaks past 100 GiB/s, with its <code>unsafe</code> SIMD checked by a model checker, not just by review.</strong></p>
 
   [![Crates.io](https://img.shields.io/crates/v/base64-turbo.svg?style=for-the-badge&color=fc8d62)](https://crates.io/crates/base64-turbo)
-  [![License](https://img.shields.io/crates/l/base64-turbo.svg?style=for-the-badge&color=8da0cb)](https://crates.io/crates/base64-turbo)
+  [![License](https://img.shields.io/badge/license-0BSD-8da0cb.svg?style=for-the-badge)](#license)
   [![Kani Verified](https://img.shields.io/github/actions/workflow/status/hacer-bark/base64-turbo/verification.yml?label=Kani%20Verified&style=for-the-badge&color=e78ac3)](https://github.com/hacer-bark/base64-turbo/actions/workflows/verification.yml)
   [![MIRI Verified](https://img.shields.io/github/actions/workflow/status/hacer-bark/base64-turbo/miri.yml?label=MIRI%20Verified&style=for-the-badge&color=66c2a5)](https://github.com/hacer-bark/base64-turbo/actions/workflows/miri.yml)
 </div>
@@ -193,7 +193,7 @@ Select comparison targets with `BENCH_TARGET` (comma-separated): `turbo` (defaul
 allocating API), `turbo-buff` (zero-allocation API), `simd`, `std`, `all`.
 
 <details>
-<summary>Raw <code>cargo bench</code> output — AWS <code>c8a.large</code>, <code>BENCH_TARGET=all</code></summary>
+<summary>Raw <code>cargo bench</code> output — AWS <code>c8a.large</code></summary>
 
 See [`benches/results/c8a-large-latest.txt`](benches/results/c8a-large-latest.txt) for the
 full unedited output — 32 B through 10 MB, every target.
@@ -201,7 +201,7 @@ full unedited output — 32 B through 10 MB, every target.
 </details>
 
 <details>
-<summary>Raw <code>cargo bench</code> output — AWS <code>c7i.large</code>, <code>BENCH_TARGET=all</code></summary>
+<summary>Raw <code>cargo bench</code> output — AWS <code>c7i.large</code></summary>
 
 See [`benches/results/c7i-large-latest.txt`](benches/results/c7i-large-latest.txt) for the
 full unedited output — 32 B through 10 MB, every target.
@@ -379,13 +379,7 @@ licenses:
 
 ## License
 
-Licensed under either of
-
-- [Apache License, Version 2.0](https://github.com/hacer-bark/base64-turbo/blob/main/LICENSE-APACHE)
-- [MIT license](https://github.com/hacer-bark/base64-turbo/blob/main/LICENSE-MIT)
-
-at your option.
+Licensed under the [0BSD license](https://github.com/hacer-bark/hex-turbo/blob/main/LICENSE).
 
 Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in
-this crate, as defined in the Apache-2.0 license, shall be dual licensed as above, without any
-additional terms or conditions.
+this crate shall be licensed as above, without any additional terms or conditions.

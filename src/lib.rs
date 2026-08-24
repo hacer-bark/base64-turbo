@@ -101,9 +101,6 @@
 
 #![cfg_attr(not(any(feature = "std", test)), no_std)]
 #![doc(issue_tracker_base_url = "https://github.com/hacer-bark/base64-turbo/issues/")]
-// When no SIMD kernel is compiled in (`unsafe_simd` off, set by build.rs), the
-// crate is pure scalar Rust with no `unsafe` anywhere — so we forbid it
-// crate-wide and memory safety stops resting on review at all.
 #![cfg_attr(not(unsafe_simd), forbid(unsafe_code))]
 #![forbid(elided_lifetimes_in_paths)]
 // This crate casts pointers to wider SIMD vector types (`__m128i`, `__m256i`, `__m512i`)
@@ -111,7 +108,6 @@
 // documented to work on any alignment ("u" = unaligned).
 #![allow(clippy::cast_ptr_alignment)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
-#![cfg_attr(docsrs, feature(doc_cfg))]
 
 #[cfg(all(doctest, feature = "std"))]
 #[doc = include_str!("../README.md")]
