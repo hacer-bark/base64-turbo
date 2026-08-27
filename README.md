@@ -34,19 +34,19 @@ crate — see the [FAQ](#faq).
 
 ## Contents
 
-- [Quick start](#quick-start)
-- [Zero-allocation API](#zero-allocation-stack--no_std)
-- [Feature flags](#feature-flags)
-- [Compatibility & stability](#compatibility--stability)
-- [Performance & architecture](#performance--architecture)
+- [Quick Start](#quick-start)
+- [Zero-Allocation API](#zero-allocation-stack--no_std)
+- [Feature Flags](#feature-flags)
+- [Compatibility & Stability](#compatibility--stability)
+- [Performance & Architecture](#performance--architecture)
 - [Benchmarks](#benchmarks)
-- [Safety & verification](#safety--verification)
+- [Safety & Verification](#safety--verification)
 - [Ecosystem](#ecosystem)
 - [FAQ](#faq)
 - [Acknowledgements](#acknowledgements)
 - [License](#license)
 
-## Quick start
+## Quick Start
 
 ```rust
 use base64_turbo::STANDARD;
@@ -79,7 +79,7 @@ let dec_len = STANDARD.decode_into(&enc_buf[..enc_len], &mut dec_buf).unwrap();
 assert_eq!(&dec_buf[..dec_len], input);
 ```
 
-## Feature flags
+## Feature Flags
 
 Each x86 SIMD kernel is its own knob, so you compile in only what your target CPUs are
 likely to support. Runtime detection still gates every call — enabling a kernel the host
@@ -101,11 +101,11 @@ configuration.
 
 ## Compatibility & Stability
 
-**MSRV: Rust 1.89.0.** We rely on recently stabilized AVX-512 intrinsics in `core` and do
+**MSRV:** Rust 1.89.0. We rely on recently stabilized AVX-512 intrinsics in `core` and do
 not plan to lower this.
 
-The public API is **Stable**. We follow SemVer; the current surface stays valid and
-backward-compatible through the `0.3.x` lifecycle.
+**API stability:** The public API is **Stable** and follows Semantic Versioning. It stays
+valid and backward-compatible throughout the `0.3.x` lifecycle.
 
 Output conforms to RFC 4648 — `STANDARD` and `URL_SAFE` are drop-in compatible with the
 `base64` crate. `serde` support is not included, to keep the dependency tree empty.
@@ -196,7 +196,7 @@ allocating API), `turbo-buff` (zero-allocation API), `simd`, `std`, `all`.
 <summary>Raw <code>cargo bench</code> output — AWS <code>c8a.large</code></summary>
 
 See [`benches/results/c8a-large-latest.txt`](benches/results/c8a-large-latest.txt) for the
-full unedited output — 32 B through 10 MB, every target.
+full output — 32 B through 10 MB, every target.
 
 </details>
 
@@ -204,7 +204,7 @@ full unedited output — 32 B through 10 MB, every target.
 <summary>Raw <code>cargo bench</code> output — AWS <code>c7i.large</code></summary>
 
 See [`benches/results/c7i-large-latest.txt`](benches/results/c7i-large-latest.txt) for the
-full unedited output — 32 B through 10 MB, every target.
+full output — 32 B through 10 MB, every target.
 
 </details>
 
@@ -379,7 +379,7 @@ licenses:
 
 ## License
 
-Licensed under the [0BSD license](https://github.com/hacer-bark/hex-turbo/blob/main/LICENSE).
+Licensed under the [0BSD license](https://github.com/hacer-bark/base64-turbo/blob/main/LICENSE).
 
 Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in
 this crate shall be licensed as above, without any additional terms or conditions.
