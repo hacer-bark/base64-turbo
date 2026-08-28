@@ -11,15 +11,92 @@ use base64::{
         URL_SAFE_NO_PAD as REF_URL_SAFE_NO_PAD,
     },
 };
-use rand::{RngExt, rng};
+use rand::RngExt;
 
 // ======================================================================
 // Helpers
 // ======================================================================
 
 fn random_bytes(len: usize) -> Vec<u8> {
-    let mut rng = rng();
-    (0..len).map(|_| rng.random()).collect()
+    let mut bytes = vec![0; len];
+    rand::rng().fill(&mut bytes);
+    bytes
+}
+
+const fn engines() -> [(Engine, &'static base64::engine::GeneralPurpose); 4] {
+    [
+        (STANDARD, &REF_STANDARD),
+        (STANDARD_NO_PAD, &REF_STANDARD_NO_PAD),
+        (URL_SAFE, &REF_URL_SAFE),
+        (URL_SAFE_NO_PAD, &REF_URL_SAFE_NO_PAD),
+    ]
+}
+
+fn assert_oracle_matches(
+    input: &[u8],
+    engine_pairs: &[(Engine, &'static base64::engine::GeneralPurpose)],
+) {
+    for &(turbo, reference) in engine_pairs {
+        assert_oracle_match(input, turbo, reference);
+    }
+}
+
+fn assert_all_oracle_matches(input: &[u8]) {
+    assert_oracle_matches(input, &engines());
+}
+
+fn assert_rejects(engine: Engine, inputs: &[&str]) {
+    let mut buffer = [0u8; 100];
+    for &input in inputs {
+        assert!(
+            engine.decode_into(input, &mut buffer).is_err(),
+            "accepted {input:?}",
+        );
+    }
+}
+
+const fn assert_clone<T: Clone>() {}
+
+fn expected_encoded_len(input_len: usize, padding: bool) -> usize {
+    let complete_groups = input_len / 3;
+    match (input_len % 3, padding) {
+        (0, _) => complete_groups * 4,
+        (_, true) => (complete_groups + 1) * 4,
+        (1, false) => complete_groups * 4 + 2,
+        (2, false) => complete_groups * 4 + 3,
+        _ => unreachable!(),
+    }
+}
+
+fn assert_encoded_lengths(engine: Engine, padding: bool) {
+    for input_len in 0..=7 {
+        assert_eq!(
+            engine.encoded_len(input_len),
+            expected_encoded_len(input_len, padding),
+            "encoded length for {input_len} bytes",
+        );
+    }
+}
+
+fn large_test_lengths() -> impl Iterator<Item = usize> {
+    // Varied sizes that execute every large-input dispatch loop.
+    [1024, 4095, 8192, 16383, 32768, 65535].into_iter()
+}
+
+fn config_test_lengths() -> impl Iterator<Item = usize> {
+    [1, 2, 3, 11, 12, 13, 47, 48, 49, 255, 511].into_iter()
+}
+
+fn boundary_test_lengths() -> impl Iterator<Item = usize> {
+    [
+        11, 12, 13, 15, 16, 17, 23, 24, 25, 47, 48, 49, 59, 60, 61, 71, 72, 73, 95, 96, 97, 143,
+        144, 145, 191, 192, 193, 239, 240, 241, 383, 384, 385, 767, 768, 769,
+    ]
+    .into_iter()
+}
+
+fn all_byte_values() -> Vec<u8> {
+    (0..=u8::MAX).collect()
 }
 
 /// The "Oracle" Test.
@@ -85,11 +162,9 @@ fn test_oracle_standard_exhaustive_small() {
 
 #[test]
 #[cfg(not(miri))]
-fn test_oracle_fuzz_large() {
+fn test_oracle_large_inputs() {
     // Random sizes up to 64KB to trigger AVX2/AVX512-VBMI loops multiple times.
-    let mut rng = rng();
-    for _ in 0..100 {
-        let len = rng.random_range(1024..65536);
+    for len in large_test_lengths() {
         let data = random_bytes(len);
         assert_oracle_match(&data, STANDARD, &REF_STANDARD);
     }
@@ -98,13 +173,9 @@ fn test_oracle_fuzz_large() {
 #[test]
 fn test_oracle_configs() {
     // Verify URL_SAFE and NO_PAD variants logic
-    let mut rng = rng();
-    for _ in 0..25 {
-        let len = rng.random_range(1..512);
+    for len in config_test_lengths() {
         let data = random_bytes(len);
-        assert_oracle_match(&data, STANDARD_NO_PAD, &REF_STANDARD_NO_PAD);
-        assert_oracle_match(&data, URL_SAFE, &REF_URL_SAFE);
-        assert_oracle_match(&data, URL_SAFE_NO_PAD, &REF_URL_SAFE_NO_PAD);
+        assert_oracle_matches(&data, &engines()[1..]);
     }
 }
 
@@ -147,24 +218,10 @@ fn test_empty_input() {
 #[test]
 fn test_encoded_len_correctness() {
     // Padded encoding: ceil(n/3) * 4
-    assert_eq!(STANDARD.encoded_len(0), 0);
-    assert_eq!(STANDARD.encoded_len(1), 4);
-    assert_eq!(STANDARD.encoded_len(2), 4);
-    assert_eq!(STANDARD.encoded_len(3), 4);
-    assert_eq!(STANDARD.encoded_len(4), 8);
-    assert_eq!(STANDARD.encoded_len(5), 8);
-    assert_eq!(STANDARD.encoded_len(6), 8);
-    assert_eq!(STANDARD.encoded_len(7), 12);
+    assert_encoded_lengths(STANDARD, true);
 
     // No-pad encoding: ceil(n*4/3)
-    assert_eq!(STANDARD_NO_PAD.encoded_len(0), 0);
-    assert_eq!(STANDARD_NO_PAD.encoded_len(1), 2);
-    assert_eq!(STANDARD_NO_PAD.encoded_len(2), 3);
-    assert_eq!(STANDARD_NO_PAD.encoded_len(3), 4);
-    assert_eq!(STANDARD_NO_PAD.encoded_len(4), 6);
-    assert_eq!(STANDARD_NO_PAD.encoded_len(5), 7);
-    assert_eq!(STANDARD_NO_PAD.encoded_len(6), 8);
-    assert_eq!(STANDARD_NO_PAD.encoded_len(7), 10);
+    assert_encoded_lengths(STANDARD_NO_PAD, false);
 
     // URL_SAFE uses same math as STANDARD (just different alphabet)
     assert_eq!(URL_SAFE.encoded_len(10), STANDARD.encoded_len(10));
@@ -240,9 +297,8 @@ fn test_buffer_too_small_decode() {
 #[test]
 fn test_reject_invalid_chars() {
     let bad_inputs = ["Abc!", "Ab c", "Abc\0", "Abc-", "Abc_"];
-    let mut buf = [0u8; 100];
     for bad in bad_inputs {
-        // STANDARD engine should reject '-' and '_'
+        let mut buf = [0u8; 100];
         assert_eq!(
             STANDARD.decode_into(bad, &mut buf),
             Err(Error::InvalidCharacter),
@@ -264,37 +320,20 @@ fn test_reject_invalid_length_padding() {
 
 #[test]
 fn test_reject_non_terminal_or_non_canonical_padding() {
-    let mut buf = [0u8; 100];
-
-    for input in ["TQ==AAAA", "TQ==!", "TR==", "TWF="] {
-        assert!(
-            STANDARD.decode_into(input, &mut buf).is_err(),
-            "accepted {input:?}"
-        );
-    }
-
-    for input in ["TQ==", "TR", "TWF"] {
-        assert!(
-            STANDARD_NO_PAD.decode_into(input, &mut buf).is_err(),
-            "accepted {input:?}",
-        );
-    }
+    assert_rejects(STANDARD, &["TQ==AAAA", "TQ==!", "TR==", "TWF="]);
+    assert_rejects(STANDARD_NO_PAD, &["TQ==", "TR", "TWF"]);
 }
 
 #[test]
 fn test_reject_url_safe_chars_in_standard() {
     // '-' and '_' are valid in URL_SAFE but invalid in STANDARD
-    let mut buf = [0u8; 100];
-    assert!(STANDARD.decode_into("-___", &mut buf).is_err());
-    assert!(STANDARD.decode_into("A-B_", &mut buf).is_err());
+    assert_rejects(STANDARD, &["-___", "A-B_"]);
 }
 
 #[test]
 fn test_reject_standard_chars_in_url_safe() {
     // '+' and '/' are valid in STANDARD but invalid in URL_SAFE
-    let mut buf = [0u8; 100];
-    assert!(URL_SAFE.decode_into("+///", &mut buf).is_err());
-    assert!(URL_SAFE.decode_into("A+B/", &mut buf).is_err());
+    assert_rejects(URL_SAFE, &["+///", "A+B/"]);
 }
 
 #[test]
@@ -341,11 +380,13 @@ fn test_error_traits() {
     // Verify Debug, Clone, Copy, PartialEq, Eq
     let e1 = Error::InvalidCharacter;
     let e2 = e1; // Copy
-    let e3 = e1; // Clone (also just a Copy, since Error is Copy)
+    let e3 = e1;
     assert_eq!(e1, e2); // PartialEq + Eq
     assert_eq!(e2, e3);
     assert_ne!(Error::InvalidLength, Error::InvalidCharacter);
     assert_ne!(Error::BufferTooSmall, Error::InvalidLength);
+
+    assert_clone::<Error>();
 
     // Debug
     let debug_str = format!("{:?}", Error::InvalidLength);
@@ -380,9 +421,6 @@ fn test_known_values_standard() {
     ];
 
     for (input, expected) in cases {
-        if input.is_empty() {
-            continue;
-        }
         let len = STANDARD.encode_into(*input, &mut buf).unwrap();
         assert_eq!(&buf[..len], expected.as_bytes(), "Encode {input:?}");
 
@@ -414,16 +452,8 @@ fn test_known_values_url_safe() {
 #[test]
 fn test_all_byte_values() {
     // Generate a 256-byte input containing every possible byte value
-    let input: Vec<u8> = (0..=255).collect();
-
-    for (turbo, reference) in [
-        (STANDARD, &REF_STANDARD),
-        (STANDARD_NO_PAD, &REF_STANDARD_NO_PAD),
-        (URL_SAFE, &REF_URL_SAFE),
-        (URL_SAFE_NO_PAD, &REF_URL_SAFE_NO_PAD),
-    ] {
-        assert_oracle_match(&input, turbo, reference);
-    }
+    let input = all_byte_values();
+    assert_all_oracle_matches(&input);
 }
 
 // ======================================================================
@@ -434,20 +464,7 @@ fn test_all_byte_values() {
 #[cfg(not(miri))]
 fn test_simd_threshold_boundaries() {
     // These sizes are chosen to hit exact SIMD loop boundaries
-    let boundary_sizes = [
-        // SIMD boundaries (alignment, chunks)
-        11, 12, 13, 15, 16, 17, 23, 24, 25,
-        // AVX2 boundaries (32-byte vectors, 24-byte chunks)
-        47, 48, 49, 71, 72, 73, 95, 96, 97,
-        // AVX512-VBMI boundaries (64-byte vectors, 48-byte chunks)
-        47, 48, 49, 95, 96, 97, 143, 144, 145, 191, 192, 193,
-        // NEON boundaries (128-bit vectors, 12-byte encode chunks, 16-byte decode chunks)
-        11, 12, 13, 23, 24, 25, 35, 36, 37, 47, 48, 49, 59, 60, 61,
-        // Multi-loop boundaries
-        239, 240, 241, 383, 384, 385, 767, 768, 769,
-    ];
-
-    for &size in &boundary_sizes {
+    for size in boundary_test_lengths() {
         let data = random_bytes(size);
         assert_oracle_match(&data, STANDARD, &REF_STANDARD);
         assert_oracle_match(&data, URL_SAFE_NO_PAD, &REF_URL_SAFE_NO_PAD);

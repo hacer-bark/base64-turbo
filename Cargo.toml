@@ -6,6 +6,7 @@ rust-version = "1.89"
 readme = "README.md"
 authors = ["Hacer-Bark <hacer.bark@proton.me>"]
 license = "0BSD"
+description = "A Base64 engine that peaks past 100 GiB/s, formally verified (Kani/MIRI/MSan)."
 repository = "https://github.com/hacer-bark/base64-turbo"
 documentation = "https://docs.rs/base64-turbo"
 keywords = ["base64", "simd", "avx512-vbmi", "neon", "encoding"]
