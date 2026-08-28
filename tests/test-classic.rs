@@ -172,6 +172,9 @@ fn test_encoded_len_correctness() {
         URL_SAFE_NO_PAD.encoded_len(10),
         STANDARD_NO_PAD.encoded_len(10)
     );
+
+    assert_eq!(STANDARD.encoded_len(usize::MAX), usize::MAX);
+    assert_eq!(STANDARD_NO_PAD.encoded_len(usize::MAX), usize::MAX);
 }
 
 #[test]
@@ -256,6 +259,25 @@ fn test_reject_invalid_length_padding() {
         let res = STANDARD.decode_into(inp, &mut buf);
         // Can be InvalidLength or InvalidCharacter depending on implementation specifics
         assert!(res.is_err(), "Should fail on invalid padding/length: {inp}");
+    }
+}
+
+#[test]
+fn test_reject_non_terminal_or_non_canonical_padding() {
+    let mut buf = [0u8; 100];
+
+    for input in ["TQ==AAAA", "TQ==!", "TR==", "TWF="] {
+        assert!(
+            STANDARD.decode_into(input, &mut buf).is_err(),
+            "accepted {input:?}"
+        );
+    }
+
+    for input in ["TQ==", "TR", "TWF"] {
+        assert!(
+            STANDARD_NO_PAD.decode_into(input, &mut buf).is_err(),
+            "accepted {input:?}",
+        );
     }
 }
 

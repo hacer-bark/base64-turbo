@@ -286,9 +286,13 @@ fn decode_tail(
 
             // Check for padding ('=').
             if b3 == b'=' {
+                if !config.padding || i + 4 != len {
+                    return Err(Error::InvalidLength);
+                }
+
                 if b2 == b'=' {
                     // "XX==" -> 1 byte output
-                    if (d0 | d1) & 0xC0 != 0 {
+                    if (d0 | d1) & 0xC0 != 0 || d1 & 0x0F != 0 {
                         return Err(Error::InvalidCharacter);
                     }
                     let n = (u32::from(d0) << 18) | (u32::from(d1) << 12);
@@ -297,7 +301,7 @@ fn decode_tail(
                 } else {
                     // "XXX=" -> 2 bytes output
                     let d2 = table[usize::from(b2)];
-                    if (d0 | d1 | d2) & 0xC0 != 0 {
+                    if (d0 | d1 | d2) & 0xC0 != 0 || d2 & 0x03 != 0 {
                         return Err(Error::InvalidCharacter);
                     }
                     let n = (u32::from(d0) << 18) | (u32::from(d1) << 12) | (u32::from(d2) << 6);
@@ -352,12 +356,15 @@ fn decode_tail(
 
             if remaining == 2 {
                 // "XY" -> 1 byte output
+                if d1 & 0x0F != 0 {
+                    return Err(Error::InvalidCharacter);
+                }
                 dst[o] = ((n >> 16) & 0xFF) as u8;
                 o += 1;
             } else {
                 // "XYZ" -> 2 bytes output
                 let d2 = table[usize::from(input[i + 2])];
-                if d2 & 0xC0 != 0 {
+                if d2 & 0xC0 != 0 || d2 & 0x03 != 0 {
                     return Err(Error::InvalidCharacter);
                 }
 

@@ -388,7 +388,10 @@ impl Engine {
     // Length Calculators
     // ======================================================================
 
-    /// Calculates the exact buffer size required to encode `input_len` bytes.
+    /// Calculates the buffer size required to encode `input_len` bytes.
+    ///
+    /// If the exact size cannot fit in `usize`, this returns `usize::MAX` rather
+    /// than wrapping to a smaller value.
     ///
     /// This method computes the size based on the current configuration (padding vs. no padding).
     ///
@@ -403,13 +406,21 @@ impl Engine {
     #[inline]
     #[must_use]
     pub const fn encoded_len(&self, input_len: usize) -> usize {
-        if self.config.padding {
-            // (n + 2) / 3 * 4
-            input_len.div_ceil(3) * 4
+        let complete_groups = input_len / 3;
+        let trailing = input_len % 3;
+        let complete_len = complete_groups.saturating_mul(4);
+
+        let tail_len = if self.config.padding {
+            if trailing == 0 { 0 } else { 4 }
         } else {
-            // (n * 4 + 2) / 3
-            (input_len * 4).div_ceil(3)
-        }
+            match trailing {
+                0 => 0,
+                1 => 2,
+                _ => 3,
+            }
+        };
+
+        complete_len.saturating_add(tail_len)
     }
 
     /// Calculates the **maximum** buffer size required to decode `input_len` bytes.
