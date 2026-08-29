@@ -6,7 +6,6 @@ on:
     tags-ignore: ["**"]
   pull_request:
     branches: [ "main" ]
-  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -80,7 +79,7 @@ jobs:
       - name: Run Kani
         uses: model-checking/kani-github-action@v1.1
         with:
-          args: '--jobs 2 --output-format=terse --harness check_vbmi_enc_quad_step --harness check_vbmi_enc_single_step --harness check_vbmi_enc_masked_step --harness check_vbmi_enc_masked_terminates --harness check_vbmi_enc_tail_handoff --harness check_vbmi_dec_quad_step --harness check_vbmi_dec_single_step --harness check_vbmi_dec_masked_step --harness check_vbmi_dec_tail_slack'
+          args: '--jobs 2 --output-format=terse --harness check_vbmi_enc_quad_step --harness check_vbmi_enc_single_step --harness check_vbmi_enc_masked_step --harness check_vbmi_enc_masked_terminates --harness check_vbmi_enc_tail_handoff --harness check_vbmi_enc_stream_peel --harness check_vbmi_enc_stream_step --harness check_vbmi_dec_quad_step --harness check_vbmi_dec_single_step --harness check_vbmi_dec_masked_step --harness check_vbmi_dec_tail_slack --harness check_vbmi_dec_stream_peel --harness check_vbmi_dec_stream_step'
 
       - name: Cleanup Artifacts
         if: always()
@@ -123,6 +122,8 @@ jobs:
         harness:
           - check_vbmi_encode_matches_scalar_standard
           - check_vbmi_encode_matches_scalar_url_safe
+          - check_vbmi_decode_matches_scalar
+          - check_vbmi_decode_matches_scalar_masked
     steps:
       - name: Checkout code
         uses: actions/checkout@v5

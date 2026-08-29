@@ -29,9 +29,10 @@ mod kani_verification_avx512_vbmi {
     // exactly on the next multiple.
 
     use super::super::{
-        DEC_GROUP, DEC_LEAD, DEC_MASKED_MIN, DEC_QUAD_IN, DEC_QUAD_MIN, DEC_QUAD_OUT,
-        DEC_SINGLE_MIN, DEC_VEC_IN, DEC_VEC_OUT, ENC_GROUP, ENC_QUAD_IN, ENC_QUAD_MIN,
-        ENC_QUAD_OUT, ENC_SINGLE_MIN, ENC_VEC, ENC_VEC_IN, ENC_VEC_OUT,
+        DEC_GROUP, DEC_LEAD, DEC_MASKED_MIN, DEC_PEEL_MAX, DEC_QUAD_IN, DEC_QUAD_MIN, DEC_QUAD_OUT,
+        DEC_SINGLE_MIN, DEC_VEC_IN, DEC_VEC_OUT, ENC_GROUP, ENC_PEEL_MAX, ENC_QUAD_IN,
+        ENC_QUAD_MIN, ENC_QUAD_OUT, ENC_SINGLE_MIN, ENC_VEC, ENC_VEC_IN, ENC_VEC_OUT,
+        NONTEMPORAL_MIN,
     };
 
     /// Largest `len` considered: above `usize::MAX / 4` the unpadded
@@ -233,6 +234,103 @@ mod kani_verification_avx512_vbmi {
         assert_eq!(done + rem, len);
     }
 
+    /// The encoder's streaming alignment peel.
+    ///
+    /// This is the obligation [`check_vbmi_enc_masked_step`] does *not*
+    /// discharge: that proof assumes `rem < ENC_SINGLE_MIN`, and the peel runs
+    /// the same masked step with `rem` at least [`NONTEMPORAL_MIN`]. Nothing
+    /// about the step's mask shifts or bounds may depend on that assumption.
+    ///
+    /// `dst` is `dst_start + dst_off` for a `dst_start` this proof cannot see,
+    /// so the address is arbitrary — constrained only by the guard the kernel
+    /// actually tests, `dst.addr() % 4 == 0`. That guard is not decoration: a
+    /// group always emits 4 characters, so `dst % 4` is invariant, and an output
+    /// starting at an odd address can never reach a 64-byte boundary at all.
+    #[kani::proof]
+    fn check_vbmi_enc_stream_peel() {
+        let len: usize = kani::any();
+        let padding: bool = kani::any();
+        kani::assume(len <= MAX_LEN);
+
+        let (done, dst_off, rem) = any_enc_state(len);
+        kani::assume(rem >= NONTEMPORAL_MIN); // gate `if rem >= NONTEMPORAL_MIN`
+        let cap = enc_cap(len, padding);
+
+        let addr: usize = kani::any();
+        kani::assume(addr % 4 == 0); // gate `dst.addr().is_multiple_of(4)`
+
+        let head = (ENC_VEC - (addr & (ENC_VEC - 1))) & (ENC_VEC - 1);
+        let take = head / 4 * ENC_GROUP;
+
+        // The peel lands exactly on the boundary `vmovntdq` needs, in one step.
+        assert_eq!(
+            (addr + head) % ENC_VEC,
+            0,
+            "peel misses the 64-byte boundary"
+        );
+        assert_eq!(head % 4, 0, "peel is not a whole number of groups");
+        assert!(head <= ENC_VEC - 4, "peel needs more than one masked step");
+        assert!(
+            take <= ENC_PEEL_MAX,
+            "peel exceeds its documented worst case"
+        );
+
+        if head > 0 {
+            // The same two mask-shift ranges the masked-tier proof establishes,
+            // re-established under this tier's much weaker premise on `rem`.
+            assert!(
+                (ENC_GROUP..=ENC_VEC_IN).contains(&take),
+                "load mask shift out of range"
+            );
+            assert!(
+                (4..=ENC_VEC_OUT).contains(&head),
+                "store mask shift out of range"
+            );
+            assert!(done + take <= len, "peel load leaves input");
+            assert!(dst_off + head <= cap, "peel store leaves output");
+            assert_eq!(take % ENC_GROUP, 0);
+            assert_eq!(dst_off + head, 4 * ((done + take) / ENC_GROUP));
+        }
+
+        // ...and the loop the peel exists for is still entered. A peel that
+        // consumed enough to drop `rem` under the quad guard would silently turn
+        // the whole tier off — a performance bug no assertion would catch.
+        assert!(
+            rem - take >= ENC_QUAD_MIN,
+            "peel starved the streaming loop"
+        );
+    }
+
+    /// Inductive step for the encoder's streaming tier: as the quad tier, plus
+    /// the alignment its stores depend on being handed to the next iteration.
+    #[kani::proof]
+    fn check_vbmi_enc_stream_step() {
+        let len: usize = kani::any();
+        let padding: bool = kani::any();
+        kani::assume(len <= MAX_LEN);
+
+        let (done, dst_off, rem) = any_enc_state(len);
+        kani::assume(rem >= ENC_QUAD_MIN);
+        let cap = enc_cap(len, padding);
+
+        let addr: usize = kani::any();
+        kani::assume(addr % ENC_VEC == 0); // the loop's own re-tested guard
+
+        assert!(
+            done + 3 * ENC_VEC_IN + ENC_VEC <= len,
+            "stream load leaves input"
+        );
+        assert!(dst_off + ENC_QUAD_OUT <= cap, "stream store leaves output");
+        // `vmovntdq` faults on any of the four unless the step is a whole
+        // number of vectors, which is what carries the alignment forward.
+        assert_eq!(ENC_QUAD_OUT % ENC_VEC, 0);
+        assert_eq!(
+            (addr + ENC_QUAD_OUT) % ENC_VEC,
+            0,
+            "stream step loses alignment"
+        );
+    }
+
     // --- Decoder ---
 
     /// Inductive step for the decoder's quad tier.
@@ -354,6 +452,147 @@ mod kani_verification_avx512_vbmi {
             // an `if` rather than a `while`.
             assert!(left < DEC_MASKED_MIN, "masked tier would run again");
         }
+    }
+
+    /// The decoder's streaming alignment peel, which unlike the encoder's is a
+    /// loop: `head` is rounded up to a vector and then grown by a vector until
+    /// it is also a whole number of 3-byte groups, and the characters that
+    /// implies are fed through the masked step 64 at a time.
+    ///
+    /// Three separate things need proving here, and only the first is a memory
+    /// obligation:
+    ///
+    /// 1. every chunk is a legal masked step, under `rem >= NONTEMPORAL_MIN`
+    ///    rather than the `rem < DEC_SINGLE_MIN` its own proof assumes;
+    /// 2. both loops terminate — the `head` adjustment because 3 is coprime with
+    ///    64, the chunk loop because every pass consumes at least a group;
+    /// 3. the chunk loop's `rem >= DEC_QUAD_MIN` condition never fires early.
+    ///    That one is load-bearing: if it did, the peel would stop with `dst`
+    ///    unaligned, and the streaming loop would be skipped. The kernel's
+    ///    `NONTEMPORAL_MIN` guard is sized off [`DEC_PEEL_MAX`] precisely so
+    ///    that it cannot, and this re-derives that symbolically.
+    ///
+    /// The unwind bound is four `head` additions and five chunks, one more than
+    /// each can take, so a regression that made either loop longer fails the
+    /// unwinding assertion instead of quietly verifying a truncated loop.
+    #[kani::proof]
+    #[kani::unwind(6)]
+    fn check_vbmi_dec_stream_peel() {
+        let len: usize = kani::any();
+        kani::assume(len <= MAX_LEN);
+
+        let (done, dst_off, rem) = any_dec_state(len);
+        kani::assume(rem >= NONTEMPORAL_MIN); // gate `if rem >= NONTEMPORAL_MIN`
+        let cap = dec_cap(len);
+
+        // No precondition on the address: 3 is coprime with 64, so some whole
+        // number of groups reaches a boundary from anywhere.
+        let addr: usize = kani::any();
+
+        let mut head = (DEC_VEC_IN - (addr & (DEC_VEC_IN - 1))) & (DEC_VEC_IN - 1);
+        while head % 3 != 0 {
+            head += DEC_VEC_IN;
+        }
+        assert_eq!(
+            (addr + head) % DEC_VEC_IN,
+            0,
+            "peel misses the 64-byte boundary"
+        );
+        assert_eq!(head % 3, 0, "peel is not a whole number of groups");
+        assert!(
+            head < 3 * DEC_VEC_IN,
+            "peel exceeds three vectors of output"
+        );
+
+        let chars = head / 3 * DEC_GROUP;
+        assert_eq!(chars % DEC_GROUP, 0);
+        assert!(
+            chars <= DEC_PEEL_MAX,
+            "peel exceeds its documented worst case"
+        );
+
+        // Walk the chunk loop, carrying the same `(done, dst_off)` invariant the
+        // tier proofs use.
+        let mut left = chars;
+        let mut d = done;
+        let mut o = dst_off;
+        while left > 0 {
+            // The kernel's second loop condition, which must still hold.
+            assert!(
+                rem - (chars - left) >= DEC_QUAD_MIN,
+                "peel would stop early, leaving dst unaligned"
+            );
+
+            let take = if left < DEC_VEC_IN { left } else { DEC_VEC_IN };
+            let out = take / DEC_GROUP * 3;
+
+            assert!(
+                (DEC_GROUP..=DEC_VEC_IN).contains(&take),
+                "load mask shift out of range"
+            );
+            assert!(
+                (3..=DEC_VEC_OUT).contains(&out),
+                "store mask shift out of range"
+            );
+            assert!(d + take <= len, "peel load leaves input");
+            assert!(o + out <= cap, "peel store leaves output");
+            assert_eq!(o + out, 3 * ((d + take) / DEC_GROUP));
+
+            d += take;
+            o += out;
+            left -= take;
+        }
+
+        // The peel wrote exactly the bytes the alignment calculation asked for.
+        assert_eq!(o, dst_off + head, "peel wrote something other than `head`");
+        assert_eq!(d, done + chars);
+        assert!(
+            rem - chars >= DEC_QUAD_MIN,
+            "peel starved the streaming loop"
+        );
+    }
+
+    /// Inductive step for the decoder's streaming tier.
+    ///
+    /// Its store obligation is *stronger* than the ordinary quad tier's, not
+    /// weaker: three whole 64-byte stores covering exactly 192 bytes, where the
+    /// ordinary tier's first three overhang their 48 by 16 and rely on the next
+    /// store to rewrite it. Nothing here overhangs, so the masked final store
+    /// disappears along with the overhang.
+    #[kani::proof]
+    fn check_vbmi_dec_stream_step() {
+        let len: usize = kani::any();
+        kani::assume(len <= MAX_LEN);
+
+        let (done, dst_off, rem) = any_dec_state(len);
+        kani::assume(rem >= DEC_QUAD_MIN);
+        let cap = dec_cap(len);
+
+        let addr: usize = kani::any();
+        kani::assume(addr % DEC_VEC_IN == 0); // the loop's own re-tested guard
+
+        assert!(
+            done + 3 * DEC_VEC_IN + DEC_VEC_IN <= len,
+            "stream load leaves input"
+        );
+        assert_eq!(
+            3 * DEC_VEC_IN,
+            DEC_QUAD_OUT,
+            "three whole stores must be exactly one iteration of output"
+        );
+        assert!(dst_off + DEC_QUAD_OUT <= cap, "stream store leaves output");
+        assert_eq!(
+            (addr + DEC_QUAD_OUT) % DEC_VEC_IN,
+            0,
+            "stream step loses alignment"
+        );
+
+        assert_eq!(
+            dst_off + DEC_QUAD_OUT,
+            3 * (done / DEC_GROUP + DEC_QUAD_GROUPS)
+        );
+        assert!(done + DEC_QUAD_IN <= len);
+        assert_eq!(rem - DEC_QUAD_IN, len - (done + DEC_QUAD_IN));
     }
 
     // Layer 2 — kernel proofs: run the real code over symbolic bytes (the
@@ -533,6 +772,15 @@ mod kani_verification_avx512_vbmi {
 
     /// `Decode(Encode(x)) == x` over every input of [`ROUNDTRIP_LEN`] bytes,
     /// through both kernels end to end.
+    ///
+    /// **Not in `verification.yml`, deliberately.** It is the most expensive
+    /// harness here by a wide margin: the decoder's input is the *encoder's*
+    /// symbolic output, so CBMC carries the whole encode expression tree through
+    /// a second kernel instead of starting from free bytes. Run it by hand
+    /// (`cargo kani --harness check_vbmi_roundtrip_standard`) when either kernel
+    /// changes shape. The two `matches_scalar` harnesses are the ones CI runs,
+    /// and they are also the stronger property: a round-trip cannot see an
+    /// encode bug that the decoder happens to invert.
     #[kani::proof]
     #[kani::stub(_mm512_permutexvar_epi8, m::permutexvar_epi8_model)]
     #[kani::stub(_mm512_permutex2var_epi8, m::permutex2var_epi8_model)]
@@ -1207,6 +1455,88 @@ mod miri_avx512_vbmi_coverage {
     fn miri_avx512_vbmi_decode_quad_tier_boundaries() {
         for &len in &[144, 192, 193, 194, 195, 196, 255, 300] {
             dec(&STD, &STANDARD, len);
+        }
+    }
+
+    /// The non-temporal streaming tier and its alignment peel.
+    ///
+    /// `NONTEMPORAL_MIN` is lowered to 1024 under Miri precisely so this is
+    /// reachable — at the shipped 512 KiB no Miri suite could ever enter it. The
+    /// lengths bracket the gate from both sides and then step across a peel's
+    /// worth of remainder, so the peel is exercised at several `head` values
+    /// rather than only whichever one length 1024 happens to produce.
+    ///
+    /// What Miri can and cannot see here is worth being explicit about: the
+    /// streaming stores themselves become ordinary stores under `cfg(miri)` (see
+    /// `zmm_stream`), so this checks the tier's *addressing* — bounds,
+    /// provenance, and the peel's arithmetic — and not `vmovntdq`'s alignment
+    /// requirement, which only real hardware can fault on. That is what the
+    /// `check_vbmi_*_stream_*` Kani proofs and the runtime alignment re-test in
+    /// the loop guard are for.
+    #[test]
+    fn miri_avx512_vbmi_stream_tier() {
+        // Encoder: the gate is on input bytes.
+        for &len in &[1023, 1024, 1025, 1072, 1280] {
+            enc(&STD, &STANDARD, len);
+            enc(&NO_PAD, &STANDARD_NO_PAD, len);
+        }
+        // Decoder: the gate is on input *characters*, so a plain length of 768
+        // is exactly 1024 of them.
+        for &len in &[765, 768, 771, 810, 960] {
+            dec(&STD, &STANDARD, len);
+            exact(&STD, &STANDARD, len);
+            dec(&URL, &URL_SAFE, len);
+        }
+    }
+
+    /// The alignment peel at every destination misalignment.
+    ///
+    /// This is the test the tier actually needs, and length alone cannot
+    /// provide it: `head` is computed from `dst.addr()`, and every allocation
+    /// Miri hands out is already vector-aligned, so the loop above runs the peel
+    /// with `head == 0` every single time. Offsetting into the buffer is what
+    /// makes `head` non-zero and drives it across all four of the decoder's
+    /// chunk counts.
+    ///
+    /// It also covers the encoder's opposite case. A group emits 4 characters,
+    /// so `dst % 4` never changes and an output starting at an odd address can
+    /// never reach a 64-byte boundary; the kernel detects that and skips the
+    /// tier. Offsets 1, 2, 3, 15, 17, 31 take that branch and must still encode
+    /// correctly — just without streaming.
+    #[test]
+    fn miri_avx512_vbmi_stream_tier_dst_offsets() {
+        use crate::simd::testutil::bytes;
+        use base64::Engine as _;
+
+        const ENC_LEN: usize = 1100;
+        const DEC_LEN: usize = 780;
+
+        let enc_input = bytes(ENC_LEN);
+        let enc_expected = STANDARD.encode(&enc_input);
+        let dec_input = bytes(DEC_LEN);
+        let dec_encoded = STANDARD.encode(&dec_input);
+
+        for &off in &[0usize, 1, 2, 3, 4, 8, 15, 16, 17, 31, 32, 48, 63] {
+            let mut buf = vec![0u8; enc_expected.len() + off];
+            unsafe { encode_slice_avx512_vbmi(&STD, &enc_input, &mut buf[off..]) };
+            assert_eq!(
+                &buf[off..],
+                enc_expected.as_bytes(),
+                "encode mismatch at dst offset {off}"
+            );
+
+            // Sized to the exact decoded length, so a peel that overran by even
+            // one byte fails here rather than into slack.
+            let mut dbuf = vec![0u8; DEC_LEN + off];
+            let n =
+                unsafe { decode_slice_avx512_vbmi(&STD, dec_encoded.as_bytes(), &mut dbuf[off..]) }
+                    .expect("valid input failed to decode");
+            assert_eq!(n, DEC_LEN, "decode length at dst offset {off}");
+            assert_eq!(
+                &dbuf[off..off + n],
+                &dec_input[..],
+                "decode mismatch at dst offset {off}"
+            );
         }
     }
 

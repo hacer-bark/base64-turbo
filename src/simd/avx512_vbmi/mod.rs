@@ -14,31 +14,41 @@
 //! handing tens of bytes to the scalar kernel; a masked `vmovdqu8` cannot fault
 //! on a masked-off element, so the loops need no read-ahead slack and scalar
 //! only ever sees the final partial group.
+//!
+//! Port 5 is also where the tuning stops. Measured on Sapphire Rapids, both
+//! kernels already dispatch ~1.0 port-5 uops per cycle on an L1-resident input
+//! (`uops_dispatched.port_5_11` within 2% of `cycles`), so the shuffle chain has
+//! no slack left to reclaim and the only thing still on the table is the write
+//! stream — see [`NONTEMPORAL_MIN`].
 
 use crate::{Config, Error};
 
 #[cfg(target_arch = "x86")]
 use std::arch::x86::{
     __m512i, _mm512_loadu_si512, _mm512_madd_epi16, _mm512_maddubs_epi16, _mm512_mask_loadu_epi8,
-    _mm512_mask_storeu_epi8, _mm512_maskz_loadu_epi8, _mm512_movepi8_mask, _mm512_set1_epi8,
-    _mm512_set1_epi16, _mm512_set1_epi32, _mm512_set1_epi64, _mm512_setzero_si512,
-    _mm512_storeu_si512, _mm512_ternarylogic_epi32,
+    _mm512_mask_storeu_epi8, _mm512_maskz_loadu_epi8, _mm512_movepi8_mask, _mm512_or_si512,
+    _mm512_set1_epi8, _mm512_set1_epi16, _mm512_set1_epi32, _mm512_set1_epi64,
+    _mm512_setzero_si512, _mm512_storeu_si512, _mm512_ternarylogic_epi32,
 };
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::{
     __m512i, _mm512_loadu_si512, _mm512_madd_epi16, _mm512_maddubs_epi16, _mm512_mask_loadu_epi8,
-    _mm512_mask_storeu_epi8, _mm512_maskz_loadu_epi8, _mm512_movepi8_mask, _mm512_set1_epi8,
-    _mm512_set1_epi16, _mm512_set1_epi32, _mm512_set1_epi64, _mm512_setzero_si512,
-    _mm512_storeu_si512, _mm512_ternarylogic_epi32,
+    _mm512_mask_storeu_epi8, _mm512_maskz_loadu_epi8, _mm512_movepi8_mask, _mm512_or_si512,
+    _mm512_set1_epi8, _mm512_set1_epi16, _mm512_set1_epi32, _mm512_set1_epi64,
+    _mm512_setzero_si512, _mm512_storeu_si512, _mm512_ternarylogic_epi32,
 };
 
+// `_mm512_stream_si512`/`_mm_sfence` lower to inline `asm!`, which Miri never
+// executes; the Miri build routes around them (see `zmm_stream`/`sfence`).
 #[cfg(all(not(miri), target_arch = "x86"))]
 use std::arch::x86::{
-    _mm512_multishift_epi64_epi8, _mm512_permutex2var_epi8, _mm512_permutexvar_epi8,
+    _mm_sfence, _mm512_multishift_epi64_epi8, _mm512_permutex2var_epi8, _mm512_permutexvar_epi8,
+    _mm512_stream_si512,
 };
 #[cfg(all(not(miri), target_arch = "x86_64"))]
 use std::arch::x86_64::{
-    _mm512_multishift_epi64_epi8, _mm512_permutex2var_epi8, _mm512_permutexvar_epi8,
+    _mm_sfence, _mm512_multishift_epi64_epi8, _mm512_permutex2var_epi8, _mm512_permutexvar_epi8,
+    _mm512_stream_si512,
 };
 
 // --- Compile-time lookup tables ---
@@ -126,6 +136,42 @@ const VBMI_PACK_SHUFFLE: [i32; 16] = [
     0,
 ];
 
+/// `vpermi2b` controls for the decoder's streaming packer.
+///
+/// The ordinary packer turns each 64-character vector into 48 bytes with its
+/// own `vpermb` and stores it 48 wide, which `vmovntdq` cannot do — a streaming
+/// store is a whole vector or nothing. Four packed vectors are exactly 192
+/// bytes, so each 64-byte output is drawn from the *pair* of packed vectors
+/// that straddles it: still one shuffle, but three of them instead of four, and
+/// three whole stores instead of three overhanging ones plus a masked one.
+///
+/// It is a worse packer everywhere else — `vpermi2b` costs more port 5 than
+/// `vpermb`, measured -16% on an L1-resident input — so it lives only in the
+/// streaming loop, which is waiting on memory anyway.
+#[allow(clippy::cast_possible_truncation)] // every index is < 128 by construction
+const fn build_stream_pack(which: usize) -> [u8; 64] {
+    let mut t = [0u8; 64];
+    let mut i = 0;
+    while i < 64 {
+        // Decoded byte `g` of the 192-byte group lives in packed vector `g / 48`
+        // at index `g % 48`, and inside a packed vector byte `d` is byte
+        // `2 - d % 3` of dword `d / 3` (the triples are big-endian). Bit 6 of a
+        // `vpermi2b` index picks the second source register, so a byte from the
+        // straddling vector is the same index plus 64.
+        let g = which * 64 + i;
+        let d = g % DEC_VEC_OUT;
+        let src = 4 * (d / 3) + (2 - d % 3);
+        t[i] = (src + if g / DEC_VEC_OUT == which { 0 } else { 64 }) as u8;
+        i += 1;
+    }
+    t
+}
+const VBMI_STREAM_PACK: [[u8; 64]; 3] = [
+    build_stream_pack(0),
+    build_stream_pack(1),
+    build_stream_pack(2),
+];
+
 // --- Stride constants ---
 //
 // The Kani index proofs in `verify` reason over this same arithmetic
@@ -183,6 +229,58 @@ const DEC_MASKED_MIN: usize = DEC_GROUP + DEC_LEAD;
 /// Store mask selecting the low 48 bytes of a decoded vector.
 const LOW_48: u64 = (1u64 << DEC_VEC_OUT) - 1;
 
+// --- Non-temporal threshold ---
+
+/// Input length at which both kernels switch their top tier to non-temporal
+/// stores.
+///
+/// Both write more than they read, so above L2 most of the cost is
+/// read-for-ownership traffic on a destination whose old contents are dead.
+/// `vmovntdq` skips it. Measured on Sapphire Rapids (c7i.large, 48 KiB L1d,
+/// 2 MiB L2) against a flushed destination, this is worth +33% at 512 KiB
+/// rising to +44% at 16 MiB for the encoder, and +33% to +41% for the decoder.
+///
+/// Below the threshold it is a large *loss* — the destination still lives in
+/// L2, and streaming it to DRAM instead measured -21% (encode) and -17%
+/// (decode) at a 256 KiB input. The crossover sits between 256 and 512 KiB for
+/// both, i.e. where the two buffers together stop fitting comfortably in L2;
+/// 512 KiB is the round number above it, so the tier never engages anywhere it
+/// was measured to lose.
+///
+/// Software prefetch inside the streaming loop was tried at 512 and 1024 bytes
+/// ahead and is not here: it measured under +2% at 1 MiB and slightly negative
+/// at 4 MiB and above, which is inside the run-to-run spread.
+#[cfg(not(miri))]
+const NONTEMPORAL_MIN: usize = 512 * 1024;
+/// Lowered under Miri, whose suites run at tiny lengths and would otherwise
+/// never reach the streaming tier or its alignment peel at all. The floor below
+/// is what keeps this a threshold change rather than a semantic one.
+#[cfg(miri)]
+const NONTEMPORAL_MIN: usize = 1024;
+
+/// Worst-case input each kernel's alignment peel consumes before the streaming
+/// loop starts.
+///
+/// The encoder's peel is one masked step of at most 60 output characters, so 45
+/// input bytes. The decoder's `head` grows by a vector until it is also a whole
+/// number of 3-byte groups, so it tops out at `3 * 64 - 3` output bytes — 252
+/// characters, four masked steps.
+const ENC_PEEL_MAX: usize = (ENC_VEC - 4) / 4 * ENC_GROUP;
+const DEC_PEEL_MAX: usize = (3 * DEC_VEC_IN - 3) / 3 * DEC_GROUP;
+
+// The gate has to leave a whole quad step after the worst-case peel. Otherwise
+// the decoder's peel loop — which stops if `rem` falls under the quad guard —
+// could exit with `dst` still unaligned, and the streaming loop it exists for
+// would be skipped entirely. Making that a consequence of the constants rather
+// than a coincidence is the point: at the shipped 512 KiB it is true with four
+// orders of magnitude to spare, and it is the Miri value that actually needs
+// checking. The Kani proofs in `verify` re-derive the same bound symbolically.
+const _: () = assert!(
+    NONTEMPORAL_MIN >= ENC_QUAD_MIN + ENC_PEEL_MAX
+        && NONTEMPORAL_MIN >= DEC_QUAD_MIN + DEC_PEEL_MAX,
+    "NONTEMPORAL_MIN must leave a full quad step after the worst-case alignment peel"
+);
+
 // ======================================================================
 // Miri-compatible VBMI shims
 // ======================================================================
@@ -229,6 +327,33 @@ unsafe fn zmm_multishift_epi64_epi8(a: __m512i, b: __m512i) -> __m512i {
     }
 }
 
+/// `vmovntdq`, routed through an ordinary store under Miri, whose interpreter
+/// will not execute the real instruction. Exact rather than an approximation:
+/// streaming is a caching hint, not a difference in the value stored or in what
+/// a single-threaded reader observes.
+#[inline]
+#[target_feature(enable = "avx512f,avx512bw,avx512vbmi")]
+unsafe fn zmm_stream(dst: *mut __m512i, val: __m512i) {
+    #[cfg(miri)]
+    unsafe {
+        _mm512_storeu_si512(dst, val);
+    }
+    #[cfg(not(miri))]
+    unsafe {
+        _mm512_stream_si512(dst, val);
+    }
+}
+
+/// `sfence`, which orders the non-temporal stores above against later loads.
+/// With none of those under Miri, it is a no-op there too.
+#[inline]
+fn sfence() {
+    #[cfg(not(miri))]
+    unsafe {
+        _mm_sfence();
+    }
+}
+
 // --- VBMI encoder ---
 
 #[target_feature(enable = "avx512f,avx512bw,avx512vbmi")]
@@ -262,20 +387,69 @@ pub(crate) unsafe fn encode_slice_avx512_vbmi(config: &Config, input: &[u8], dst
         ($off:expr) => {{ unsafe { _mm512_loadu_si512(src.add($off).cast()) } }};
     }
 
-    // Quad tier: 192 input bytes -> 256 output. The last load starts 144 bytes
-    // in and reads 64, so 208 <= 256 bytes are always in bounds.
-    while rem >= ENC_QUAD_MIN {
-        let r0 = encode_vec!(load_48!(0));
-        let r1 = encode_vec!(load_48!(ENC_VEC_IN));
-        let r2 = encode_vec!(load_48!(2 * ENC_VEC_IN));
-        let r3 = encode_vec!(load_48!(3 * ENC_VEC_IN));
-        unsafe { _mm512_storeu_si512(dst.cast(), r0) };
-        unsafe { _mm512_storeu_si512(dst.add(ENC_VEC_OUT).cast(), r1) };
-        unsafe { _mm512_storeu_si512(dst.add(2 * ENC_VEC_OUT).cast(), r2) };
-        unsafe { _mm512_storeu_si512(dst.add(3 * ENC_VEC_OUT).cast(), r3) };
-        src = unsafe { src.add(ENC_QUAD_IN) };
-        dst = unsafe { dst.add(ENC_QUAD_OUT) };
-        rem -= ENC_QUAD_IN;
+    /// Quad tier body: 192 input bytes -> 256 output. The last load starts 144
+    /// bytes in and reads 64, so 208 <= 256 bytes are always in bounds.
+    macro_rules! encode_quad {
+        ($store:ident) => {{
+            let r0 = encode_vec!(load_48!(0));
+            let r1 = encode_vec!(load_48!(ENC_VEC_IN));
+            let r2 = encode_vec!(load_48!(2 * ENC_VEC_IN));
+            let r3 = encode_vec!(load_48!(3 * ENC_VEC_IN));
+            unsafe { $store(dst.cast(), r0) };
+            unsafe { $store(dst.add(ENC_VEC_OUT).cast(), r1) };
+            unsafe { $store(dst.add(2 * ENC_VEC_OUT).cast(), r2) };
+            unsafe { $store(dst.add(3 * ENC_VEC_OUT).cast(), r3) };
+            src = unsafe { src.add(ENC_QUAD_IN) };
+            dst = unsafe { dst.add(ENC_QUAD_OUT) };
+            rem -= ENC_QUAD_IN;
+        }};
+    }
+
+    /// One masked step consuming `take` input bytes, which must be a whole
+    /// number of triples and at most 48. Shared by the masked tier and by the
+    /// streaming tier's alignment peel.
+    macro_rules! encode_masked {
+        ($take:expr) => {{
+            let take = $take;
+            let out = take / ENC_GROUP * 4;
+            let v = unsafe { _mm512_maskz_loadu_epi8(u64::MAX >> (ENC_VEC - take), src.cast()) };
+            let chars = encode_vec!(v);
+            unsafe {
+                _mm512_mask_storeu_epi8(dst.cast::<i8>(), u64::MAX >> (ENC_VEC - out), chars)
+            };
+            src = unsafe { src.add(take) };
+            dst = unsafe { dst.add(out) };
+            rem -= take;
+        }};
+    }
+
+    // Both size gates are nested inside the test the quad tier has to make
+    // anyway, so an input with no whole quad in it reaches the single tier after
+    // one compare and pays nothing for either.
+    if rem >= ENC_QUAD_MIN {
+        // Streaming tier. `vmovntdq` faults on an unaligned address and every
+        // quad step advances `dst` by 256, so the alignment is decided once, up
+        // front, by encoding whole groups until `dst` reaches a boundary. That
+        // is only reachable at all when `dst` is 4-byte aligned: a group always
+        // emits 4 characters, so `dst % 4` is invariant and an output that
+        // starts at an odd address can never reach a 64-byte boundary.
+        if rem >= NONTEMPORAL_MIN && dst.addr().is_multiple_of(4) {
+            let head = (ENC_VEC - (dst.addr() & (ENC_VEC - 1))) & (ENC_VEC - 1);
+            if head > 0 {
+                encode_masked!(head / 4 * ENC_GROUP);
+            }
+            debug_assert!(dst.addr().is_multiple_of(ENC_VEC));
+            // The alignment is re-tested rather than assumed, so a peel that
+            // somehow missed cannot turn into a faulting store.
+            while dst.addr().is_multiple_of(ENC_VEC) && rem >= ENC_QUAD_MIN {
+                encode_quad!(zmm_stream);
+            }
+            sfence();
+        }
+
+        while rem >= ENC_QUAD_MIN {
+            encode_quad!(_mm512_storeu_si512);
+        }
     }
 
     // Single tier: 48 input bytes -> 64 output. A plain load reads 64 bytes to
@@ -291,14 +465,7 @@ pub(crate) unsafe fn encode_slice_avx512_vbmi(config: &Config, input: &[u8], dst
     // Masked tier: whole triples only, so no padding logic lands here. `rem` is
     // now < 64 and `take` is capped at 48, so this runs at most twice.
     while rem >= ENC_GROUP {
-        let take = (rem - rem % ENC_GROUP).min(ENC_VEC_IN);
-        let out = take / ENC_GROUP * 4;
-        let v = unsafe { _mm512_maskz_loadu_epi8(u64::MAX >> (ENC_VEC - take), src.cast()) };
-        let chars = encode_vec!(v);
-        unsafe { _mm512_mask_storeu_epi8(dst.cast::<i8>(), u64::MAX >> (ENC_VEC - out), chars) };
-        src = unsafe { src.add(take) };
-        dst = unsafe { dst.add(out) };
-        rem -= take;
+        encode_masked!((rem - rem % ENC_GROUP).min(ENC_VEC_IN));
     }
 
     // Scalar now sees at most the final 1-2 bytes, plus whatever padding the
@@ -308,6 +475,153 @@ pub(crate) unsafe fn encode_slice_avx512_vbmi(config: &Config, input: &[u8], dst
 }
 
 // --- VBMI decoder ---
+
+/// The lookup vectors the decoder builds once from its `Config` and both of its
+/// top tiers then share.
+#[derive(Clone, Copy)]
+struct DecodeLuts {
+    /// Low and high halves of the 128-byte reverse LUT, for `vpermi2b`.
+    lut_lo: __m512i,
+    lut_hi: __m512i,
+    /// `vpmaddubsw` / `vpmaddwd` multipliers that fold four 6-bit indices into
+    /// one 24-bit triple.
+    pack_l1: __m512i,
+    pack_l2: __m512i,
+    /// `vpermb` control that compresses those triples into 48 output bytes.
+    pack: __m512i,
+}
+
+/// One masked decode step, consuming `take` characters — a whole number of
+/// groups, at most 64 — and writing the `take / 4 * 3` bytes they decode to.
+///
+/// The lanes past `take` are backfilled with `'A'`, which decodes to index 0, so
+/// they cannot trip validation. Returns this step's validity evidence for the
+/// caller to fold in.
+///
+/// # Safety
+/// `src` must have `take` characters and `dst` room for `take / 4 * 3` bytes.
+#[inline]
+#[target_feature(enable = "avx512f,avx512bw,avx512vbmi")]
+unsafe fn decode_masked_step(
+    luts: &DecodeLuts,
+    src: *const u8,
+    dst: *mut u8,
+    take: usize,
+) -> __m512i {
+    let out = take / DEC_GROUP * 3;
+    let v = unsafe {
+        _mm512_mask_loadu_epi8(
+            _mm512_set1_epi8(b'A'.cast_signed()),
+            u64::MAX >> (DEC_VEC_IN - take),
+            src.cast(),
+        )
+    };
+    let idx = unsafe { zmm_permutex2var_epi8(luts.lut_lo, v, luts.lut_hi) };
+    let m = _mm512_maddubs_epi16(idx, luts.pack_l1);
+    let p = unsafe { zmm_permutexvar_epi8(luts.pack, _mm512_madd_epi16(m, luts.pack_l2)) };
+    unsafe { _mm512_mask_storeu_epi8(dst.cast::<i8>(), u64::MAX >> (DEC_VEC_IN - out), p) };
+    _mm512_ternarylogic_epi32::<0xFE>(_mm512_setzero_si512(), v, idx)
+}
+
+/// Where the streaming loop left off.
+struct StreamState {
+    src: *const u8,
+    dst: *mut u8,
+    rem: usize,
+    /// Validity evidence for the characters this loop consumed; the caller ORs
+    /// it into its own accumulator.
+    bad: __m512i,
+}
+
+/// The decoder's non-temporal top tier: whole 64-byte `vmovntdq` stores, which
+/// need the three-vector packer described on [`VBMI_STREAM_PACK`].
+///
+/// Out of line because it is entered at most once per call, above
+/// [`NONTEMPORAL_MIN`], so the call costs nothing measurable — and keeping it
+/// out of the main kernel keeps that function's register pressure and its
+/// length where they were.
+///
+/// # Safety
+/// `src`/`dst` must have `rem` characters and the corresponding output bytes
+/// available, and `rem` must be at least [`NONTEMPORAL_MIN`].
+#[inline]
+#[target_feature(enable = "avx512f,avx512bw,avx512vbmi")]
+unsafe fn decode_stream_loop(
+    luts: &DecodeLuts,
+    mut src: *const u8,
+    mut dst: *mut u8,
+    mut rem: usize,
+) -> StreamState {
+    let mut bad = _mm512_setzero_si512();
+
+    // Alignment peel. `vmovntdq` faults on an unaligned address and every step
+    // below advances `dst` by 192, so the alignment is decided once, here, by
+    // decoding whole groups until `dst` reaches a boundary. Unlike the encoder
+    // there is no precondition on where `dst` starts: a group emits 3 bytes and
+    // 3 is coprime with 64, so some whole number of groups reaches a boundary
+    // from *any* address — at most three 64-byte steps of it, hence `head < 192`
+    // and fewer than 256 characters consumed.
+    let mut head = (DEC_VEC_IN - (dst.addr() & (DEC_VEC_IN - 1))) & (DEC_VEC_IN - 1);
+    while !head.is_multiple_of(3) {
+        head += DEC_VEC_IN;
+    }
+    let mut chars = head / 3 * DEC_GROUP;
+    while chars > 0 && rem >= DEC_QUAD_MIN {
+        let take = chars.min(DEC_VEC_IN);
+        bad = _mm512_or_si512(bad, unsafe { decode_masked_step(luts, src, dst, take) });
+        src = unsafe { src.add(take) };
+        dst = unsafe { dst.add(take / DEC_GROUP * 3) };
+        rem -= take;
+        chars -= take;
+    }
+    debug_assert!(dst.addr().is_multiple_of(DEC_VEC_IN));
+
+    let pack0 = unsafe { _mm512_loadu_si512(VBMI_STREAM_PACK[0].as_ptr().cast()) };
+    let pack1 = unsafe { _mm512_loadu_si512(VBMI_STREAM_PACK[1].as_ptr().cast()) };
+    let pack2 = unsafe { _mm512_loadu_si512(VBMI_STREAM_PACK[2].as_ptr().cast()) };
+
+    // The alignment is re-tested rather than assumed, so a peel that somehow
+    // missed cannot turn into a faulting store.
+    while dst.addr().is_multiple_of(DEC_VEC_IN) && rem >= DEC_QUAD_MIN {
+        let v0 = unsafe { _mm512_loadu_si512(src.cast::<__m512i>()) };
+        let v1 = unsafe { _mm512_loadu_si512(src.add(DEC_VEC_IN).cast::<__m512i>()) };
+        let v2 = unsafe { _mm512_loadu_si512(src.add(2 * DEC_VEC_IN).cast::<__m512i>()) };
+        let v3 = unsafe { _mm512_loadu_si512(src.add(3 * DEC_VEC_IN).cast::<__m512i>()) };
+
+        let i0 = unsafe { zmm_permutex2var_epi8(luts.lut_lo, v0, luts.lut_hi) };
+        let i1 = unsafe { zmm_permutex2var_epi8(luts.lut_lo, v1, luts.lut_hi) };
+        let i2 = unsafe { zmm_permutex2var_epi8(luts.lut_lo, v2, luts.lut_hi) };
+        let i3 = unsafe { zmm_permutex2var_epi8(luts.lut_lo, v3, luts.lut_hi) };
+
+        let t0 = _mm512_ternarylogic_epi32::<0xFE>(v0, i0, v1);
+        let t1 = _mm512_ternarylogic_epi32::<0xFE>(i1, v2, i2);
+        let t2 = _mm512_ternarylogic_epi32::<0xFE>(v3, i3, t0);
+        bad = _mm512_ternarylogic_epi32::<0xFE>(bad, t1, t2);
+
+        let fold = |idx| _mm512_madd_epi16(_mm512_maddubs_epi16(idx, luts.pack_l1), luts.pack_l2);
+        let f0 = fold(i0);
+        let f1 = fold(i1);
+        let f2 = fold(i2);
+        let f3 = fold(i3);
+
+        // 192 bytes as three whole vectors, each drawn from the pair it
+        // straddles.
+        let o0 = unsafe { zmm_permutex2var_epi8(f0, pack0, f1) };
+        let o1 = unsafe { zmm_permutex2var_epi8(f1, pack1, f2) };
+        let o2 = unsafe { zmm_permutex2var_epi8(f2, pack2, f3) };
+        unsafe { zmm_stream(dst.cast(), o0) };
+        unsafe { zmm_stream(dst.add(DEC_VEC_IN).cast(), o1) };
+        unsafe { zmm_stream(dst.add(2 * DEC_VEC_IN).cast(), o2) };
+
+        src = unsafe { src.add(DEC_QUAD_IN) };
+        dst = unsafe { dst.add(DEC_QUAD_OUT) };
+        rem -= DEC_QUAD_IN;
+    }
+    // Streaming stores are only ordered against a fence.
+    sfence();
+
+    StreamState { src, dst, rem, bad }
+}
 
 #[target_feature(enable = "avx512f,avx512bw,avx512vbmi")]
 pub(crate) unsafe fn decode_slice_avx512_vbmi(
@@ -333,6 +647,13 @@ pub(crate) unsafe fn decode_slice_avx512_vbmi(
     let pack_l1 = _mm512_set1_epi16(VBMI_PACK_L1);
     let pack_l2 = _mm512_set1_epi32(VBMI_PACK_L2);
     let pack = unsafe { _mm512_loadu_si512(VBMI_PACK_SHUFFLE.as_ptr().cast()) };
+    let luts = DecodeLuts {
+        lut_lo,
+        lut_hi,
+        pack_l1,
+        pack_l2,
+        pack,
+    };
 
     // A character is bad iff its input byte had bit 7 set (>= 0x80, which
     // vpermi2b silently aliases into the 128-entry table) or the LUT answered
@@ -342,11 +663,37 @@ pub(crate) unsafe fn decode_slice_avx512_vbmi(
     // vector in place of a compare, a movemask and a mask-OR.
     let mut bad = _mm512_setzero_si512();
 
-    macro_rules! pack_vec {
+    macro_rules! fold_vec {
         ($idx:expr) => {{
             let m = _mm512_maddubs_epi16($idx, pack_l1);
-            let p = _mm512_madd_epi16(m, pack_l2);
-            unsafe { zmm_permutexvar_epi8(pack, p) }
+            _mm512_madd_epi16(m, pack_l2)
+        }};
+    }
+    macro_rules! pack_vec {
+        ($idx:expr) => {{ unsafe { zmm_permutexvar_epi8(pack, fold_vec!($idx)) } }};
+    }
+
+    /// The half of a quad step both top tiers share: four loads, four reverse
+    /// lookups, and the validity fold. Yields the four index vectors.
+    macro_rules! decode_quad_front {
+        () => {{
+            let v0 = unsafe { _mm512_loadu_si512(src.cast::<__m512i>()) };
+            let v1 = unsafe { _mm512_loadu_si512(src.add(DEC_VEC_IN).cast::<__m512i>()) };
+            let v2 = unsafe { _mm512_loadu_si512(src.add(2 * DEC_VEC_IN).cast::<__m512i>()) };
+            let v3 = unsafe { _mm512_loadu_si512(src.add(3 * DEC_VEC_IN).cast::<__m512i>()) };
+
+            let i0 = unsafe { zmm_permutex2var_epi8(lut_lo, v0, lut_hi) };
+            let i1 = unsafe { zmm_permutex2var_epi8(lut_lo, v1, lut_hi) };
+            let i2 = unsafe { zmm_permutex2var_epi8(lut_lo, v2, lut_hi) };
+            let i3 = unsafe { zmm_permutex2var_epi8(lut_lo, v3, lut_hi) };
+
+            // 0xFE is the 3-input OR; four of them fold all eight vectors in.
+            let t0 = _mm512_ternarylogic_epi32::<0xFE>(v0, i0, v1);
+            let t1 = _mm512_ternarylogic_epi32::<0xFE>(i1, v2, i2);
+            let t2 = _mm512_ternarylogic_epi32::<0xFE>(v3, i3, t0);
+            bad = _mm512_ternarylogic_epi32::<0xFE>(bad, t1, t2);
+
+            (i0, i1, i2, i3)
         }};
     }
 
@@ -354,39 +701,42 @@ pub(crate) unsafe fn decode_slice_avx512_vbmi(
     // least 4 characters short of the end so the final group -- the only one
     // that may legally carry '=' -- is always decided by the scalar tail, which
     // owns the padding and length rules.
-    while rem >= DEC_QUAD_MIN {
-        let v0 = unsafe { _mm512_loadu_si512(src.cast::<__m512i>()) };
-        let v1 = unsafe { _mm512_loadu_si512(src.add(DEC_VEC_IN).cast::<__m512i>()) };
-        let v2 = unsafe { _mm512_loadu_si512(src.add(2 * DEC_VEC_IN).cast::<__m512i>()) };
-        let v3 = unsafe { _mm512_loadu_si512(src.add(3 * DEC_VEC_IN).cast::<__m512i>()) };
+    //
+    // As in the encoder, the streaming gate is nested inside the quad tier's own
+    // test, so nothing below 260 characters pays for it.
+    if rem >= DEC_QUAD_MIN {
+        // Streaming tier. Unlike the encoder there is no alignment precondition:
+        // a group emits 3 bytes and 3 is coprime with 64, so some whole number
+        // of groups reaches a boundary from *any* destination address. At most
+        // three 64-byte steps of peel are needed, hence `head < 192`.
+        if rem >= NONTEMPORAL_MIN {
+            let stream = unsafe { decode_stream_loop(&luts, src, dst, rem) };
+            src = stream.src;
+            dst = stream.dst;
+            rem = stream.rem;
+            bad = _mm512_or_si512(bad, stream.bad);
+        }
 
-        let i0 = unsafe { zmm_permutex2var_epi8(lut_lo, v0, lut_hi) };
-        let i1 = unsafe { zmm_permutex2var_epi8(lut_lo, v1, lut_hi) };
-        let i2 = unsafe { zmm_permutex2var_epi8(lut_lo, v2, lut_hi) };
-        let i3 = unsafe { zmm_permutex2var_epi8(lut_lo, v3, lut_hi) };
+        while rem >= DEC_QUAD_MIN {
+            let (i0, i1, i2, i3) = decode_quad_front!();
 
-        let p0 = pack_vec!(i0);
-        let p1 = pack_vec!(i1);
-        let p2 = pack_vec!(i2);
-        let p3 = pack_vec!(i3);
+            let p0 = pack_vec!(i0);
+            let p1 = pack_vec!(i1);
+            let p2 = pack_vec!(i2);
+            let p3 = pack_vec!(i3);
 
-        // 0xFE is the 3-input OR; four of them fold all eight vectors in.
-        let t0 = _mm512_ternarylogic_epi32::<0xFE>(v0, i0, v1);
-        let t1 = _mm512_ternarylogic_epi32::<0xFE>(i1, v2, i2);
-        let t2 = _mm512_ternarylogic_epi32::<0xFE>(v3, i3, t0);
-        bad = _mm512_ternarylogic_epi32::<0xFE>(bad, t1, t2);
+            // Only the last store needs masking: each of the first three
+            // overhangs its 48 bytes by 16, and the very next store in this same
+            // iteration rewrites exactly that overhang.
+            unsafe { _mm512_storeu_si512(dst.cast(), p0) };
+            unsafe { _mm512_storeu_si512(dst.add(DEC_VEC_OUT).cast(), p1) };
+            unsafe { _mm512_storeu_si512(dst.add(2 * DEC_VEC_OUT).cast(), p2) };
+            unsafe { _mm512_mask_storeu_epi8(dst.add(3 * DEC_VEC_OUT).cast::<i8>(), LOW_48, p3) };
 
-        // Only the last store needs masking: each of the first three overhangs
-        // its 48 bytes by 16, and the very next store in this same iteration
-        // rewrites exactly that overhang.
-        unsafe { _mm512_storeu_si512(dst.cast(), p0) };
-        unsafe { _mm512_storeu_si512(dst.add(DEC_VEC_OUT).cast(), p1) };
-        unsafe { _mm512_storeu_si512(dst.add(2 * DEC_VEC_OUT).cast(), p2) };
-        unsafe { _mm512_mask_storeu_epi8(dst.add(3 * DEC_VEC_OUT).cast::<i8>(), LOW_48, p3) };
-
-        src = unsafe { src.add(DEC_QUAD_IN) };
-        dst = unsafe { dst.add(DEC_QUAD_OUT) };
-        rem -= DEC_QUAD_IN;
+            src = unsafe { src.add(DEC_QUAD_IN) };
+            dst = unsafe { dst.add(DEC_QUAD_OUT) };
+            rem -= DEC_QUAD_IN;
+        }
     }
 
     // Single tier: 64 input characters -> 48 output bytes.
@@ -401,24 +751,12 @@ pub(crate) unsafe fn decode_slice_avx512_vbmi(
         rem -= DEC_VEC_IN;
     }
 
-    // Masked tier: the lanes past the end are backfilled with 'A', which decodes
-    // to index 0, so they cannot trip validation.
+    // Masked tier.
     if rem >= DEC_MASKED_MIN {
         let take = (rem - DEC_LEAD) & !(DEC_GROUP - 1);
-        let out = take / DEC_GROUP * 3;
-        let v = unsafe {
-            _mm512_mask_loadu_epi8(
-                _mm512_set1_epi8(b'A'.cast_signed()),
-                u64::MAX >> (DEC_VEC_IN - take),
-                src.cast(),
-            )
-        };
-        let idx = unsafe { zmm_permutex2var_epi8(lut_lo, v, lut_hi) };
-        bad = _mm512_ternarylogic_epi32::<0xFE>(bad, v, idx);
-        let p = pack_vec!(idx);
-        unsafe { _mm512_mask_storeu_epi8(dst.cast::<i8>(), u64::MAX >> (DEC_VEC_IN - out), p) };
+        bad = _mm512_or_si512(bad, unsafe { decode_masked_step(&luts, src, dst, take) });
         src = unsafe { src.add(take) };
-        dst = unsafe { dst.add(out) };
+        dst = unsafe { dst.add(take / DEC_GROUP * 3) };
     }
 
     if _mm512_movepi8_mask(bad) != 0 {

@@ -223,16 +223,29 @@ that cover each other's blind spots.
 * **Kani** proves the kernels don't panic, don't read/write out of bounds, and agree with
   the safe scalar kernel. For AVX2 and AVX512-VBMI the bounds result holds for *every*
   input length by a machine-checked induction over the loop's offset arithmetic — not
-  just the lengths a harness happens to unwind. Two exclusions are worth naming rather
+  just the lengths a harness happens to unwind. Three exclusions are worth naming rather
   than burying: AVX2's non-temporal store path (it needs a 4 MiB input, far past what a
   model checker can unwind, so its 16-byte alignment precondition rests on a hardware
-  test instead), and AVX512-VBMI's 4×-unrolled quad tiers (256 symbolic characters
+  test instead), AVX512-VBMI's 4×-unrolled quad tiers (256 symbolic characters
   through four `vpermi2b` lookups is out of CBMC's reach — the *arithmetic* of those
-  tiers is proved, but no harness executes one).
+  tiers is proved, but no harness executes one), and AVX512-VBMI's non-temporal tier,
+  which is the same trade in a new place: its alignment peel, its 64-byte store
+  alignment invariant and its "the peel cannot starve the loop" property are all proved
+  symbolically (`check_vbmi_enc_stream_peel`, `check_vbmi_dec_stream_peel`,
+  `check_vbmi_*_stream_step`), but at a 512 KiB gate no harness can execute one, so the
+  *contents* of a streaming iteration are covered by tests and not by proof.
 * **MIRI** catches Undefined Behavior (provenance, alignment, OOB pointer arithmetic,
   data races) on every distinct code path — single-vector loop, wide unrolled loop,
-  masked tail, scalar tail — for Scalar, AVX2 and AVX512-VBMI. Branch coverage, not
-  exhaustive input coverage.
+  masked tail, scalar tail, non-temporal tier — for Scalar, AVX2 and AVX512-VBMI. Branch
+  coverage, not exhaustive input coverage. Two limits specific to AVX512-VBMI. First,
+  the three byte permutes (`vpermb`, `vpermi2b`, `vpmultishiftqb`) are swapped for the
+  Intel-pseudocode models under `cfg(miri)`, so the Miri leg checks the kernel's
+  *addressing* against real semantics and its *arithmetic* against those models — it is
+  not an independent check of the models. Second, the streaming stores become ordinary
+  stores under Miri, so Miri cannot fault on a misaligned `vmovntdq`; the thresholds are
+  lowered under `cfg(miri)` so the tier and its peel are still reached and their
+  addressing checked, and the alignment itself is carried by the Kani proofs plus a
+  runtime re-test on the loop guard.
 * **MSan** rebuilds the standard library with instrumentation
   (`-Z build-std -Z sanitizer=memory`) to confirm we never branch on or emit
   uninitialized memory, which matters given how much AVX512-VBMI masking we do.
@@ -262,12 +275,26 @@ from it instead of from scratch.
    `avx512_vbmi_stub_equivalence` (`cargo test`) run every model against the real
    instruction on real hardware, each skipping if the host lacks the subset. They catch
    transcription errors; they don't prove the models agree everywhere.
-3. Two paths are proved by arithmetic but never executed by a proof: AVX2's non-temporal
-   store tier (4 MiB minimum input — its `_mm_stream_si128` alignment precondition is
-   covered by `avx2_encode_non_temporal` on hardware instead) and both AVX512-VBMI quad
-   tiers (too much symbolic state for CBMC). In each case the offsets are proved for
+3. Three paths are proved by arithmetic but never executed by a proof: AVX2's
+   non-temporal store tier (4 MiB minimum input — its `_mm_stream_si128` alignment
+   precondition is covered by `avx2_encode_non_temporal` on hardware instead), both
+   AVX512-VBMI quad tiers (too much symbolic state for CBMC), and AVX512-VBMI's
+   non-temporal tier (512 KiB gate). In each case the offsets are proved for
    every length; it is the *contents* no harness checks.
-4. NEON has no Kani harness at all, and rests on MIRI, MSan and fuzzing.
+4. The model-vs-hardware equivalence suites (`avx2_stub_equivalence`,
+   `avx512_vbmi_stub_equivalence`) are the only thing that ever executes a real
+   instruction, and they skip on a host without the subset. GitHub's hosted runners do
+   not reliably have AVX-512 VBMI, so on many CI runs **nothing executes a real VBMI
+   instruction at all** and the models rest entirely on their transcription from Intel's
+   pseudocode. The `simd-avx512-vbmi` job reports which case a given run was, and fails
+   if a VBMI runner somehow skips anyway — but a green tick is not by itself evidence
+   that the models were checked against silicon that run.
+5. Kani harnesses run only if `verification.yml` names them, and that list is
+   hand-maintained. `check_vbmi_roundtrip_standard` is deliberately not in it — it
+   carries the encoder's symbolic output through the decoder, which is far more state
+   than starting from free bytes — and is meant to be run by hand when either kernel
+   changes shape.
+6. NEON has no Kani harness at all, and rests on MIRI, MSan and fuzzing.
 
 Read the [CI logs](https://github.com/hacer-bark/base64-turbo/actions) and the `unsafe`
 blocks themselves — each documents the contract it relies on.
