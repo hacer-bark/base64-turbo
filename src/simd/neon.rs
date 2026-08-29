@@ -254,6 +254,14 @@ pub(crate) unsafe fn decode_slice_neon(
     input: &[u8],
     dst_slice: &mut [u8],
 ) -> Result<usize, Error> {
+    // Trailing margin: no vector pass may start unless at least this many
+    // characters remain after it. `pack_and_store!` writes a full 16-byte
+    // vector but only 12 bytes are logical output, so the smallest possible
+    // tail -- exactly 4 leftover characters -- would let that overhang write
+    // past the destination's estimated capacity. One extra byte of margin
+    // keeps a real tail always wide enough to absorb it.
+    const DEC_LEAD: usize = 5;
+
     let len = input.len();
     let mut src = input.as_ptr();
     let dst_start = dst_slice.as_mut_ptr();
@@ -324,14 +332,6 @@ pub(crate) unsafe fn decode_slice_neon(
             unsafe { vst1q_u8($dst_ptr, out) };
         }};
     }
-
-    // Trailing margin: no vector pass may start unless at least this many
-    // characters remain after it. `pack_and_store!` writes a full 16-byte
-    // vector but only 12 bytes are logical output, so the smallest possible
-    // tail -- exactly 4 leftover characters -- would let that overhang write
-    // past the destination's estimated capacity. One extra byte of margin
-    // keeps a real tail always wide enough to absorb it.
-    const DEC_LEAD: usize = 5;
 
     // Quad tier: 64 input bytes -> 48 output.
     let safe_len_64 = len.saturating_sub(DEC_LEAD);
