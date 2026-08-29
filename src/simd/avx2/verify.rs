@@ -20,7 +20,7 @@ mod kani_verification_avx2 {
     // too. See the README's "Safety & Verification".
 
     /// Largest `len` considered: above `usize::MAX / 4` the unpadded
-    /// `encoded_len`'s `len * 4` overflows, so the API can't size a buffer.
+    /// `Engine::encoded_len`'s `len * 4` overflows, so the API can't size a buffer.
     const MAX_LEN: usize = usize::MAX / 4;
 
     // Encoder model, mirroring `encode_slice_avx2`.
@@ -30,9 +30,9 @@ mod kani_verification_avx2 {
 
     fn enc_cap(len: usize, padding: bool) -> usize {
         if padding {
-            TURBO_STANDARD.encoded_len(len)
+            TURBO_STANDARD.encoded_len(len).unwrap()
         } else {
-            TURBO_STANDARD_NO_PAD.encoded_len(len)
+            TURBO_STANDARD_NO_PAD.encoded_len(len).unwrap()
         }
     }
 
@@ -194,7 +194,7 @@ mod kani_verification_avx2 {
     const DEC_WIDE_OUT: usize = DEC_BLOCK_OUT * DEC_UNROLL; // dst advance per wide-tier iteration
 
     fn dec_cap(len: usize) -> usize {
-        decoded_len_estimate(len)
+        TURBO_STANDARD.decoded_len_estimate(len)
     }
 
     /// The `aligned_len_128` / `aligned_len_32` loop windows (from the
@@ -326,9 +326,9 @@ mod kani_verification_avx2 {
         "DEC_KERNEL_LEN must be able to decode successfully"
     );
 
-    const ENC_KERNEL_CAP: usize = TURBO_STANDARD.encoded_len(ENC_KERNEL_LEN);
-    const ENC_KERNEL_DEC_CAP: usize = decoded_len_estimate(ENC_KERNEL_CAP);
-    const DEC_KERNEL_CAP: usize = decoded_len_estimate(DEC_KERNEL_LEN);
+    const ENC_KERNEL_CAP: usize = TURBO_STANDARD.encoded_len(ENC_KERNEL_LEN).unwrap();
+    const ENC_KERNEL_DEC_CAP: usize = TURBO_STANDARD.decoded_len_estimate(ENC_KERNEL_CAP);
+    const DEC_KERNEL_CAP: usize = TURBO_STANDARD.decoded_len_estimate(DEC_KERNEL_LEN);
 
     /// `Decode(Encode(x)) == x` over every 37-byte input. `url_safe` is a
     /// parameter (not symbolic) since it only selects constant LUTs.

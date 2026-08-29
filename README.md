@@ -62,18 +62,18 @@ assert_eq!(decoded, data);
 ### Zero-Allocation (Stack / `no_std`)
 
 For hot paths where heap allocation is too slow, write directly to stack buffers — the
-the slice APIs need no allocator. Size the buffers with `encoded_len`/`decoded_len_estimate`
-rather than guessing:
+the slice APIs need no allocator. Size the buffers with `Engine::encoded_len`/
+`Engine::decoded_len_estimate` rather than guessing:
 
 ```rust
-use base64_turbo::{STANDARD, decoded_len_estimate, encoded_len};
+use base64_turbo::STANDARD;
 
 let input = b"Low Latency";
 
-let mut enc_buf = vec![0u8; encoded_len(input.len(), true).unwrap()];
+let mut enc_buf = vec![0u8; STANDARD.encoded_len(input.len()).unwrap()];
 let enc_len = STANDARD.encode_slice(input, &mut enc_buf).unwrap();
 
-let mut dec_buf = vec![0u8; decoded_len_estimate(enc_len)];
+let mut dec_buf = vec![0u8; STANDARD.decoded_len_estimate(enc_len)];
 let dec_len = STANDARD.decode_slice(&enc_buf[..enc_len], &mut dec_buf).unwrap();
 
 assert_eq!(&dec_buf[..dec_len], input);

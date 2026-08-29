@@ -16,15 +16,15 @@ use std::env;
 use std::hint::black_box;
 use std::time::Duration;
 
-use base64_turbo::{STANDARD as TURBO_ENGINE, decoded_len_estimate, encoded_len};
+use base64_turbo::STANDARD as TURBO_ENGINE;
 
 // Competitors: the standard `base64` crate, `base64-simd`, and `base64-ng`.
 use base64::{
     Engine as _,
     engine::{GeneralPurposeConfig, Simd},
 };
-use base64_simd::STANDARD as SIMD_ENGINE;
 use base64_ng::STANDARD as NG_ENGINE;
+use base64_simd::STANDARD as SIMD_ENGINE;
 
 fn generate_random_data(size: usize) -> Vec<u8> {
     let mut data = vec![0u8; size];
@@ -91,7 +91,7 @@ fn bench_comparison(c: &mut Criterion) {
 
         // Turbo (zero-allocation)
         if should_run("turbo-buff") {
-            let encoded_len = encoded_len(*size, true).unwrap();
+            let encoded_len = TURBO_ENGINE.encoded_len(*size).unwrap();
             let mut output_buffer = vec![0u8; encoded_len];
 
             group.bench_with_input(
@@ -150,7 +150,7 @@ fn bench_comparison(c: &mut Criterion) {
 
         // Turbo (zero-allocation)
         if should_run("turbo-buff") {
-            let decoded_len = decoded_len_estimate(encoded_str.len());
+            let decoded_len = TURBO_ENGINE.decoded_len_estimate(encoded_str.len());
             let mut output_buffer = vec![0u8; decoded_len];
 
             group.bench_with_input(
