@@ -54,7 +54,7 @@
 //! let mut output = [0u8; 64]; // Pre-allocated stack buffer
 //!
 //! // Returns Result<usize, Error> indicating bytes written
-//! let len = STANDARD.encode_into(input, &mut output).unwrap();
+//! let len = STANDARD.encode_slice(input, &mut output).unwrap();
 //!
 //! assert_eq!(&output[..len], b"UmF3IGJ5dGVz");
 //! ```
@@ -183,7 +183,7 @@ pub enum Error {
 
     /// The provided output buffer is too small to hold the result.
     ///
-    /// This error is returned by the zero-allocation APIs (e.g., `encode_into`, `decode_into`)
+    /// This error is returned by the slice APIs (e.g., `encode_slice`, `decode_slice`)
     /// when the destination slice passed by the user does not have enough capacity
     /// to store the encoded or decoded data.
     BufferTooSmall,
@@ -259,6 +259,34 @@ pub(crate) struct Config {
     pub padding: bool,
 }
 
+/// Calculates the buffer size required to encode `input_len` bytes.
+///
+/// Returns `None` when the encoded length cannot be represented by `usize`.
+#[inline]
+#[must_use]
+pub const fn encoded_len(input_len: usize, padding: bool) -> Option<usize> {
+    let Some(complete_len) = (input_len / 3).checked_mul(4) else {
+        return None;
+    };
+
+    match (input_len % 3, padding) {
+        (0, _) => Some(complete_len),
+        (_, true) => complete_len.checked_add(4),
+        (1, false) => complete_len.checked_add(2),
+        (_, false) => complete_len.checked_add(3),
+    }
+}
+
+/// Returns a conservative decoded-length estimate for `encoded_len` Base64 symbols.
+///
+/// The returned size is safe for a decode buffer and can exceed the actual decoded
+/// length by up to two bytes.
+#[inline]
+#[must_use]
+pub const fn decoded_len_estimate(encoded_len: usize) -> usize {
+    encoded_len.saturating_add(3) / 4 * 3
+}
+
 /// A high-performance, stateless Base64 encoder/decoder.
 ///
 /// This struct holds the configuration for encoding/decoding (alphabet choice and padding).
@@ -285,6 +313,7 @@ pub(crate) struct Config {
 #[derive(Debug, Clone, Copy)]
 pub struct Engine {
     pub(crate) config: Config,
+    decode_padding_indifferent: bool,
 }
 
 // ======================================================================
@@ -299,6 +328,7 @@ pub const STANDARD: Engine = Engine {
         url_safe: false,
         padding: true,
     },
+    decode_padding_indifferent: false,
 };
 
 /// Standard Base64 (RFC 4648) **without** padding.
@@ -310,6 +340,7 @@ pub const STANDARD_NO_PAD: Engine = Engine {
         url_safe: false,
         padding: false,
     },
+    decode_padding_indifferent: false,
 };
 
 /// URL-Safe Base64 with padding.
@@ -320,6 +351,7 @@ pub const URL_SAFE: Engine = Engine {
         url_safe: true,
         padding: true,
     },
+    decode_padding_indifferent: false,
 };
 
 /// URL-Safe Base64 **without** padding.
@@ -330,6 +362,25 @@ pub const URL_SAFE_NO_PAD: Engine = Engine {
         url_safe: true,
         padding: false,
     },
+    decode_padding_indifferent: false,
+};
+
+/// Standard Base64 with padding when encoding, accepting padded or unpadded input when decoding.
+pub const STANDARD_PAD_INDIFFERENT: Engine = Engine {
+    config: Config {
+        url_safe: false,
+        padding: true,
+    },
+    decode_padding_indifferent: true,
+};
+
+/// URL-safe Base64 with padding when encoding, accepting padded or unpadded input when decoding.
+pub const URL_SAFE_PAD_INDIFFERENT: Engine = Engine {
+    config: Config {
+        url_safe: true,
+        padding: true,
+    },
+    decode_padding_indifferent: true,
 };
 
 // ======================================================================
@@ -385,62 +436,7 @@ fn into_ascii_string(bytes: Vec<u8>) -> String {
 
 impl Engine {
     // ======================================================================
-    // Length Calculators
-    // ======================================================================
-
-    /// Calculates the buffer size required to encode `input_len` bytes.
-    ///
-    /// If the exact size cannot fit in `usize`, this returns `usize::MAX` rather
-    /// than wrapping to a smaller value.
-    ///
-    /// This method computes the size based on the current configuration (padding vs. no padding).
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use base64_turbo::STANDARD;
-    ///
-    /// assert_eq!(STANDARD.encoded_len(3), 4);
-    /// assert_eq!(STANDARD.encoded_len(1), 4); // With padding
-    /// ```
-    #[inline]
-    #[must_use]
-    pub const fn encoded_len(&self, input_len: usize) -> usize {
-        let complete_groups = input_len / 3;
-        let trailing = input_len % 3;
-        let complete_len = complete_groups.saturating_mul(4);
-
-        let tail_len = if self.config.padding {
-            if trailing == 0 { 0 } else { 4 }
-        } else {
-            match trailing {
-                0 => 0,
-                1 => 2,
-                _ => 3,
-            }
-        };
-
-        complete_len.saturating_add(tail_len)
-    }
-
-    /// Calculates the **maximum** buffer size required to decode `input_len` bytes.
-    ///
-    /// # Note
-    /// This is an upper-bound estimate. The actual number of bytes written during
-    /// decoding will likely be smaller.
-    ///
-    /// You should rely on the `usize` returned by [`decode_into`](Self::decode_into)
-    /// to determine the actual valid slice of the output buffer.
-    #[inline]
-    #[must_use]
-    pub const fn estimate_decoded_len(&self, input_len: usize) -> usize {
-        // Conservative estimate: 3 bytes for every 4 chars, plus a safety margin
-        // for unpadded/chunked logic.
-        (input_len / 4 + 1) * 3
-    }
-
-    // ======================================================================
-    // Zero-Allocation APIs
+    // Slice APIs
     // ======================================================================
 
     /// Encodes `input` into the provided `output` buffer.
@@ -456,14 +452,18 @@ impl Engine {
     /// # Returns
     ///
     /// * `Ok(usize)`: The actual number of bytes written to `output`.
-    /// * `Err(Error::BufferTooSmall)`: If `output.len()` is less than [`encoded_len`](Self::encoded_len).
+    /// * `Err(Error::BufferTooSmall)`: If `output.len()` is less than [`encoded_len`].
     ///
     /// # Errors
     ///
     /// Returns [`Error::BufferTooSmall`] if `output` is not large enough to hold the
-    /// encoded data (see [`encoded_len`](Self::encoded_len)).
+    /// encoded data (see [`encoded_len`]).
     #[inline]
-    pub fn encode_into<T: AsRef<[u8]>>(&self, input: T, output: &mut [u8]) -> Result<usize, Error> {
+    pub fn encode_slice<T: AsRef<[u8]>>(
+        &self,
+        input: T,
+        output: &mut [u8],
+    ) -> Result<usize, Error> {
         let input = input.as_ref();
         let len = input.len();
 
@@ -471,7 +471,7 @@ impl Engine {
             return Ok(0);
         }
 
-        let req_len = Self::encoded_len(self, len);
+        let req_len = encoded_len(len, self.config.padding).ok_or(Error::BufferTooSmall)?;
         if output.len() < req_len {
             return Err(Error::BufferTooSmall);
         }
@@ -496,7 +496,11 @@ impl Engine {
     /// [`Error::InvalidLength`] / [`Error::InvalidCharacter`] if `input` is not
     /// valid Base64.
     #[inline]
-    pub fn decode_into<T: AsRef<[u8]>>(&self, input: T, output: &mut [u8]) -> Result<usize, Error> {
+    pub fn decode_slice<T: AsRef<[u8]>>(
+        &self,
+        input: T,
+        output: &mut [u8],
+    ) -> Result<usize, Error> {
         let input = input.as_ref();
         let len = input.len();
 
@@ -504,7 +508,7 @@ impl Engine {
             return Ok(0);
         }
 
-        let req_len = Self::estimate_decoded_len(self, len);
+        let req_len = decoded_len_estimate(len);
         if output.len() < req_len {
             return Err(Error::BufferTooSmall);
         }
@@ -513,6 +517,13 @@ impl Engine {
         let real_len = Self::decode_dispatch(self, input, &mut output[..req_len])?;
 
         Ok(real_len)
+    }
+
+    /// Returns whether this engine emits padding when encoding.
+    #[inline]
+    #[must_use]
+    pub const fn encode_padding(&self) -> bool {
+        self.config.padding
     }
 
     // ========================================================================
@@ -534,12 +545,8 @@ impl Engine {
     #[cfg(feature = "std")]
     pub fn encode<T: AsRef<[u8]>>(&self, input: T) -> String {
         let input = input.as_ref();
-
-        // Base64 encoding is deterministic, so this is the EXACT output size.
-        // `spare` hands the dispatcher a full-length buffer (uninitialized on
-        // SIMD builds, zeroed on the scalar-only safe build); the dispatcher then
-        // overwrites every byte, and the output is pure ASCII.
-        let mut out = spare(Self::encoded_len(self, input.len()));
+        let output_len = encoded_len(input.len(), self.config.padding).unwrap_or(usize::MAX);
+        let mut out = spare(output_len);
         Self::encode_dispatch(self, input, &mut out);
         into_ascii_string(out)
     }
@@ -561,15 +568,40 @@ impl Engine {
     pub fn decode<T: AsRef<[u8]>>(&self, input: T) -> Result<Vec<u8>, Error> {
         let input = input.as_ref();
 
-        // `spare` gives us the upper-bound-sized buffer; `decode_into` writes the
+        // `spare` gives us the upper-bound-sized buffer; `decode_slice` writes the
         // decoded prefix and reports its exact length, then `truncate` drops the
         // unwritten tail. `truncate` is safe on both buffer flavors — for `u8`
         // there is nothing to run, it just shortens the live length — and on error
         // the whole buffer is dropped without exposing an unwritten byte.
-        let mut out = spare(Self::estimate_decoded_len(self, input.len()));
-        let written = Self::decode_into(self, input, &mut out)?;
+        let mut out = spare(decoded_len_estimate(input.len()));
+        let written = Self::decode_slice(self, input, &mut out)?;
         out.truncate(written);
         Ok(out)
+    }
+
+    /// Encodes `input` and appends it to `output`.
+    #[inline]
+    #[cfg(feature = "std")]
+    pub fn encode_string<T: AsRef<[u8]>>(&self, input: T, output: &mut String) {
+        output.push_str(&Self::encode(self, input));
+    }
+
+    /// Decodes `input` and appends the result to `output`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidLength`] / [`Error::InvalidCharacter`] if `input` is not
+    /// valid Base64.
+    #[inline]
+    #[cfg(feature = "std")]
+    pub fn decode_vec<T: AsRef<[u8]>>(&self, input: T, output: &mut Vec<u8>) -> Result<(), Error> {
+        let input = input.as_ref();
+        let start = output.len();
+        let estimate = decoded_len_estimate(input.len());
+        output.resize(start.saturating_add(estimate), 0);
+        let written = Self::decode_slice(self, input, &mut output[start..])?;
+        output.truncate(start + written);
+        Ok(())
     }
 
     // ========================================================================
@@ -619,6 +651,10 @@ impl Engine {
     #[allow(clippy::trivially_copy_pass_by_ref)]
     #[inline]
     fn decode_dispatch(&self, input: &[u8], dst: &mut [u8]) -> Result<usize, Error> {
+        if self.decode_padding_indifferent {
+            return scalar::decode_slice_forgiving(&self.config, input, dst);
+        }
+
         #[cfg(x86_simd)]
         {
             let len = input.len();
@@ -700,7 +736,7 @@ impl Engine {
     ///   - With padding: `input.len().div_ceil(3) * 4`
     ///   - Without padding: `(input.len() * 4).div_ceil(3)`
     ///
-    /// - Highly recommended: use `Engine::estimate_decoded_len` to compute length.
+    /// - Highly recommended: use `Engine::decoded_len_estimate` to compute length.
     ///
     /// - The caller **must** ensure the target CPU supports AVX2 instructions at runtime.
     ///   Executing this function on a CPU without AVX2 support will cause an illegal instruction
@@ -766,7 +802,7 @@ impl Engine {
     ///   at least `(input.len() / 4 + 1) * 3` bytes of capacity. The extra space is required
     ///   because the quad tier's first three stores are unmasked, each overhanging the 48
     ///   bytes it produces by 16 before the next store rewrites that overhang.
-    ///   - Highly recommended: use `Engine::estimate_decoded_len` to compute length.
+    ///   - Highly recommended: use `Engine::decoded_len_estimate` to compute length.
     ///
     /// - The caller **must** ensure the target CPU supports the `avx512f`, `avx512bw` and
     ///   `avx512vbmi` instruction subsets at runtime. Executing this function on a CPU
@@ -812,7 +848,7 @@ impl Engine {
     /// contains no `unsafe`, so a too-small `dst` panics on a bounds check rather
     /// than corrupting memory.
     ///
-    /// Size `dst` with [`Engine::estimate_decoded_len`].
+    /// Size `dst` with [`Engine::decoded_len_estimate`].
     ///
     /// # Panics
     ///
@@ -837,7 +873,7 @@ impl Engine {
     /// - The destination pointer `dst` must be valid and point to a mutable memory region with
     ///   at least `(input.len() / 4 + 1) * 3` bytes of capacity. The extra space is required due
     ///   to the implementation performing overlapping writes.
-    ///  - Highly recommended: use `Engine::estimate_decoded_len` to compute length.
+    ///  - Highly recommended: use `Engine::decoded_len_estimate` to compute length.
     ///
     /// # Warning
     ///
@@ -860,7 +896,7 @@ impl Engine {
     /// - The destination pointer `dst` must be valid and point to a mutable memory region with
     ///   at least `(input.len() / 4 + 1) * 3` bytes of capacity. The extra space is required due
     ///   to the implementation performing overlapping writes.
-    ///  - Highly recommended: use `Engine::estimate_decoded_len` to compute length.
+    ///  - Highly recommended: use `Engine::decoded_len_estimate` to compute length.
     ///
     /// # Warning
     ///
@@ -877,4 +913,23 @@ impl Engine {
         // SAFETY: Caller must uphold the contracts documented on this function.
         unsafe { simd::decode_slice_neon(&self.config, input, dst) }
     }
+}
+
+/// Encodes `input` with the standard RFC 4648 alphabet and padding.
+#[cfg(feature = "std")]
+#[inline]
+pub fn encode<T: AsRef<[u8]>>(input: T) -> String {
+    STANDARD.encode(input)
+}
+
+/// Decodes `input` with the standard RFC 4648 alphabet and padding.
+///
+/// # Errors
+///
+/// Returns [`Error::InvalidLength`] / [`Error::InvalidCharacter`] if `input` is not
+/// valid Base64.
+#[cfg(feature = "std")]
+#[inline]
+pub fn decode<T: AsRef<[u8]>>(input: T) -> Result<Vec<u8>, Error> {
+    STANDARD.decode(input)
 }

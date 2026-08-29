@@ -78,7 +78,7 @@ mod kani_verification_avx512_vbmi {
     }
 
     fn dec_cap(len: usize) -> usize {
-        TURBO_STANDARD.estimate_decoded_len(len)
+        decoded_len_estimate(len)
     }
 
     /// An arbitrary reachable encoder state: `g` whole groups consumed, with
@@ -406,10 +406,10 @@ mod kani_verification_avx512_vbmi {
     );
 
     const ENC_KERNEL_CAP: usize = TURBO_STANDARD.encoded_len(ENC_KERNEL_LEN);
-    const DEC_KERNEL_CAP: usize = TURBO_STANDARD.estimate_decoded_len(DEC_KERNEL_LEN);
-    const DEC_MASKED_KERNEL_CAP: usize = TURBO_STANDARD.estimate_decoded_len(DEC_MASKED_KERNEL_LEN);
+    const DEC_KERNEL_CAP: usize = decoded_len_estimate(DEC_KERNEL_LEN);
+    const DEC_MASKED_KERNEL_CAP: usize = decoded_len_estimate(DEC_MASKED_KERNEL_LEN);
     const ROUNDTRIP_ENC_CAP: usize = TURBO_STANDARD.encoded_len(ROUNDTRIP_LEN);
-    const ROUNDTRIP_DEC_CAP: usize = TURBO_STANDARD.estimate_decoded_len(ROUNDTRIP_ENC_CAP);
+    const ROUNDTRIP_DEC_CAP: usize = decoded_len_estimate(ROUNDTRIP_ENC_CAP);
 
     /// The vectorized encoder agrees with the scalar one on every input of this
     /// length. `crate::scalar` is `#![forbid(unsafe_code)]` and separately

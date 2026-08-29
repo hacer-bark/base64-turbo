@@ -194,7 +194,7 @@ mod kani_verification_avx2 {
     const DEC_WIDE_OUT: usize = DEC_BLOCK_OUT * DEC_UNROLL; // dst advance per wide-tier iteration
 
     fn dec_cap(len: usize) -> usize {
-        TURBO_STANDARD.estimate_decoded_len(len)
+        decoded_len_estimate(len)
     }
 
     /// The `aligned_len_128` / `aligned_len_32` loop windows (from the
@@ -327,8 +327,8 @@ mod kani_verification_avx2 {
     );
 
     const ENC_KERNEL_CAP: usize = TURBO_STANDARD.encoded_len(ENC_KERNEL_LEN);
-    const ENC_KERNEL_DEC_CAP: usize = TURBO_STANDARD.estimate_decoded_len(ENC_KERNEL_CAP);
-    const DEC_KERNEL_CAP: usize = TURBO_STANDARD.estimate_decoded_len(DEC_KERNEL_LEN);
+    const ENC_KERNEL_DEC_CAP: usize = decoded_len_estimate(ENC_KERNEL_CAP);
+    const DEC_KERNEL_CAP: usize = decoded_len_estimate(DEC_KERNEL_LEN);
 
     /// `Decode(Encode(x)) == x` over every 37-byte input. `url_safe` is a
     /// parameter (not symbolic) since it only selects constant LUTs.

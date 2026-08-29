@@ -106,14 +106,19 @@ pub(crate) fn encode_slice(config: &Config, input: &[u8], dst: &mut [u8]) {
     let blocks = len / 6; // full 6-byte input blocks
 
     // Split input/output into the fast-loop region and the tail. Using
-    // `chunks_exact` over the split halves keeps the hot loop free of bounds
+    // `as_chunks` over the split halves keeps the hot loop free of bounds
     // checks (the chunk lengths are statically known: 6 in, 8 out).
     let (in_main, in_tail) = input.split_at(blocks * 6);
     let (out_main, out_tail) = dst.split_at_mut(blocks * 8);
 
     // --- MAIN LOOP ---
     // Process 6 input bytes -> 8 output bytes per iteration.
-    for (chunk, out) in in_main.chunks_exact(6).zip(out_main.chunks_exact_mut(8)) {
+    for (chunk, out) in in_main
+        .as_chunks::<6>()
+        .0
+        .iter()
+        .zip(out_main.as_chunks_mut::<8>().0.iter_mut())
+    {
         // Read two overlapping big-endian u32s to avoid complex shifting logic.
         // `first_chunk`/`last_chunk` (bytes 0..4 and 2..6 of a 6-byte chunk) are
         // what let LLVM emit two 32-bit loads here; indexing the chunk
@@ -198,6 +203,26 @@ pub(crate) fn encode_slice(config: &Config, input: &[u8], dst: &mut [u8]) {
 /// not valid Base64 for `config`.
 #[inline]
 pub(crate) fn decode_slice(config: &Config, input: &[u8], dst: &mut [u8]) -> Result<usize, Error> {
+    decode_slice_impl(config, input, dst, false)
+}
+
+/// Decodes input while accepting both padded and unpadded final groups.
+#[inline]
+pub(crate) fn decode_slice_forgiving(
+    config: &Config,
+    input: &[u8],
+    dst: &mut [u8],
+) -> Result<usize, Error> {
+    decode_slice_impl(config, input, dst, true)
+}
+
+#[inline]
+fn decode_slice_impl(
+    config: &Config,
+    input: &[u8],
+    dst: &mut [u8],
+    padding_indifferent: bool,
+) -> Result<usize, Error> {
     let len = input.len();
     if len == 0 {
         return Ok(0);
@@ -214,7 +239,7 @@ pub(crate) fn decode_slice(config: &Config, input: &[u8], dst: &mut [u8]) -> Res
     // reserving the last 4 input bytes so the tail can handle padding carefully.
     let len_safe = len.saturating_sub(4);
     let len_fast = len_safe - (len_safe % 8);
-    // `len_fast <= len - 4`, so this is always within `estimate_decoded_len`.
+    // `len_fast <= len - 4`, so this is always within `decoded_len_estimate`.
     let out_fast = len_fast / 8 * 6;
 
     let shifted: &[[u32; 256]; 4] = if config.url_safe {
@@ -224,13 +249,15 @@ pub(crate) fn decode_slice(config: &Config, input: &[u8], dst: &mut [u8]) -> Res
     };
 
     // --- FAST LOOP (Middle Chunks) ---
-    // Slicing both sides up front and pairing them with `chunks_exact` hoists
+    // Slicing both sides up front and pairing them with `as_chunks` hoists
     // every bounds check out of the loop; indexing `input[i + n]` and
     // `dst[o..o + 6]` per iteration leaves two compares and two branches behind
     // instead.
     for (chars, out) in input[..len_fast]
-        .chunks_exact(8)
-        .zip(dst[..out_fast].chunks_exact_mut(6))
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .zip(dst[..out_fast].as_chunks_mut::<6>().0.iter_mut())
     {
         // Each lookup already carries its position shift, so a group is just
         // four loads OR-ed together. Invalid characters contribute `u32::MAX`,
@@ -254,7 +281,15 @@ pub(crate) fn decode_slice(config: &Config, input: &[u8], dst: &mut [u8]) -> Res
         out.copy_from_slice(&packed[..6]);
     }
 
-    decode_tail(config, table, input, len_fast, dst, out_fast)
+    decode_tail(
+        config,
+        table,
+        input,
+        len_fast,
+        dst,
+        out_fast,
+        padding_indifferent,
+    )
 }
 
 /// Decodes the final input bytes (from offset `i`) of a scalar decode pass,
@@ -268,6 +303,7 @@ fn decode_tail(
     mut i: usize,
     dst: &mut [u8],
     mut o: usize,
+    padding_indifferent: bool,
 ) -> Result<usize, Error> {
     let len = input.len();
 
@@ -286,7 +322,7 @@ fn decode_tail(
 
             // Check for padding ('=').
             if b3 == b'=' {
-                if !config.padding || i + 4 != len {
+                if (!config.padding && !padding_indifferent) || i + 4 != len {
                     return Err(Error::InvalidLength);
                 }
 
@@ -336,7 +372,7 @@ fn decode_tail(
         } else {
             // Case B: Partial block (1-3 bytes left).
             // If padding is strictly required, this is an error (len % 4 != 0).
-            if config.padding {
+            if config.padding && !padding_indifferent {
                 return Err(Error::InvalidLength);
             }
 

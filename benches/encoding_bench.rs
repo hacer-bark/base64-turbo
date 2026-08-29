@@ -16,7 +16,7 @@ use std::hint::black_box;
 use std::time::Duration;
 
 // 1. The Base64-turbo
-use base64_turbo::STANDARD as TURBO_ENGINE;
+use base64_turbo::{STANDARD as TURBO_ENGINE, decoded_len_estimate, encoded_len};
 
 // 2. Competitor 1: The standard 'base64' crate
 use base64::{
@@ -97,7 +97,7 @@ fn bench_comparison(c: &mut Criterion) {
 
         // 1b. Base64 Turbo (Buff / No-Alloc)
         if should_run("turbo-buff") {
-            let encoded_len = TURBO_ENGINE.encoded_len(*size);
+            let encoded_len = encoded_len(*size, true).unwrap();
             let mut output_buffer = vec![0u8; encoded_len];
 
             group.bench_with_input(
@@ -105,7 +105,7 @@ fn bench_comparison(c: &mut Criterion) {
                 &input_data,
                 |b, d| {
                     b.iter(|| {
-                        TURBO_ENGINE.encode_into(black_box(d), black_box(&mut output_buffer))
+                        TURBO_ENGINE.encode_slice(black_box(d), black_box(&mut output_buffer))
                     });
                 },
             );
@@ -159,7 +159,7 @@ fn bench_comparison(c: &mut Criterion) {
 
         // 1b. Base64 Turbo Decode (Buff / No-Alloc)
         if should_run("turbo-buff") {
-            let decoded_len = TURBO_ENGINE.estimate_decoded_len(encoded_str.len());
+            let decoded_len = decoded_len_estimate(encoded_str.len());
             let mut output_buffer = vec![0u8; decoded_len];
 
             group.bench_with_input(
@@ -168,7 +168,7 @@ fn bench_comparison(c: &mut Criterion) {
                 |b, s| {
                     b.iter(|| {
                         TURBO_ENGINE
-                            .decode_into(black_box(s.as_bytes()), black_box(&mut output_buffer))
+                            .decode_slice(black_box(s.as_bytes()), black_box(&mut output_buffer))
                     });
                 },
             );

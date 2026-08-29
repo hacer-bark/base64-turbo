@@ -8,7 +8,7 @@ use base64::engine::general_purpose::{
 use base64::Engine as _;
 
 use base64_turbo::{
-    Engine, Error,
+    Engine, Error, decoded_len_estimate, encoded_len,
     STANDARD as TURBO_STD, STANDARD_NO_PAD as TURBO_STD_NP,
     URL_SAFE as TURBO_URL, URL_SAFE_NO_PAD as TURBO_URL_NP,
 };
@@ -52,10 +52,10 @@ fuzz_target!(|data: &[u8]| {
     // ----------------------------------------------------------------------
     // 2. Zero-allocation APIs (.encode_into / .decode_into)
     // ----------------------------------------------------------------------
-    let enc_len = engine.encoded_len(payload.len());
+    let enc_len = encoded_len(payload.len(), engine.encode_padding()).unwrap();
     let mut enc_buf = vec![0u8; enc_len.max(1)]; // at least 1 to avoid zero-length issues
 
-    let written_enc = engine.encode_into(payload, &mut enc_buf[..enc_len]).unwrap();
+    let written_enc = engine.encode_slice(payload, &mut enc_buf[..enc_len]).unwrap();
     assert_eq!(written_enc, enc_len);
     assert_eq!(&enc_buf[..written_enc], encoded_turbo.as_bytes());
 
@@ -63,27 +63,27 @@ fuzz_target!(|data: &[u8]| {
     if enc_len > 0 {
         let mut small_enc = vec![0u8; enc_len - 1];
         assert!(matches!(
-            engine.encode_into(payload, &mut small_enc),
+            engine.encode_slice(payload, &mut small_enc),
             Err(Error::BufferTooSmall)
         ));
     }
 
     // Use the encoded length for decode estimate (not payload len)
-    let dec_est = engine.estimate_decoded_len(written_enc);
+    let dec_est = decoded_len_estimate(written_enc);
     let mut dec_buf = vec![0u8; dec_est.max(payload.len() + 16)]; // generously sized for robustness
 
     // Decode valid data
-    let written_dec = engine.decode_into(&enc_buf[..written_enc], &mut dec_buf).unwrap();
+    let written_dec = engine.decode_slice(&enc_buf[..written_enc], &mut dec_buf).unwrap();
     assert_eq!(&dec_buf[..written_dec], payload);
 
     // Decode arbitrary/invalid data (robustness, must not panic/UB)
     // Note: We use decode_into with large buffer to test low-level robustness without allocation wrapper
-    let _ = engine.decode_into(payload, &mut dec_buf);
+    let _ = engine.decode_slice(payload, &mut dec_buf);
 
     // Insufficient buffer for decoding arbitrary input (must return error, no panic/UB)
     if !payload.is_empty() {
         let mut small_dec = vec![0u8; 1];
-        let res = engine.decode_into(payload, &mut small_dec);
+        let res = engine.decode_slice(payload, &mut small_dec);
         assert!(matches!(res, Err(Error::BufferTooSmall) | Err(Error::InvalidCharacter) | Err(Error::InvalidLength)));
     }
 
@@ -92,7 +92,7 @@ fuzz_target!(|data: &[u8]| {
     //
     //    Every buffer below is sized to *exactly* the capacity the kernel's
     //    safety contract asks for -- `encoded_len` to encode,
-    //    `estimate_decoded_len` to decode -- and not a byte more. Slack here
+    //    `decoded_len_estimate` to decode -- and not a byte more. Slack here
     //    would hide the one bug class this section exists to find: a kernel
     //    whose overlapping or masked stores reach past the bound it documents.
     //    With ASan on, an overrun of these allocations is a hard failure.
@@ -100,12 +100,12 @@ fuzz_target!(|data: &[u8]| {
     //    Both valid and arbitrary input go through the decoders. The kernels
     //    fold validation into an accumulator they only test after their loops,
     //    so they may write garbage for invalid input -- but that garbage must
-    //    still land inside `estimate_decoded_len`, and the call must report
+    //    still land inside `decoded_len_estimate`, and the call must report
     //    `Err` rather than panic.
     // ----------------------------------------------------------------------
 
     let valid_encoded = &enc_buf[..written_enc];
-    let arbitrary_dec_est = engine.estimate_decoded_len(payload.len());
+    let arbitrary_dec_est = decoded_len_estimate(payload.len());
 
     // Runs one kernel pair over: encode(payload), decode(valid), decode(arbitrary).
     macro_rules! exercise_kernel {

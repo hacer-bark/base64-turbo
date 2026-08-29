@@ -1,7 +1,10 @@
 //! Integration tests verifying `base64-turbo`'s output against the reference `base64` crate.
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
-use base64_turbo::{Engine, Error, STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD};
+use base64_turbo::{
+    Engine, Error, STANDARD, STANDARD_NO_PAD, STANDARD_PAD_INDIFFERENT, URL_SAFE, URL_SAFE_NO_PAD,
+    URL_SAFE_PAD_INDIFFERENT, decode, decoded_len_estimate, encode, encoded_len,
+};
 
 // Reference Crate for Oracle Verification
 use base64::{
@@ -49,7 +52,7 @@ fn assert_rejects(engine: Engine, inputs: &[&str]) {
     let mut buffer = [0u8; 100];
     for &input in inputs {
         assert!(
-            engine.decode_into(input, &mut buffer).is_err(),
+            engine.decode_slice(input, &mut buffer).is_err(),
             "accepted {input:?}",
         );
     }
@@ -71,7 +74,7 @@ fn expected_encoded_len(input_len: usize, padding: bool) -> usize {
 fn assert_encoded_lengths(engine: Engine, padding: bool) {
     for input_len in 0..=7 {
         assert_eq!(
-            engine.encoded_len(input_len),
+            encoded_len(input_len, engine.encode_padding()).unwrap(),
             expected_encoded_len(input_len, padding),
             "encoded length for {input_len} bytes",
         );
@@ -111,9 +114,9 @@ fn assert_oracle_match(
     let expected_encoded = ref_engine.encode(input);
 
     // 2. Test Zero-Allocation API (Slice)
-    let mut enc_buf = vec![0u8; turbo_engine.encoded_len(input.len())];
+    let mut enc_buf = vec![0u8; encoded_len(input.len(), turbo_engine.encode_padding()).unwrap()];
     let enc_len = turbo_engine
-        .encode_into(input, &mut enc_buf)
+        .encode_slice(input, &mut enc_buf)
         .expect("encode_into failed");
     assert_eq!(
         &enc_buf[..enc_len],
@@ -130,9 +133,9 @@ fn assert_oracle_match(
 
     // 4. Test Zero-Allocation Decode (Slice)
     // Note: We allocate based on estimate, but verify exact write length
-    let mut dec_buf = vec![0u8; turbo_engine.estimate_decoded_len(expected_encoded.len())];
+    let mut dec_buf = vec![0u8; decoded_len_estimate(expected_encoded.len())];
     let dec_len = turbo_engine
-        .decode_into(expected_encoded.as_bytes(), &mut dec_buf)
+        .decode_slice(expected_encoded.as_bytes(), &mut dec_buf)
         .expect("decode_into failed");
     assert_eq!(&dec_buf[..dec_len], input, "Slice Decode mismatch");
 
@@ -153,7 +156,7 @@ fn assert_oracle_match(
 #[test]
 fn test_oracle_standard_exhaustive_small() {
     // Covers 0..92 to hit all SIMD mask boundaries, alignment issues, and scalar fallbacks.
-    // This implicitly covers `encoded_len` and `estimate_decoded_len` correctness via helpers.
+    // This implicitly covers `encoded_len` and `decoded_len_estimate` correctness via helpers.
     for i in 0..=92 {
         let data = random_bytes(i);
         assert_oracle_match(&data, STANDARD, &REF_STANDARD);
@@ -190,17 +193,17 @@ fn test_empty_input() {
     let mut dec_buf = [0u8; 16];
 
     // Encode empty -> 0 bytes written
-    let enc_len = STANDARD.encode_into(empty, &mut enc_buf).unwrap();
+    let enc_len = STANDARD.encode_slice(empty, &mut enc_buf).unwrap();
     assert_eq!(enc_len, 0);
 
     // Decode empty -> 0 bytes written
-    let dec_len = STANDARD.decode_into(empty, &mut dec_buf).unwrap();
+    let dec_len = STANDARD.decode_slice(empty, &mut dec_buf).unwrap();
     assert_eq!(dec_len, 0);
 
     // All configs
     for engine in &[STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD] {
-        assert_eq!(engine.encode_into(empty, &mut enc_buf).unwrap(), 0);
-        assert_eq!(engine.decode_into(empty, &mut dec_buf).unwrap(), 0);
+        assert_eq!(engine.encode_slice(empty, &mut enc_buf).unwrap(), 0);
+        assert_eq!(engine.decode_slice(empty, &mut dec_buf).unwrap(), 0);
     }
 
     // Allocating APIs
@@ -212,7 +215,7 @@ fn test_empty_input() {
 }
 
 // ======================================================================
-// 3. Coverage: encoded_len & estimate_decoded_len correctness
+// 3. Coverage: encoded_len & decoded_len_estimate correctness
 // ======================================================================
 
 #[test]
@@ -224,33 +227,71 @@ fn test_encoded_len_correctness() {
     assert_encoded_lengths(STANDARD_NO_PAD, false);
 
     // URL_SAFE uses same math as STANDARD (just different alphabet)
-    assert_eq!(URL_SAFE.encoded_len(10), STANDARD.encoded_len(10));
     assert_eq!(
-        URL_SAFE_NO_PAD.encoded_len(10),
-        STANDARD_NO_PAD.encoded_len(10)
+        encoded_len(10, true).unwrap(),
+        encoded_len(10, true).unwrap()
+    );
+    assert_eq!(
+        encoded_len(10, false).unwrap(),
+        encoded_len(10, false).unwrap()
     );
 
-    assert_eq!(STANDARD.encoded_len(usize::MAX), usize::MAX);
-    assert_eq!(STANDARD_NO_PAD.encoded_len(usize::MAX), usize::MAX);
+    assert_eq!(encoded_len(usize::MAX, true), None);
+    assert_eq!(encoded_len(usize::MAX, false), None);
 }
 
 #[test]
-fn test_estimate_decoded_len() {
-    // (input_len / 4 + 1) * 3
-    assert_eq!(STANDARD.estimate_decoded_len(0), 3);
-    assert_eq!(STANDARD.estimate_decoded_len(4), 6);
-    assert_eq!(STANDARD.estimate_decoded_len(8), 9);
-    assert_eq!(STANDARD.estimate_decoded_len(12), 12);
+fn test_decoded_len_estimate() {
+    assert_eq!(decoded_len_estimate(0), 0);
+    assert_eq!(decoded_len_estimate(4), 3);
+    assert_eq!(decoded_len_estimate(8), 6);
+    assert_eq!(decoded_len_estimate(12), 9);
 
     // Sanity: estimate should always be >= actual
     for n in 0..=50 {
         let data = random_bytes(n);
         let encoded = REF_STANDARD.encode(&data);
         assert!(
-            STANDARD.estimate_decoded_len(encoded.len()) >= n,
+            decoded_len_estimate(encoded.len()) >= n,
             "Estimate too small for n={n}"
         );
     }
+}
+
+#[test]
+fn test_forgiving_padding() {
+    assert_eq!(STANDARD_PAD_INDIFFERENT.decode("Zg").unwrap(), b"f");
+    assert_eq!(STANDARD_PAD_INDIFFERENT.decode("Zg==").unwrap(), b"f");
+    assert_eq!(
+        URL_SAFE_PAD_INDIFFERENT.decode("-_8").unwrap(),
+        [0xFB, 0xFF]
+    );
+    assert_eq!(
+        URL_SAFE_PAD_INDIFFERENT.decode("-_8=").unwrap(),
+        [0xFB, 0xFF]
+    );
+
+    let mut output = [0u8; 3];
+    assert_eq!(
+        STANDARD_PAD_INDIFFERENT.decode_slice("Zm8", &mut output),
+        Ok(2)
+    );
+    assert_eq!(&output[..2], b"fo");
+}
+
+#[cfg(feature = "std")]
+#[test]
+fn test_convenience_and_append_apis() {
+    assert_eq!(encode(b"hello"), "aGVsbG8=");
+    assert_eq!(decode("aGVsbG8=").unwrap(), b"hello");
+
+    let mut text = String::from("prefix:");
+    STANDARD.encode_string(b"hi", &mut text);
+    assert_eq!(text, "prefix:aGk=");
+
+    let mut bytes = b"prefix:".to_vec();
+    STANDARD.decode_vec("aGk=", &mut bytes).unwrap();
+    assert_eq!(bytes, b"prefix:hi");
 }
 
 // ======================================================================
@@ -260,19 +301,19 @@ fn test_estimate_decoded_len() {
 #[test]
 fn test_buffer_too_small_encode() {
     let input = b"Hello world";
-    let required = STANDARD.encoded_len(input.len());
+    let required = encoded_len(input.len(), true).unwrap();
 
     // Buffer exactly 1 byte too small
     let mut small_buf = vec![0u8; required - 1];
     assert_eq!(
-        STANDARD.encode_into(input, &mut small_buf),
+        STANDARD.encode_slice(input, &mut small_buf),
         Err(Error::BufferTooSmall),
     );
 
     // Zero-size buffer
     let mut zero_buf: [u8; 0] = [];
     assert_eq!(
-        STANDARD.encode_into(input, &mut zero_buf),
+        STANDARD.encode_slice(input, &mut zero_buf),
         Err(Error::BufferTooSmall),
     );
 }
@@ -280,12 +321,12 @@ fn test_buffer_too_small_encode() {
 #[test]
 fn test_buffer_too_small_decode() {
     let encoded = "SGVsbG8gd29ybGQ="; // "Hello world"
-    let required = STANDARD.estimate_decoded_len(encoded.len());
+    let required = decoded_len_estimate(encoded.len());
 
     // Buffer exactly 1 byte too small
     let mut small_buf = vec![0u8; required - 1];
     assert_eq!(
-        STANDARD.decode_into(encoded, &mut small_buf),
+        STANDARD.decode_slice(encoded, &mut small_buf),
         Err(Error::BufferTooSmall),
     );
 }
@@ -300,7 +341,7 @@ fn test_reject_invalid_chars() {
     for bad in bad_inputs {
         let mut buf = [0u8; 100];
         assert_eq!(
-            STANDARD.decode_into(bad, &mut buf),
+            STANDARD.decode_slice(bad, &mut buf),
             Err(Error::InvalidCharacter),
             "Failed to reject: {bad:?}",
         );
@@ -312,7 +353,7 @@ fn test_reject_invalid_length_padding() {
     let inputs = ["A", "AA", "AAA", "AAAA=", "A===", "===="];
     let mut buf = [0u8; 100];
     for inp in inputs {
-        let res = STANDARD.decode_into(inp, &mut buf);
+        let res = STANDARD.decode_slice(inp, &mut buf);
         // Can be InvalidLength or InvalidCharacter depending on implementation specifics
         assert!(res.is_err(), "Should fail on invalid padding/length: {inp}");
     }
@@ -421,10 +462,12 @@ fn test_known_values_standard() {
     ];
 
     for (input, expected) in cases {
-        let len = STANDARD.encode_into(*input, &mut buf).unwrap();
+        let len = STANDARD.encode_slice(*input, &mut buf).unwrap();
         assert_eq!(&buf[..len], expected.as_bytes(), "Encode {input:?}");
 
-        let dec_len = STANDARD.decode_into(expected.as_bytes(), &mut dec).unwrap();
+        let dec_len = STANDARD
+            .decode_slice(expected.as_bytes(), &mut dec)
+            .unwrap();
         assert_eq!(&dec[..dec_len], *input, "Decode {expected:?}");
     }
 }
@@ -436,12 +479,12 @@ fn test_known_values_url_safe() {
     let mut buf = [0u8; 8];
 
     let expected = REF_URL_SAFE_NO_PAD.encode(input);
-    let len = URL_SAFE_NO_PAD.encode_into(input, &mut buf).unwrap();
+    let len = URL_SAFE_NO_PAD.encode_slice(input, &mut buf).unwrap();
     assert_eq!(&buf[..len], expected.as_bytes());
 
     // Verify decode roundtrip
     let mut dec = [0u8; 8];
-    let dec_len = URL_SAFE_NO_PAD.decode_into(&buf[..len], &mut dec).unwrap();
+    let dec_len = URL_SAFE_NO_PAD.decode_slice(&buf[..len], &mut dec).unwrap();
     assert_eq!(&dec[..dec_len], input);
 }
 
@@ -484,11 +527,11 @@ fn test_unstable_apis() {
 
     // --- Scalar (Always Available, and now a safe API) ---
     {
-        let mut dst = vec![0u8; STANDARD.encoded_len(input.len())];
+        let mut dst = vec![0u8; encoded_len(input.len(), true).unwrap()];
         STANDARD.encode_scalar(&input, &mut dst);
         assert_eq!(&dst, expected.as_bytes(), "Scalar Safe Encode");
 
-        let mut dec = vec![0u8; STANDARD.estimate_decoded_len(dst.len())];
+        let mut dec = vec![0u8; decoded_len_estimate(dst.len())];
         let len = STANDARD.decode_scalar(&dst, &mut dec).unwrap();
         assert_eq!(&dec[..len], &input, "Scalar Safe Decode");
     }
@@ -497,11 +540,11 @@ fn test_unstable_apis() {
     #[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), feature = "avx2"))]
     if std::is_x86_feature_detected!("avx2") {
         unsafe {
-            let mut dst = vec![0u8; STANDARD.encoded_len(input.len())];
+            let mut dst = vec![0u8; encoded_len(input.len(), true).unwrap()];
             STANDARD.encode_avx2(&input, &mut dst);
             assert_eq!(&dst, expected.as_bytes(), "AVX2 Unsafe Encode");
 
-            let mut dec = vec![0u8; STANDARD.estimate_decoded_len(dst.len())];
+            let mut dec = vec![0u8; decoded_len_estimate(dst.len())];
             let len = STANDARD.decode_avx2(&dst, &mut dec).unwrap();
             assert_eq!(&dec[..len], &input, "AVX2 Unsafe Decode");
         }
@@ -519,11 +562,11 @@ fn test_unstable_apis() {
         && std::is_x86_feature_detected!("avx512vbmi")
     {
         unsafe {
-            let mut dst = vec![0u8; STANDARD.encoded_len(input.len())];
+            let mut dst = vec![0u8; encoded_len(input.len(), true).unwrap()];
             STANDARD.encode_avx512_vbmi(&input, &mut dst);
             assert_eq!(&dst, expected.as_bytes(), "AVX512-VBMI Unsafe Encode");
 
-            let mut dec = vec![0u8; STANDARD.estimate_decoded_len(dst.len())];
+            let mut dec = vec![0u8; decoded_len_estimate(dst.len())];
             let len = STANDARD.decode_avx512_vbmi(&dst, &mut dec).unwrap();
             assert_eq!(&dec[..len], &input, "AVX512-VBMI Unsafe Decode");
         }
@@ -535,11 +578,11 @@ fn test_unstable_apis() {
     #[cfg(target_arch = "aarch64")]
     #[cfg(feature = "neon")]
     unsafe {
-        let mut dst = vec![0u8; STANDARD.encoded_len(input.len())];
+        let mut dst = vec![0u8; encoded_len(input.len(), true).unwrap()];
         STANDARD.encode_neon(&input, &mut dst);
         assert_eq!(&dst, expected.as_bytes(), "NEON Unsafe Encode");
 
-        let mut dec = vec![0u8; STANDARD.estimate_decoded_len(dst.len())];
+        let mut dec = vec![0u8; decoded_len_estimate(dst.len())];
         let len = STANDARD.decode_neon(&dst, &mut dec).unwrap();
         assert_eq!(&dec[..len], &input, "NEON Unsafe Decode");
     }
