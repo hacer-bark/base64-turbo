@@ -325,8 +325,16 @@ pub(crate) unsafe fn decode_slice_neon(
         }};
     }
 
+    // Trailing margin: no vector pass may start unless at least this many
+    // characters remain after it. `pack_and_store!` writes a full 16-byte
+    // vector but only 12 bytes are logical output, so the smallest possible
+    // tail -- exactly 4 leftover characters -- would let that overhang write
+    // past the destination's estimated capacity. One extra byte of margin
+    // keeps a real tail always wide enough to absorb it.
+    const DEC_LEAD: usize = 5;
+
     // Quad tier: 64 input bytes -> 48 output.
-    let safe_len_64 = len.saturating_sub(4);
+    let safe_len_64 = len.saturating_sub(DEC_LEAD);
     let aligned_len_64 = safe_len_64 - (safe_len_64 % 64);
     let src_end_64 = unsafe { src.add(aligned_len_64) };
 
@@ -355,7 +363,7 @@ pub(crate) unsafe fn decode_slice_neon(
     }
 
     // Single tier: 16 input bytes -> 12 output.
-    let safe_len_16 = len.saturating_sub(4);
+    let safe_len_16 = len.saturating_sub(DEC_LEAD);
     let aligned_len_16 = safe_len_16 - (safe_len_16 % 16);
     let src_end_16 = unsafe { input.as_ptr().add(aligned_len_16) };
 
