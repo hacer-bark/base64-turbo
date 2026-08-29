@@ -82,6 +82,7 @@ fn assert_encoded_lengths(engine: Engine, padding: bool) {
     }
 }
 
+#[cfg(not(miri))]
 fn large_test_lengths() -> impl Iterator<Item = usize> {
     // Varied sizes that execute every large-input dispatch loop.
     [1024, 4095, 8192, 16383, 32768, 65535].into_iter()
@@ -91,6 +92,7 @@ fn config_test_lengths() -> impl Iterator<Item = usize> {
     [1, 2, 3, 11, 12, 13, 47, 48, 49, 255, 511].into_iter()
 }
 
+#[cfg(not(miri))]
 fn boundary_test_lengths() -> impl Iterator<Item = usize> {
     [
         11, 12, 13, 15, 16, 17, 23, 24, 25, 47, 48, 49, 59, 60, 61, 71, 72, 73, 95, 96, 97, 143,

@@ -61,9 +61,13 @@ const ENC_FIRST_ADVANCE: usize = ENC_ROUND_IN - ENC_LEAD;
 const DEC_BLOCK_IN: usize = 32;
 /// Bytes a single-vector decode pass advances `dst` by.
 const DEC_BLOCK_OUT: usize = 24;
-/// Read-ahead margin: every pass reads a full vector per [`DEC_BLOCK_IN`]
-/// characters consumed, so no pass may start within this many bytes of the end.
-const DEC_LEAD: usize = 4;
+/// Trailing margin: no single-vector pass may start unless at least this many
+/// characters remain after it. `pack_and_store!` overhangs `dst` by 4 bytes past
+/// [`DEC_BLOCK_OUT`] (its second lane lands at [`DEC_PACK_LANE_OFF`] + 16), so the
+/// smallest possible tail — exactly 4 leftover characters — would let that overhang
+/// write past the destination's estimated capacity. Requiring one more byte of
+/// margin than that keeps a real tail always wide enough to absorb it.
+const DEC_LEAD: usize = 5;
 /// Offset of `pack_and_store!`'s second 16-byte lane, which is what makes its
 /// written span wider than the 24 bytes it advances.
 const DEC_PACK_LANE_OFF: usize = 12;

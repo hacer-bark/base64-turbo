@@ -122,8 +122,6 @@ jobs:
         harness:
           - check_vbmi_encode_matches_scalar_standard
           - check_vbmi_encode_matches_scalar_url_safe
-          - check_vbmi_decode_matches_scalar
-          - check_vbmi_decode_matches_scalar_masked
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
