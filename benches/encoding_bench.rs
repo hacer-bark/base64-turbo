@@ -1,4 +1,5 @@
-//! Throughput benchmarks comparing `base64-turbo` against the `base64`, `base64-simd` and `base64-ng` crates.
+//! Throughput benchmarks comparing `base64-turbo` against the `base64`, `base64-simd`
+//! and `base64-ng` crates.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -15,19 +16,14 @@ use std::env;
 use std::hint::black_box;
 use std::time::Duration;
 
-// 1. The Base64-turbo
 use base64_turbo::{STANDARD as TURBO_ENGINE, decoded_len_estimate, encoded_len};
 
-// 2. Competitor 1: The standard 'base64' crate
+// Competitors: the standard `base64` crate, `base64-simd`, and `base64-ng`.
 use base64::{
     Engine as _,
     engine::{GeneralPurposeConfig, Simd},
 };
-
-// 3. Competitor 2: The 'base64-simd' crate
 use base64_simd::STANDARD as SIMD_ENGINE;
-
-// 4. Competitor 3: The 'base64-ng' crate
 use base64_ng::STANDARD as NG_ENGINE;
 
 fn generate_random_data(size: usize) -> Vec<u8> {
@@ -48,12 +44,12 @@ fn should_run(target_name: &str) -> bool {
 }
 
 fn bench_comparison(c: &mut Criterion) {
-    // Runtime-detects AVX2/NEON once; matches BASE64_STANDARD's alphabet/padding.
+    // Runtime-detects AVX2/NEON once; matches STANDARD's alphabet/padding.
     let std_engine = Simd::standard(GeneralPurposeConfig::new());
 
     let mut group = c.benchmark_group("Base64_Performances");
 
-    // Logarithmic scaling is essential for viewing 32B vs 10MB
+    // Logarithmic scaling to view 32 B and 10 MB on the same axis.
     group.plot_config(PlotConfiguration::default().summary_scale(AxisScale::Logarithmic));
     group.measurement_time(Duration::from_secs(15));
     group.warm_up_time(Duration::from_secs(5));
@@ -72,19 +68,17 @@ fn bench_comparison(c: &mut Criterion) {
     for size in &sizes {
         let input_data = generate_random_data(*size);
 
-        // Dynamic configuration: Reduce sample count for large files to keep bench time reasonable
+        // Fewer samples for large inputs to keep the bench time reasonable.
         if *size > 1_000_000 {
             group.sample_size(50);
         } else {
             group.sample_size(250);
         }
 
-        // ======================================================================
-        // ENCODE
-        // ======================================================================
+        // --- Encode ---
         group.throughput(Throughput::Bytes(*size as u64));
 
-        // 1a. Base64 Turbo (Allocating)
+        // Turbo (allocating)
         if should_run("turbo") {
             group.bench_with_input(
                 BenchmarkId::new("Encode/Turbo", size),
@@ -95,7 +89,7 @@ fn bench_comparison(c: &mut Criterion) {
             );
         }
 
-        // 1b. Base64 Turbo (Buff / No-Alloc)
+        // Turbo (zero-allocation)
         if should_run("turbo-buff") {
             let encoded_len = encoded_len(*size, true).unwrap();
             let mut output_buffer = vec![0u8; encoded_len];
@@ -111,14 +105,14 @@ fn bench_comparison(c: &mut Criterion) {
             );
         }
 
-        // 2. Base64 Standard
+        // base64 (std)
         if should_run("std") || should_run("base64") {
             group.bench_with_input(BenchmarkId::new("Encode/Std", size), &input_data, |b, d| {
                 b.iter(|| std_engine.encode(black_box(d)));
             });
         }
 
-        // 3. Base64 SIMD
+        // base64-simd
         if should_run("simd") {
             group.bench_with_input(
                 BenchmarkId::new("Encode/Simd", size),
@@ -129,24 +123,21 @@ fn bench_comparison(c: &mut Criterion) {
             );
         }
 
-        // 4. Base64 NG
+        // base64-ng
         if should_run("ng") {
             group.bench_with_input(BenchmarkId::new("Encode/Ng", size), &input_data, |b, d| {
                 b.iter(|| NG_ENGINE.encode_string(black_box(d)));
             });
         }
 
-        // ======================================================================
-        // DECODE
-        // ======================================================================
+        // --- Decode ---
 
-        // Prepare valid Base64 string for decoding
         let encoded_str = std_engine.encode(&input_data);
 
-        // We measure throughput based on the INPUT text size (bytes processed per second)
+        // Throughput is measured against the encoded (input) text size.
         group.throughput(Throughput::Bytes(encoded_str.len() as u64));
 
-        // 1a. Base64 Turbo Decode (Allocating)
+        // Turbo (allocating)
         if should_run("turbo") {
             group.bench_with_input(
                 BenchmarkId::new("Decode/Turbo", size),
@@ -157,7 +148,7 @@ fn bench_comparison(c: &mut Criterion) {
             );
         }
 
-        // 1b. Base64 Turbo Decode (Buff / No-Alloc)
+        // Turbo (zero-allocation)
         if should_run("turbo-buff") {
             let decoded_len = decoded_len_estimate(encoded_str.len());
             let mut output_buffer = vec![0u8; decoded_len];
@@ -174,7 +165,7 @@ fn bench_comparison(c: &mut Criterion) {
             );
         }
 
-        // 2. Base64 Standard Decode
+        // base64 (std)
         if should_run("std") || should_run("base64") {
             group.bench_with_input(
                 BenchmarkId::new("Decode/Std", size),
@@ -185,7 +176,7 @@ fn bench_comparison(c: &mut Criterion) {
             );
         }
 
-        // 3. Base64 SIMD Decode
+        // base64-simd
         if should_run("simd") {
             group.bench_with_input(
                 BenchmarkId::new("Decode/Simd", size),
@@ -196,7 +187,7 @@ fn bench_comparison(c: &mut Criterion) {
             );
         }
 
-        // 4. Base64 NG Decode
+        // base64-ng
         if should_run("ng") {
             group.bench_with_input(BenchmarkId::new("Decode/Ng", size), &encoded_str, |b, s| {
                 b.iter(|| NG_ENGINE.decode_vec(black_box(s.as_bytes())));

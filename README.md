@@ -369,7 +369,7 @@ licenses:
   Our decoder's nibble-lookup validation and our encoder's offset-load loop and
   single-LUT character mapping are direct ports from this library. The URL-safe tables
   aren't published anywhere we could find — we re-derived them and verified them
-  exhaustively (`src/simd/avx2.rs`).
+  exhaustively (`src/simd/avx2/mod.rs`).
 * **[Daniel Lemire](https://github.com/lemire) and Wojciech Muła — [`lemire/fastbase64`](https://github.com/lemire/fastbase64) (BSD-2-Clause).**
   `fastavxbase64.c` independently documents the same nibble-lookup decode algorithm
   (originated by Muła, `+`/`/` disambiguation credited there to `@aqrit`), which we

@@ -5,21 +5,24 @@
 //! [![Kani Verified](https://img.shields.io/github/actions/workflow/status/hacer-bark/base64-turbo/verification.yml?label=Kani%20Verified)](https://github.com/hacer-bark/base64-turbo/actions/workflows/verification.yml)
 //! [![MIRI Verified](https://img.shields.io/github/actions/workflow/status/hacer-bark/base64-turbo/miri.yml?label=MIRI%20Verified)](https://github.com/hacer-bark/base64-turbo/actions/workflows/miri.yml)
 //!
-//! **A SIMD Base64 implementation whose `unsafe` paths are checked by a model checker, not just by review.**
+//! **A Rust Base64 codec that peaks past 100 GiB/s, with its `unsafe` SIMD checked by a
+//! model checker, not just by review.**
 //!
-//! `base64-turbo` is a production-grade library engineered for high-throughput systems where CPU cycles are scarce and Undefined Behavior (UB) is unacceptable.
+//! `base64-turbo` targets high-throughput systems where CPU cycles are scarce and
+//! Undefined Behavior is unacceptable. "Memory-safe" here is a specific, bounded claim:
+//! the `unsafe` SIMD paths are checked by the [Kani](https://github.com/model-checking/kani)
+//! model checker and [MIRI](https://github.com/rust-lang/miri) (a strict UB interpreter),
+//! on top of `MemorySanitizer` audits and continuous fuzzing — see the "Safety &
+//! Verification" section below for what each layer does and does not cover per
+//! architecture. This crate is **not** faster than unchecked C/assembly implementations
+//! and does not claim to be; within the narrower set of crates combining SIMD-accelerated
+//! Base64 with Kani + MIRI verification, we are not aware of another one that reaches
+//! AVX-512 VBMI speeds.
 //!
-//! "Memory-safe" here is a specific, bounded claim: the `unsafe` SIMD paths are checked by the
-//! [Kani](https://github.com/model-checking/kani) model checker and [MIRI](https://github.com/rust-lang/miri)
-//! (a strict UB interpreter), on top of `MemorySanitizer` audits and continuous fuzzing — see the
-//! "Safety & Verification" section below for what each layer does and does not cover per
-//! architecture. This crate is **not** faster than unchecked C/assembly implementations and does
-//! not claim to be; within the narrower set of crates combining SIMD-accelerated Base64 with
-//! Kani + MIRI verification, we are not aware of another one that reaches AVX-512 VBMI speeds.
-//!
-//! This crate provides runtime CPU detection to utilize **AVX-512 VBMI** or **AVX2** intrinsics on `x86_64`,
-//! and compile-time **NEON** acceleration on `aarch64`.
-//! It includes a highly optimized scalar fallback for non-SIMD targets and supports `no_std` environments.
+//! It picks the best kernel available at runtime: **AVX-512 VBMI** or **AVX2** on
+//! `x86_64` via runtime CPU detection, **NEON** on `aarch64` via compile-time dispatch,
+//! and an optimized table-driven scalar kernel elsewhere, in 100% safe Rust. `no_std`
+//! environments are supported.
 //!
 //! ### Basic API (Allocating)
 //!
@@ -67,12 +70,12 @@
 //!
 //! | Feature | Default | Description |
 //! |---------|---------|-------------|
-//! | **`std`** | **Yes** | Enables `String` and `Vec` support. Disable this for `no_std` environments. |
+//! | **`std`** | **Yes** | `String`/`Vec` support. Disable for `no_std` (the `_into` APIs need no allocator). |
 //! | **`avx2`** | **Yes** | AVX2 kernel + runtime detection on `x86`/`x86_64`. Implies `std`. |
 //! | **`avx512-vbmi`** | **Yes** | AVX-512 VBMI fast-path kernel on `x86`/`x86_64`. Implies `std`. |
-//! | **`simd`** | **Yes** | Convenience meta-feature: enables `avx2` + `avx512-vbmi` at once. |
-//! | **`neon`** | **Yes** | **NEON** acceleration on aarch64 (ARM64). No `std` required — compile-time dispatch. |
-//! | **`unstable`** | **No** | Exposes the raw internal kernels (e.g. `encode_avx2`; the `*_scalar` accessors are safe). |
+//! | **`simd`** | **Yes** | Convenience meta-feature — turns on `avx2` + `avx512-vbmi` at once. |
+//! | **`neon`** | **Yes** | NEON acceleration on aarch64. No `std` required — compile-time dispatch. |
+//! | **`unstable`** | **No** | Exposes the raw internal kernels (`encode_avx2`, `encode_avx512_vbmi`, `encode_neon`, …). The `*_scalar` accessors are safe. |
 //!
 //! If **no** SIMD kernel is enabled (no `avx2`/`avx512-vbmi` on x86, no
 //! `neon` on aarch64), the build is pure scalar Rust and the crate carries
@@ -81,8 +84,9 @@
 //!
 //! ## Safety & Verification
 //!
-//! This crate utilizes `unsafe` code for SIMD intrinsics and pointer arithmetic to achieve maximum performance.
-//! To ensure safety, we employ a "Swiss Cheese" model of verification layers:
+//! We use `unsafe` SIMD intrinsics and raw pointer arithmetic, so rather than rely on
+//! review alone we stack independent verification layers that cover each other's blind
+//! spots:
 //!
 //! *   **Model checking (Kani):** For the Scalar and AVX2 kernels, Kani explores
 //!     *every possible input byte value* at lengths chosen to exercise each loop tier and the
@@ -92,10 +96,12 @@
 //!     the in-bounds result there is a machine-checked induction covering every length rather
 //!     than the ones a harness happens to pin. The README spells out what that does and does not
 //!     buy you, along with the AVX512-VBMI and NEON gaps.
-//! *   **MIRI Audited:** All SIMD paths (AVX512-VBMI, AVX2, NEON) and Scalar fallbacks are run under
-//!     **MIRI** (Undefined Behavior checker) in CI, covering every distinct code path at least once.
-//! *   **`MemorySanitizer`:** The codebase is audited with `MSan` to prevent logic errors derived from reading uninitialized memory.
-//! *   **Fuzzing:** The codebase is fuzz-tested via `cargo-fuzz` (2.5B+ iterations).
+//! *   **MIRI:** All SIMD paths (AVX512-VBMI, AVX2, NEON) and the scalar fallback run under
+//!     **MIRI** (an Undefined Behavior interpreter) in CI, covering every distinct code path at
+//!     least once.
+//! *   **`MemorySanitizer`:** The standard library is rebuilt with instrumentation to confirm we
+//!     never branch on or emit uninitialized memory.
+//! *   **Fuzzing:** 250M+ `cargo-fuzz` iterations across all paths, no crashes to date.
 //!
 //! **[Learn More](https://github.com/hacer-bark/base64-turbo#safety--verification)**: exactly what is proven, and what isn't.
 
@@ -162,7 +168,7 @@ mod cpu {
 }
 
 // ======================================================================
-// ERROR DEFINITION
+// Error Definition
 // ======================================================================
 
 /// Errors that can occur during Base64 encoding or decoding operations.
@@ -692,61 +698,35 @@ impl Engine {
     // Raw unsafe access (unstable feature)
     // ========================================================================
 
-    /// Encodes a byte slice into Base64 using a highly optimized AVX2 SIMD implementation.
-    ///
-    /// This provides raw access to the direct AVX2 encoding logic.
+    /// Raw access to the direct AVX2 encoding logic.
     ///
     /// # Safety
     ///
-    /// This function is **unsafe** and requires the caller to uphold strict memory contracts.
-    /// Failure to do so will result in **undefined behavior** (e.g., buffer overflow).
-    ///
-    /// - The destination pointer `dst` must be valid and point to a mutable memory region with
-    ///   sufficient capacity. The required size depends on `config.padding`:
+    /// - `dst` must point to a mutable region with sufficient capacity. The required size
+    ///   depends on `config.padding`:
     ///   - With padding: `input.len().div_ceil(3) * 4`
     ///   - Without padding: `(input.len() * 4).div_ceil(3)`
-    ///   - Highly recommended: use `Engine::encoded_len` to compute length.
+    ///   - Prefer [`Engine::encoded_len`] to compute it.
+    /// - The caller must ensure the target CPU supports AVX2 at runtime. Running this on a CPU
+    ///   without AVX2 causes an illegal instruction crash.
     ///
-    /// - The caller **must** ensure the target CPU supports AVX2 instructions at runtime.
-    ///   Executing this function on a CPU without AVX2 support will cause crashes or incorrect
-    ///   behavior.
-    ///
-    /// # Warning
-    ///
-    /// This is a low-level, unsafe primitive. Misuse can lead to undefined behavior regardless
-    /// of other crate guarantees. For better memory safety, use the safe higher-level APIs
-    /// (e.g., `Engine::encode`).
+    /// Prefer the safe higher-level APIs (e.g. [`Engine::encode`]) unless you need this bypass.
     #[cfg(all(x86_simd, feature = "avx2", feature = "unstable"))]
     pub unsafe fn encode_avx2(&self, input: &[u8], dst: &mut [u8]) {
         // SAFETY: Caller must uphold the contracts documented on this function.
         unsafe { simd::encode_slice_avx2(&self.config, input, dst) }
     }
 
-    /// Encodes a byte slice into Base64 using a highly optimized AVX2 SIMD implementation.
-    ///
-    /// This provides raw access to the direct AVX2 encoding logic.
+    /// Raw access to the direct AVX2 decoding logic.
     ///
     /// # Safety
     ///
-    /// This function is **unsafe** and requires the caller to uphold strict memory contracts.
-    /// Failure to do so will result in **undefined behavior** (e.g., buffer overflow).
+    /// - `dst` must point to a mutable region with sufficient capacity. Prefer
+    ///   [`Engine::decoded_len_estimate`] to compute it.
+    /// - The caller must ensure the target CPU supports AVX2 at runtime. Running this on a CPU
+    ///   without AVX2 causes an illegal instruction crash.
     ///
-    /// - The destination pointer `dst` must be valid and point to a mutable memory region with
-    ///   sufficient capacity. The required size depends on `config.padding`:
-    ///   - With padding: `input.len().div_ceil(3) * 4`
-    ///   - Without padding: `(input.len() * 4).div_ceil(3)`
-    ///
-    /// - Highly recommended: use `Engine::decoded_len_estimate` to compute length.
-    ///
-    /// - The caller **must** ensure the target CPU supports AVX2 instructions at runtime.
-    ///   Executing this function on a CPU without AVX2 support will cause an illegal instruction
-    ///   crash.
-    ///
-    /// # Warning
-    ///
-    /// This is a low-level, unsafe primitive. Misuse can lead to undefined behavior regardless
-    /// of other crate guarantees. For better memory safety, use the safe higher-level APIs
-    /// (e.g., `Engine::encode`).
+    /// Prefer the safe higher-level APIs (e.g. [`Engine::decode`]) unless you need this bypass.
     ///
     /// # Errors
     ///
@@ -758,61 +738,39 @@ impl Engine {
         unsafe { simd::decode_slice_avx2(&self.config, input, dst) }
     }
 
-    /// Encodes a byte slice into Base64 using the AVX-512-VBMI SIMD implementation.
-    ///
-    /// This provides raw access to the direct AVX-512-VBMI encoding logic, the
-    /// fastest kernel in the crate.
+    /// Raw access to the direct AVX-512-VBMI encoding logic, the fastest kernel in the crate.
     ///
     /// # Safety
     ///
-    /// This function is **unsafe** and requires the caller to uphold strict memory contracts.
-    /// Failure to do so will result in **undefined behavior** (e.g., buffer overflow).
-    ///
-    /// - The destination pointer `dst` must be valid and point to a mutable memory region with
-    ///   sufficient capacity. The required size depends on `config.padding`:
+    /// - `dst` must point to a mutable region with sufficient capacity. The required size
+    ///   depends on `config.padding`:
     ///   - With padding: `input.len().div_ceil(3) * 4`
     ///   - Without padding: `(input.len() * 4).div_ceil(3)`
-    ///   - Highly recommended: use `Engine::encoded_len` to compute length.
+    ///   - Prefer [`Engine::encoded_len`] to compute it.
+    /// - The caller must ensure the target CPU supports the `avx512f`, `avx512bw` and
+    ///   `avx512vbmi` subsets at runtime. Running this without all three causes an illegal
+    ///   instruction crash.
     ///
-    /// - The caller **must** ensure the target CPU supports the `avx512f`, `avx512bw` and
-    ///   `avx512vbmi` instruction subsets at runtime. Executing this function on a CPU
-    ///   without all three will cause an illegal instruction crash.
-    ///
-    /// # Warning
-    ///
-    /// This is a low-level, unsafe primitive. Misuse can lead to undefined behavior regardless
-    /// of other crate guarantees. For better memory safety, use the safe higher-level APIs
-    /// (e.g., `Engine::encode`).
+    /// Prefer the safe higher-level APIs (e.g. [`Engine::encode`]) unless you need this bypass.
     #[cfg(all(x86_simd, feature = "avx512-vbmi", feature = "unstable"))]
     pub unsafe fn encode_avx512_vbmi(&self, input: &[u8], dst: &mut [u8]) {
         // SAFETY: Caller must uphold the contracts documented on this function.
         unsafe { simd::encode_slice_avx512_vbmi(&self.config, input, dst) }
     }
 
-    /// Decodes a Base64 byte slice using the AVX-512-VBMI SIMD implementation.
-    ///
-    /// This provides raw access to the direct AVX-512-VBMI decoding logic.
+    /// Raw access to the direct AVX-512-VBMI decoding logic.
     ///
     /// # Safety
     ///
-    /// This function is **unsafe** and requires the caller to uphold strict memory contracts.
-    /// Failure to do so will result in **undefined behavior** (e.g., buffer overflow).
+    /// - `dst` must point to a mutable region with at least `(input.len() / 4 + 1) * 3` bytes
+    ///   of capacity. The extra space is required because the quad tier's first three stores
+    ///   are unmasked, each overhanging the 48 bytes it produces by 16 before the next store
+    ///   rewrites that overhang. Prefer [`Engine::decoded_len_estimate`] to compute it.
+    /// - The caller must ensure the target CPU supports the `avx512f`, `avx512bw` and
+    ///   `avx512vbmi` subsets at runtime. Running this without all three causes an illegal
+    ///   instruction crash.
     ///
-    /// - The destination pointer `dst` must be valid and point to a mutable memory region with
-    ///   at least `(input.len() / 4 + 1) * 3` bytes of capacity. The extra space is required
-    ///   because the quad tier's first three stores are unmasked, each overhanging the 48
-    ///   bytes it produces by 16 before the next store rewrites that overhang.
-    ///   - Highly recommended: use `Engine::decoded_len_estimate` to compute length.
-    ///
-    /// - The caller **must** ensure the target CPU supports the `avx512f`, `avx512bw` and
-    ///   `avx512vbmi` instruction subsets at runtime. Executing this function on a CPU
-    ///   without all three will cause an illegal instruction crash.
-    ///
-    /// # Warning
-    ///
-    /// This is a low-level, unsafe primitive. Misuse can lead to undefined behavior regardless
-    /// of other crate guarantees. For better memory safety, use the safe higher-level APIs
-    /// (e.g., `Engine::decode`).
+    /// Prefer the safe higher-level APIs (e.g. [`Engine::decode`]) unless you need this bypass.
     ///
     /// # Errors
     ///
@@ -824,11 +782,10 @@ impl Engine {
         unsafe { simd::decode_slice_avx512_vbmi(&self.config, input, dst) }
     }
 
-    /// Encodes a byte slice into Base64 using the optimized scalar (non-SIMD) algorithm.
+    /// Raw access to the direct scalar encoding logic.
     ///
-    /// This provides raw access to the direct scalar encoding logic. Unlike the SIMD
-    /// accessors, this is a **safe** function: the scalar kernel uses no `unsafe`,
-    /// so every write is bounds-checked.
+    /// Unlike the SIMD accessors, this is a **safe** function: the scalar kernel uses no
+    /// `unsafe`, so every write is bounds-checked.
     ///
     /// # Panics
     ///
@@ -841,14 +798,11 @@ impl Engine {
         scalar::encode_slice(&self.config, input, dst);
     }
 
-    /// Decodes a Base64 byte slice using the optimized scalar (non-SIMD) algorithm.
+    /// Raw access to the direct scalar decoding logic.
     ///
-    /// This provides raw access to the direct scalar decoding logic. Like
-    /// [`Engine::encode_scalar`], it is a **safe** function — the scalar kernel
-    /// contains no `unsafe`, so a too-small `dst` panics on a bounds check rather
-    /// than corrupting memory.
-    ///
-    /// Size `dst` with [`Engine::decoded_len_estimate`].
+    /// Like [`Engine::encode_scalar`], this is a **safe** function — the scalar kernel
+    /// contains no `unsafe`, so a too-small `dst` panics on a bounds check rather than
+    /// corrupting memory. Size `dst` with [`Engine::decoded_len_estimate`].
     ///
     /// # Panics
     ///
@@ -863,46 +817,30 @@ impl Engine {
         scalar::decode_slice(&self.config, input, dst)
     }
 
-    /// Encodes a byte slice into Base64 using the NEON SIMD implementation.
+    /// Raw access to the direct NEON encoding logic.
     ///
     /// # Safety
     ///
-    /// This function is **unsafe** and requires the caller to uphold strict memory contracts.
-    /// Failure to do so will result in **undefined behavior** (e.g., buffer overflow).
+    /// `dst` must point to a mutable region with at least `(input.len() / 4 + 1) * 3` bytes
+    /// of capacity — the extra space is required because the implementation performs
+    /// overlapping writes. Prefer [`Engine::decoded_len_estimate`] to compute it.
     ///
-    /// - The destination pointer `dst` must be valid and point to a mutable memory region with
-    ///   at least `(input.len() / 4 + 1) * 3` bytes of capacity. The extra space is required due
-    ///   to the implementation performing overlapping writes.
-    ///  - Highly recommended: use `Engine::decoded_len_estimate` to compute length.
-    ///
-    /// # Warning
-    ///
-    /// This is a low-level, unsafe primitive. Misuse can lead to undefined behavior regardless
-    /// of other crate guarantees. For better memory safety, use the safe higher-level APIs
-    /// (e.g., `Engine::decode`).
+    /// Prefer the safe higher-level APIs (e.g. [`Engine::decode`]) unless you need this bypass.
     #[cfg(all(target_arch = "aarch64", feature = "neon", feature = "unstable"))]
     pub unsafe fn encode_neon(&self, input: &[u8], dst: &mut [u8]) {
         // SAFETY: Caller must uphold the contracts documented on this function.
         unsafe { simd::encode_slice_neon(&self.config, input, dst) }
     }
 
-    /// Decodes a Base64 byte slice using the NEON SIMD implementation.
+    /// Raw access to the direct NEON decoding logic.
     ///
     /// # Safety
     ///
-    /// This function is **unsafe** and requires the caller to uphold strict memory contracts.
-    /// Failure to do so will result in **undefined behavior** (e.g., buffer overflow).
+    /// `dst` must point to a mutable region with at least `(input.len() / 4 + 1) * 3` bytes
+    /// of capacity — the extra space is required because the implementation performs
+    /// overlapping writes. Prefer [`Engine::decoded_len_estimate`] to compute it.
     ///
-    /// - The destination pointer `dst` must be valid and point to a mutable memory region with
-    ///   at least `(input.len() / 4 + 1) * 3` bytes of capacity. The extra space is required due
-    ///   to the implementation performing overlapping writes.
-    ///  - Highly recommended: use `Engine::decoded_len_estimate` to compute length.
-    ///
-    /// # Warning
-    ///
-    /// This is a low-level, unsafe primitive. Misuse can lead to undefined behavior regardless
-    /// of other crate guarantees. For better memory safety, use the safe higher-level APIs
-    /// (e.g., `Engine::decode`).
+    /// Prefer the safe higher-level APIs (e.g. [`Engine::decode`]) unless you need this bypass.
     ///
     /// # Errors
     ///

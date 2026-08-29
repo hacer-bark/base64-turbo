@@ -6,7 +6,7 @@ use base64_turbo::{
     URL_SAFE_PAD_INDIFFERENT, decode, decoded_len_estimate, encode, encoded_len,
 };
 
-// Reference Crate for Oracle Verification
+// Reference crate for oracle verification.
 use base64::{
     Engine as _,
     engine::general_purpose::{
@@ -102,18 +102,16 @@ fn all_byte_values() -> Vec<u8> {
     (0..=u8::MAX).collect()
 }
 
-/// The "Oracle" Test.
-/// Verifies that base64-turbo output exactly matches the 'base64' crate.
+/// Verifies that `base64-turbo` output exactly matches the `base64` crate, across
+/// both the zero-allocation slice API and (with `std`) the allocating API.
 #[track_caller]
 fn assert_oracle_match(
     input: &[u8],
     turbo_engine: Engine,
     ref_engine: &base64::engine::GeneralPurpose,
 ) {
-    // 1. Reference Truth
     let expected_encoded = ref_engine.encode(input);
 
-    // 2. Test Zero-Allocation API (Slice)
     let mut enc_buf = vec![0u8; encoded_len(input.len(), turbo_engine.encode_padding()).unwrap()];
     let enc_len = turbo_engine
         .encode_slice(input, &mut enc_buf)
@@ -121,31 +119,28 @@ fn assert_oracle_match(
     assert_eq!(
         &enc_buf[..enc_len],
         expected_encoded.as_bytes(),
-        "Slice Encode mismatch"
+        "slice encode mismatch"
     );
 
-    // 3. Test Allocating API (String) [If std enabled]
     #[cfg(feature = "std")]
     {
         let alloc_str = turbo_engine.encode(input);
-        assert_eq!(alloc_str, expected_encoded, "Allocating Encode mismatch");
+        assert_eq!(alloc_str, expected_encoded, "allocating encode mismatch");
     }
 
-    // 4. Test Zero-Allocation Decode (Slice)
-    // Note: We allocate based on estimate, but verify exact write length
+    // Allocated based on the estimate, but the write length is checked exactly.
     let mut dec_buf = vec![0u8; decoded_len_estimate(expected_encoded.len())];
     let dec_len = turbo_engine
         .decode_slice(expected_encoded.as_bytes(), &mut dec_buf)
         .expect("decode_into failed");
-    assert_eq!(&dec_buf[..dec_len], input, "Slice Decode mismatch");
+    assert_eq!(&dec_buf[..dec_len], input, "slice decode mismatch");
 
-    // 5. Test Allocating Decode (Vec) [If std enabled]
     #[cfg(feature = "std")]
     {
         let alloc_vec = turbo_engine
             .decode(&expected_encoded)
             .expect("decode failed");
-        assert_eq!(alloc_vec, input, "Allocating Decode mismatch");
+        assert_eq!(alloc_vec, input, "allocating decode mismatch");
     }
 }
 
@@ -200,13 +195,11 @@ fn test_empty_input() {
     let dec_len = STANDARD.decode_slice(empty, &mut dec_buf).unwrap();
     assert_eq!(dec_len, 0);
 
-    // All configs
     for engine in &[STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD] {
         assert_eq!(engine.encode_slice(empty, &mut enc_buf).unwrap(), 0);
         assert_eq!(engine.decode_slice(empty, &mut dec_buf).unwrap(), 0);
     }
 
-    // Allocating APIs
     #[cfg(feature = "std")]
     {
         assert_eq!(STANDARD.encode(b""), "");
@@ -253,7 +246,7 @@ fn test_decoded_len_estimate() {
         let encoded = REF_STANDARD.encode(&data);
         assert!(
             decoded_len_estimate(encoded.len()) >= n,
-            "Estimate too small for n={n}"
+            "estimate too small for n={n}"
         );
     }
 }
@@ -343,7 +336,7 @@ fn test_reject_invalid_chars() {
         assert_eq!(
             STANDARD.decode_slice(bad, &mut buf),
             Err(Error::InvalidCharacter),
-            "Failed to reject: {bad:?}",
+            "failed to reject: {bad:?}",
         );
     }
 }
@@ -354,8 +347,8 @@ fn test_reject_invalid_length_padding() {
     let mut buf = [0u8; 100];
     for inp in inputs {
         let res = STANDARD.decode_slice(inp, &mut buf);
-        // Can be InvalidLength or InvalidCharacter depending on implementation specifics
-        assert!(res.is_err(), "Should fail on invalid padding/length: {inp}");
+        // Either InvalidLength or InvalidCharacter is acceptable here.
+        assert!(res.is_err(), "should fail on invalid padding/length: {inp}");
     }
 }
 
@@ -463,12 +456,12 @@ fn test_known_values_standard() {
 
     for (input, expected) in cases {
         let len = STANDARD.encode_slice(*input, &mut buf).unwrap();
-        assert_eq!(&buf[..len], expected.as_bytes(), "Encode {input:?}");
+        assert_eq!(&buf[..len], expected.as_bytes(), "encode {input:?}");
 
         let dec_len = STANDARD
             .decode_slice(expected.as_bytes(), &mut dec)
             .unwrap();
-        assert_eq!(&dec[..dec_len], *input, "Decode {expected:?}");
+        assert_eq!(&dec[..dec_len], *input, "decode {expected:?}");
     }
 }
 
@@ -525,15 +518,15 @@ fn test_unstable_apis() {
     let input = random_bytes(1024);
     let expected = REF_STANDARD.encode(&input);
 
-    // --- Scalar (Always Available, and now a safe API) ---
+    // --- Scalar (always available, and a safe API) ---
     {
         let mut dst = vec![0u8; encoded_len(input.len(), true).unwrap()];
         STANDARD.encode_scalar(&input, &mut dst);
-        assert_eq!(&dst, expected.as_bytes(), "Scalar Safe Encode");
+        assert_eq!(&dst, expected.as_bytes(), "scalar: encode mismatch");
 
         let mut dec = vec![0u8; decoded_len_estimate(dst.len())];
         let len = STANDARD.decode_scalar(&dst, &mut dec).unwrap();
-        assert_eq!(&dec[..len], &input, "Scalar Safe Decode");
+        assert_eq!(&dec[..len], &input, "scalar: decode mismatch");
     }
 
     // --- AVX2 ---
@@ -542,14 +535,14 @@ fn test_unstable_apis() {
         unsafe {
             let mut dst = vec![0u8; encoded_len(input.len(), true).unwrap()];
             STANDARD.encode_avx2(&input, &mut dst);
-            assert_eq!(&dst, expected.as_bytes(), "AVX2 Unsafe Encode");
+            assert_eq!(&dst, expected.as_bytes(), "avx2: encode mismatch");
 
             let mut dec = vec![0u8; decoded_len_estimate(dst.len())];
             let len = STANDARD.decode_avx2(&dst, &mut dec).unwrap();
-            assert_eq!(&dec[..len], &input, "AVX2 Unsafe Decode");
+            assert_eq!(&dec[..len], &input, "avx2: decode mismatch");
         }
     } else {
-        println!("Skipping AVX2 Unstable test (hardware unsupported)");
+        println!("skipping AVX2 unstable test (hardware unsupported)");
     }
 
     // --- AVX-512-VBMI ---
@@ -564,14 +557,14 @@ fn test_unstable_apis() {
         unsafe {
             let mut dst = vec![0u8; encoded_len(input.len(), true).unwrap()];
             STANDARD.encode_avx512_vbmi(&input, &mut dst);
-            assert_eq!(&dst, expected.as_bytes(), "AVX512-VBMI Unsafe Encode");
+            assert_eq!(&dst, expected.as_bytes(), "avx512-vbmi: encode mismatch");
 
             let mut dec = vec![0u8; decoded_len_estimate(dst.len())];
             let len = STANDARD.decode_avx512_vbmi(&dst, &mut dec).unwrap();
-            assert_eq!(&dec[..len], &input, "AVX512-VBMI Unsafe Decode");
+            assert_eq!(&dec[..len], &input, "avx512-vbmi: decode mismatch");
         }
     } else {
-        println!("Skipping AVX512-VBMI Unstable test (hardware unsupported)");
+        println!("skipping AVX512-VBMI unstable test (hardware unsupported)");
     }
 
     // --- NEON ---
@@ -580,10 +573,10 @@ fn test_unstable_apis() {
     unsafe {
         let mut dst = vec![0u8; encoded_len(input.len(), true).unwrap()];
         STANDARD.encode_neon(&input, &mut dst);
-        assert_eq!(&dst, expected.as_bytes(), "NEON Unsafe Encode");
+        assert_eq!(&dst, expected.as_bytes(), "neon: encode mismatch");
 
         let mut dec = vec![0u8; decoded_len_estimate(dst.len())];
         let len = STANDARD.decode_neon(&dst, &mut dec).unwrap();
-        assert_eq!(&dec[..len], &input, "NEON Unsafe Decode");
+        assert_eq!(&dec[..len], &input, "neon: decode mismatch");
     }
 }
