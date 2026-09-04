@@ -8,7 +8,7 @@ use base64::engine::general_purpose::{
 use base64::Engine as _;
 
 use base64_turbo::{
-    Engine, Error, decoded_len_estimate, encoded_len,
+    Engine, Error,
     STANDARD as TURBO_STD, STANDARD_NO_PAD as TURBO_STD_NP,
     URL_SAFE as TURBO_URL, URL_SAFE_NO_PAD as TURBO_URL_NP,
 };
@@ -50,9 +50,9 @@ fuzz_target!(|data: &[u8]| {
     assert_eq!(decoded.as_slice(), payload);
 
     // ======================================================================
-    // 2. Zero-allocation APIs (.encode_into / .decode_into)
+    // 2. Slice APIs (.encode_slice / .decode_slice)
     // ======================================================================
-    let enc_len = encoded_len(payload.len(), engine.encode_padding()).unwrap();
+    let enc_len = engine.encoded_len(payload.len()).unwrap();
     let mut enc_buf = vec![0u8; enc_len.max(1)]; // at least 1 to avoid zero-length issues
 
     let written_enc = engine.encode_slice(payload, &mut enc_buf[..enc_len]).unwrap();
@@ -69,15 +69,14 @@ fuzz_target!(|data: &[u8]| {
     }
 
     // Use the encoded length for decode estimate (not payload len)
-    let dec_est = decoded_len_estimate(written_enc);
+    let dec_est = engine.decoded_len_estimate(written_enc);
     let mut dec_buf = vec![0u8; dec_est.max(payload.len() + 16)]; // generously sized for robustness
 
     // Decode valid data
     let written_dec = engine.decode_slice(&enc_buf[..written_enc], &mut dec_buf).unwrap();
     assert_eq!(&dec_buf[..written_dec], payload);
 
-    // Decode arbitrary/invalid data (robustness, must not panic/UB)
-    // Note: We use decode_into with large buffer to test low-level robustness without allocation wrapper
+    // Arbitrary/invalid data must return `Err`, never panic or corrupt memory.
     let _ = engine.decode_slice(payload, &mut dec_buf);
 
     // Insufficient buffer for decoding arbitrary input (must return error, no panic/UB)
@@ -105,7 +104,7 @@ fuzz_target!(|data: &[u8]| {
     // ======================================================================
 
     let valid_encoded = &enc_buf[..written_enc];
-    let arbitrary_dec_est = decoded_len_estimate(payload.len());
+    let arbitrary_dec_est = engine.decoded_len_estimate(payload.len());
 
     // Runs one kernel pair over: encode(payload), decode(valid), decode(arbitrary).
     macro_rules! exercise_kernel {

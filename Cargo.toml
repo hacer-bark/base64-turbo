@@ -56,7 +56,13 @@ expect_used = "deny"
 panic = "deny"
 todo = "deny"
 unimplemented = "deny"
+dbg_macro = "deny"
+exit = "deny"
 redundant_pub_crate = "allow"
+
+[lints.rustdoc]
+all = { level = "deny", priority = -1 }
+broken_intra_doc_links = "deny"
 
 [[bench]]
 name = "encoding_bench"

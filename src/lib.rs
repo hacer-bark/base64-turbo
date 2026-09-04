@@ -70,7 +70,7 @@
 //!
 //! | Feature | Default | Description |
 //! |---------|---------|-------------|
-//! | **`std`** | **Yes** | `String`/`Vec` support. Disable for `no_std` (the `_into` APIs need no allocator). |
+//! | **`std`** | **Yes** | `String`/`Vec` support. Disable for `no_std` (the slice APIs need no allocator). |
 //! | **`avx2`** | **Yes** | AVX2 kernel + runtime detection on `x86`/`x86_64`. Implies `std`. |
 //! | **`avx512-vbmi`** | **Yes** | AVX-512 VBMI fast-path kernel on `x86`/`x86_64`. Implies `std`. |
 //! | **`simd`** | **Yes** | Convenience meta-feature — turns on `avx2` + `avx512-vbmi` at once. |
