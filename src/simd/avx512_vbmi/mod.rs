@@ -15,6 +15,11 @@
 //! on a masked-off element, so the loops need no read-ahead slack and scalar
 //! only ever sees the final partial group.
 //!
+//! Both permutes read their control vector — the 64-byte alphabet for encode,
+//! the low 128 entries of the reverse table for decode — straight out of the
+//! `Config`'s [`Alphabet`](crate::Alphabet), so this kernel serves a custom
+//! alphabet at exactly the speed it serves the built-ins.
+//!
 //! Port 5 is also where the tuning stops. Measured on Sapphire Rapids, both
 //! kernels already dispatch ~1.0 port-5 uops per cycle on an L1-resident input
 //! (`uops_dispatched.port_5_11` within 2% of `cycles`), so the shuffle chain has
@@ -52,28 +57,6 @@ use std::arch::x86_64::{
 };
 
 // --- Compile-time lookup tables ---
-
-/// Base64 alphabet for the `vpermb` encoder lookup.
-const VBMI_ENCODE_STANDARD: [u8; 64] =
-    *b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-const VBMI_ENCODE_URL_SAFE: [u8; 64] =
-    *b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-
-/// 128-byte reverse lookup for the `vpermi2b` decoder: ASCII 0-127 -> 6-bit
-/// index, `0xFF` for invalid.
-const VBMI_DECODE_STANDARD: [u8; 128] = build_decode_lut(&VBMI_ENCODE_STANDARD);
-const VBMI_DECODE_URL_SAFE: [u8; 128] = build_decode_lut(&VBMI_ENCODE_URL_SAFE);
-
-#[allow(clippy::cast_possible_truncation)] // `i` is always < 64, fits in u8
-const fn build_decode_lut(alphabet: &[u8; 64]) -> [u8; 128] {
-    let mut t = [0xFFu8; 128];
-    let mut i = 0;
-    while i < 64 {
-        t[alphabet[i] as usize] = i as u8;
-        i += 1;
-    }
-    t
-}
 
 /// `vpermb` control that gathers 48 input bytes into 8 qwords laid out
 /// `[b2,b1,b0, b5,b4,b3, x,x]`. That puts one big-endian input triple in each
@@ -366,13 +349,11 @@ pub(crate) unsafe fn encode_slice_avx512_vbmi(config: &Config, input: &[u8], dst
     let gather = unsafe { _mm512_loadu_si512(VBMI_ENCODE_GATHER.as_ptr().cast()) };
     let shifts = _mm512_set1_epi64(VBMI_MULTISHIFT);
 
-    // Full 64-byte alphabet in one ZMM; vpermb selects by each index's low 6
-    // bits, so the garbage in each index's top 2 bits needs no masking.
-    let alphabet = if config.url_safe {
-        unsafe { _mm512_loadu_si512(VBMI_ENCODE_URL_SAFE.as_ptr().cast()) }
-    } else {
-        unsafe { _mm512_loadu_si512(VBMI_ENCODE_STANDARD.as_ptr().cast()) }
-    };
+    // Full 64-byte alphabet in one ZMM, straight out of the `Alphabet`; vpermb
+    // selects by each index's low 6 bits, so the garbage in each index's top 2
+    // bits needs no masking. Any alphabet works here — it is pure data.
+    let alphabet =
+        unsafe { _mm512_loadu_si512(config.alphabet.as_bytes().as_ptr().cast::<__m512i>()) };
 
     /// 48 input bytes in a ZMM -> 64 output characters, in three port-5 ops.
     macro_rules! encode_vec {
@@ -489,13 +470,18 @@ struct DecodeLuts {
     pack_l2: __m512i,
     /// `vpermb` control that compresses those triples into 48 output bytes.
     pack: __m512i,
+    /// The alphabet's index-0 character, used to backfill the lanes a masked
+    /// step does not read. It has to come from the alphabet in play: a fixed
+    /// `'A'` would decode to the 0xFF sentinel under an alphabet that lacks it
+    /// and fail validation on padding lanes that carry no input.
+    fill: __m512i,
 }
 
 /// One masked decode step, consuming `take` characters — a whole number of
 /// groups, at most 64 — and writing the `take / 4 * 3` bytes they decode to.
 ///
-/// The lanes past `take` are backfilled with `'A'`, which decodes to index 0, so
-/// they cannot trip validation. Returns this step's validity evidence for the
+/// The lanes past `take` are backfilled with the alphabet's index-0 character,
+/// so they cannot trip validation. Returns this step's validity evidence for the
 /// caller to fold in.
 ///
 /// # Safety
@@ -509,13 +495,8 @@ unsafe fn decode_masked_step(
     take: usize,
 ) -> __m512i {
     let out = take / DEC_GROUP * 3;
-    let v = unsafe {
-        _mm512_mask_loadu_epi8(
-            _mm512_set1_epi8(b'A'.cast_signed()),
-            u64::MAX >> (DEC_VEC_IN - take),
-            src.cast(),
-        )
-    };
+    let v =
+        unsafe { _mm512_mask_loadu_epi8(luts.fill, u64::MAX >> (DEC_VEC_IN - take), src.cast()) };
     let idx = unsafe { zmm_permutex2var_epi8(luts.lut_lo, v, luts.lut_hi) };
     let m = _mm512_maddubs_epi16(idx, luts.pack_l1);
     let p = unsafe { zmm_permutexvar_epi8(luts.pack, _mm512_madd_epi16(m, luts.pack_l2)) };
@@ -634,13 +615,12 @@ pub(crate) unsafe fn decode_slice_avx512_vbmi(
     let mut dst = dst_start;
     let mut rem = input.len();
 
-    // 128-byte reverse LUT across two ZMMs; vpermi2b picks the register by bit
-    // 6 and the byte by the low 6 bits, covering ASCII 0-127 in one lookup.
-    let lut = if config.url_safe {
-        &VBMI_DECODE_URL_SAFE
-    } else {
-        &VBMI_DECODE_STANDARD
-    };
+    // The low 128 entries of the alphabet's reverse table, across two ZMMs;
+    // vpermi2b picks the register by bit 6 and the byte by the low 6 bits,
+    // covering ASCII 0-127 in one lookup. `Alphabet::new` caps characters at
+    // 0x7E, so those 128 entries hold every valid character of any alphabet and
+    // 0xFF everywhere else.
+    let lut = config.alphabet.decode_table();
     let lut_lo = unsafe { _mm512_loadu_si512(lut.as_ptr().cast()) };
     let lut_hi = unsafe { _mm512_loadu_si512(lut.as_ptr().add(64).cast()) };
 
@@ -653,6 +633,7 @@ pub(crate) unsafe fn decode_slice_avx512_vbmi(
         pack_l1,
         pack_l2,
         pack,
+        fill: _mm512_set1_epi8(config.alphabet.as_bytes()[0].cast_signed()),
     };
 
     // A character is bad iff its input byte had bit 7 set (>= 0x80, which

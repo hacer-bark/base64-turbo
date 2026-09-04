@@ -36,6 +36,7 @@ crate — see the [FAQ](#faq).
 
 - [Quick Start](#quick-start)
 - [Zero-Allocation API](#zero-allocation-stack--no_std)
+- [Custom Alphabets](#custom-alphabets)
 - [Feature Flags](#feature-flags)
 - [Compatibility & Stability](#compatibility--stability)
 - [Performance & Architecture](#performance--architecture)
@@ -79,6 +80,51 @@ let dec_len = STANDARD.decode_slice(&enc_buf[..enc_len], &mut dec_buf).unwrap();
 assert_eq!(&dec_buf[..dec_len], input);
 ```
 
+### Custom Alphabets
+
+Any 64-character set works, not just the two RFC 4648 ones. `Alphabet::new` is a `const
+fn`, so the ~12 KiB of lookup tables it derives are built at compile time into a `static`
+and cost nothing at run time:
+
+```rust
+use base64_turbo::{Alphabet, Engine};
+
+// bcrypt / crypt(3): `.` and `/` first, digits after the letters.
+static BCRYPT: Alphabet = match Alphabet::new(
+    b"./ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789",
+) {
+    Some(a) => a,
+    None => unreachable!(),
+};
+static ENGINE: Engine = Engine::custom(&BCRYPT, false); // false = no `=` padding
+
+assert_eq!(ENGINE.encode(b"hello"), "YETqZE6");
+assert_eq!(ENGINE.decode("YETqZE6").unwrap(), b"hello");
+```
+
+`Alphabet::new` returns `None` unless all 64 characters are distinct, printable ASCII
+(`0x21`–`0x7E`) and none of them is `=`, which stays the padding character for every
+alphabet. The ASCII bound is not cosmetic: it is what lets the AVX-512 VBMI decoder
+validate a whole 64-byte vector with one `vpermi2b` against a 128-entry table.
+
+**Which kernels a custom alphabet gets.** The scalar and AVX-512 VBMI kernels are pure
+table lookups, and the tables come out of the `Alphabet`, so a custom alphabet runs on
+both at exactly the speed the built-ins do — same instruction stream, same tiers, only
+different table contents. The AVX2 and NEON kernels compute characters *arithmetically*
+from the RFC 4648 layout, so they cannot serve an arbitrary alphabet; a custom-alphabet
+engine falls back to the scalar kernel on those machines. In short:
+
+| Kernel | Standard / URL-safe | Custom alphabet |
+| :--- | :---: | :---: |
+| Scalar | ✅ | ✅ full speed |
+| AVX512-VBMI | ✅ | ✅ full speed |
+| AVX2 | ✅ | ❌ falls back to scalar |
+| NEON | ✅ | ❌ falls back to scalar |
+
+Passing the standard or URL-safe characters to `Alphabet::new` is recognized as such, so
+routing them through `Engine::custom` keeps every kernel and matches `STANDARD` /
+`URL_SAFE` byte for byte.
+
 ## Feature Flags
 
 Each x86 SIMD kernel is its own knob, so you compile in only what your target CPUs are
@@ -108,7 +154,8 @@ not plan to lower this.
 valid and backward-compatible throughout the `0.3.x` lifecycle.
 
 Output conforms to RFC 4648 — `STANDARD` and `URL_SAFE` are drop-in compatible with the
-`base64` crate. `serde` support is not included, to keep the dependency tree empty.
+`base64` crate, and [custom alphabets](#custom-alphabets) match its `GeneralPurpose`
+engine built over the same characters.
 
 ## Performance & Architecture
 
@@ -124,6 +171,8 @@ branchless.
   input bits directly to the two characters they produce (4 lookups per 6-byte block
   instead of 8); decode folds each character's bit-shift into the table itself, so a
   4-character group is four loads OR-ed together and validation falls out of the same OR.
+  All four tables hang off the engine's `Alphabet`, so selecting one is a pointer load
+  rather than a branch — and an arbitrary alphabet costs nothing extra.
 * **AVX2.** `vpshufb` shuffles contend for port 5, so AND/OR/shift work is interleaved
   onto ports 0/1/5 to keep the shuffle port from bottlenecking. 256-bit registers behave
   as two 128-bit lanes, which a sliding bit-stream must cross — bridged with an offset
@@ -134,12 +183,14 @@ branchless.
   48 bytes: a `vpermb` gather, one `vpmultishiftqb` that extracts all eight 6-bit fields
   at once, then a `vpermb` through the alphabet. Decode looks up characters with
   `vpermi2b` across a 128-byte reverse LUT and folds validity into a single `vpternlogd`
-  OR tree.
+  OR tree. Both permutes read their control vectors straight out of the `Alphabet`, which
+  is why [custom alphabets](#custom-alphabets) run here at full speed.
 * **NEON.** 128-bit `q` registers, 12→16 bytes per encode step. `vqtbl1q_u8` gives the
   same shuffle primitive as `vpshufb`, with full cross-lane access, so no lane-stitching
   is needed. Mandatory on ARMv8-A, hence compile-time dispatch.
 * **Dispatch.** x86 picks AVX-512 VBMI → AVX2 → scalar at runtime (guarding against
-  `SIGILL`); aarch64 picks NEON → scalar at compile time.
+  `SIGILL`); aarch64 picks NEON → scalar at compile time. A custom alphabet skips the
+  AVX2 and NEON arms, since those two derive characters from the RFC 4648 layout.
 
 </details>
 
@@ -341,7 +392,7 @@ crate that raised the bar before us; we measure faster overall on this box and p
 Kani/MIRI/MSan we couldn't find for it. `base64-ng` is a newer entrant we haven't
 benchmarked yet — no speed claim either way until we have numbers. The C libraries still
 get real advantages from unchecked pointer arithmetic and no published verification
-(`turbo-base64` is also GPLv3, against our MIT-or-Apache-2.0) — pick them if you need the
+(`turbo-base64` is also GPLv3, against our 0BSD) — pick them if you need the
 absolute ceiling on unfamiliar hardware and will own the risk.
 
 Also in the space: [vb64](https://crates.io/crates/vb64) (unmaintained),
@@ -372,8 +423,10 @@ gets the same treatment as the x86 kernels.
 **Does this replace the `base64` crate?**
 For most callers, yes — `STANDARD` and `URL_SAFE` are drop-in RFC 4648 compatible. The
 difference is throughput and verification depth (see [Ecosystem](#ecosystem)), not API
-surface. If you need alphabets beyond standard/URL-safe or don't care about the last
-20-80 GiB/s, the `base64` crate is a perfectly reasonable, smaller dependency.
+surface. [Custom alphabets](#custom-alphabets) are supported too, though only the scalar
+and AVX-512 VBMI kernels can serve them. If you need streaming `Read`/`Write` adapters or
+don't care about the last 20-80 GiB/s, the `base64` crate is a perfectly reasonable,
+smaller dependency.
 
 **Why is `unsafe` acceptable here at all?**
 Because vectorized Base64 cannot be written in safe Rust and hit these throughput

@@ -656,7 +656,7 @@ mod kani_verification_avx512_vbmi {
     /// round-trip, which cannot see an encode bug that the decoder inverts.
     fn encode_matches_scalar(url_safe: bool) {
         let config = Config {
-            url_safe,
+            alphabet: crate::alphabet::builtin(url_safe),
             padding: true,
         };
         let input: [u8; ENC_KERNEL_LEN] = kani::any();
@@ -716,7 +716,7 @@ mod kani_verification_avx512_vbmi {
     /// the other. Rejecting it at all is the contract.
     fn decode_matches_scalar<const N: usize, const CAP: usize>() {
         let config = Config {
-            url_safe: kani::any(),
+            alphabet: crate::alphabet::builtin(kani::any()),
             padding: true,
         };
         let input: [u8; N] = kani::any();
@@ -794,7 +794,7 @@ mod kani_verification_avx512_vbmi {
     #[kani::stub(_mm512_mask_storeu_epi8, m::mask_storeu_epi8_model)]
     fn check_vbmi_roundtrip_standard() {
         let config = Config {
-            url_safe: false,
+            alphabet: crate::alphabet::builtin(false),
             padding: true,
         };
         let input: [u8; ROUNDTRIP_LEN] = kani::any();
@@ -1389,19 +1389,19 @@ mod miri_avx512_vbmi_coverage {
     }
 
     const STD: Config = Config {
-        url_safe: false,
+        alphabet: crate::alphabet::builtin(false),
         padding: true,
     };
     const URL: Config = Config {
-        url_safe: true,
+        alphabet: crate::alphabet::builtin(true),
         padding: true,
     };
     const NO_PAD: Config = Config {
-        url_safe: false,
+        alphabet: crate::alphabet::builtin(false),
         padding: false,
     };
     const NO_PAD_URL: Config = Config {
-        url_safe: true,
+        alphabet: crate::alphabet::builtin(true),
         padding: false,
     };
 
@@ -1604,7 +1604,46 @@ mod miri_avx512_vbmi_coverage {
             exact(&NO_PAD, &STANDARD_NO_PAD, len);
         }
     }
+
+    /// A custom alphabet drives the same kernel as the built-ins — both are
+    /// pure `vpermb` / `vpermi2b` table lookups — so what needs covering is the
+    /// one value that is *not* shared: the masked step's backfill character,
+    /// which must come from the alphabet in play. This alphabet contains
+    /// neither `'A'` (the old hard-coded filler) nor `+`/`/`, so a filler
+    /// regression fails validation instead of passing silently.
+    #[test]
+    fn miri_avx512_vbmi_custom_alphabet() {
+        let oracle = base64::engine::GeneralPurpose::new(
+            &base64::alphabet::Alphabet::new(CUSTOM_CHARS).expect("valid oracle alphabet"),
+            base64::engine::general_purpose::PAD,
+        );
+        // Lengths spanning the quad, single and masked tiers, and the masked
+        // decode step that backfills a partial vector.
+        for &len in &[1, 3, 45, 48, 51, 96, 192, 259] {
+            enc(&CUSTOM, &oracle, len);
+            dec(&CUSTOM, &oracle, len);
+            exact(&CUSTOM, &oracle, len);
+        }
+    }
 }
+
+/// The bcrypt/crypt(3) alphabet, shared by the Miri and hardware suites.
+#[cfg(test)]
+const CUSTOM_CHARS: &str = "./ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+
+#[cfg(test)]
+static CUSTOM_ALPHABET: crate::Alphabet =
+    match crate::Alphabet::new(b"./ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789")
+    {
+        Some(a) => a,
+        None => unreachable!(),
+    };
+
+#[cfg(test)]
+const CUSTOM: Config = Config {
+    alphabet: &CUSTOM_ALPHABET,
+    padding: true,
+};
 
 #[cfg(all(test, not(miri)))]
 mod avx512_vbmi_hardware_coverage {
@@ -1625,15 +1664,15 @@ mod avx512_vbmi_hardware_coverage {
         }
 
         let standard = Config {
-            url_safe: false,
+            alphabet: crate::alphabet::builtin(false),
             padding: true,
         };
         let url_safe = Config {
-            url_safe: true,
+            alphabet: crate::alphabet::builtin(true),
             padding: true,
         };
         let no_pad = Config {
-            url_safe: false,
+            alphabet: crate::alphabet::builtin(false),
             padding: false,
         };
 
@@ -1641,6 +1680,27 @@ mod avx512_vbmi_hardware_coverage {
             check_decode_exact(&standard, &STANDARD, decode_slice_avx512_vbmi, len);
             check_decode_exact(&url_safe, &URL_SAFE, decode_slice_avx512_vbmi, len);
             check_decode_exact(&no_pad, &STANDARD_NO_PAD, decode_slice_avx512_vbmi, len);
+        }
+    }
+
+    /// The custom-alphabet round trip from the Miri suite, on real silicon.
+    #[test]
+    fn hw_avx512_vbmi_custom_alphabet() {
+        if !(std::is_x86_feature_detected!("avx512f")
+            && std::is_x86_feature_detected!("avx512bw")
+            && std::is_x86_feature_detected!("avx512vbmi"))
+        {
+            eprintln!("skipping: host CPU lacks AVX-512-VBMI");
+            return;
+        }
+
+        let oracle = base64::engine::GeneralPurpose::new(
+            &base64::alphabet::Alphabet::new(CUSTOM_CHARS).expect("valid oracle alphabet"),
+            base64::engine::general_purpose::PAD,
+        );
+        for &len in &[1, 3, 45, 48, 51, 96, 192, 259, 1001] {
+            crate::simd::testutil::check_encode(&CUSTOM, &oracle, encode_slice_avx512_vbmi, len);
+            check_decode_exact(&CUSTOM, &oracle, decode_slice_avx512_vbmi, len);
         }
     }
 }

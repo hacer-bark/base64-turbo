@@ -91,7 +91,7 @@ struct EncodeConstantsAvx2 {
 
 #[target_feature(enable = "avx2")]
 fn encode_constants_avx2(config: Config) -> EncodeConstantsAvx2 {
-    let translate = if config.url_safe {
+    let translate = if config.alphabet.is_url_safe() {
         _mm256_setr_epi8(
             65, 71, -4, -4, -4, -4, -4, -4, -4, -4, -4, -4, -17, 32, 0, 0, 65, 71, -4, -4, -4, -4,
             -4, -4, -4, -4, -4, -4, -17, 32, 0, 0,
@@ -280,7 +280,7 @@ unsafe fn decode_constants_avx2(config: &Config) -> DecodeConstantsAvx2 {
     // every `lut_lo`, paired with `lut_hi = 0x10` on rows with no valid chars
     // (0, 1, 8..=15). Rows 2..=7 each get a guard bit that `lut_lo` clears only
     // for that row's valid low nibbles.
-    let (lut_lo, lut_hi, lut_roll, eq_char, eq_shift) = if config.url_safe {
+    let (lut_lo, lut_hi, lut_roll, eq_char, eq_shift) = if config.alphabet.is_url_safe() {
         // Guard bits per high nibble: 2=`-`(0x01), 3=digits(0x02),
         // 4/6=`A`-`O`/`a`-`o`(0x04), 5=`P`-`Z`+`_`(0x08), 7=`p`-`z`(0x20).
         // Row 5 breaks symmetry with row 7 (the `_`), so both need own bits.

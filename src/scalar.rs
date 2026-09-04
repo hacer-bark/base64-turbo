@@ -17,65 +17,17 @@
 //!   position shifts into the lookup itself, so decoding a 4-character group is
 //!   four loads OR-ed together, with validation falling out of the same OR.
 //!
-//! That costs 24 KiB of `.rodata` and roughly doubles both kernels. The narrow
-//! `*_ALPHABET` / `*_DECODE_TABLE` tables are still used by the decode tail,
+//! That costs ~12 KiB of `.rodata` per alphabet and roughly doubles both
+//! kernels. The narrow 256-entry decode table is still used by the decode tail,
 //! where a handful of bytes cannot amortize a wide table's cache footprint.
+//! All four tables live in the [`Alphabet`](crate::Alphabet) the `Config`
+//! points at, so a custom alphabet runs this kernel at the same speed as the
+//! built-ins.
 
 #![forbid(unsafe_code)]
-// The rest of the crate threads `&Config` everywhere (dispatch + SIMD); keep the
-// scalar primitives consistent rather than special-casing a by-value `Config`.
 #![allow(clippy::trivially_copy_pass_by_ref)]
 
-use crate::{
-    Config, Error, STANDARD_ALPHABET, STANDARD_DECODE_TABLE, URL_SAFE_ALPHABET,
-    URL_SAFE_DECODE_TABLE,
-};
-
-/// Maps a 12-bit value to the two Base64 characters it encodes, packed
-/// little-endian so the first character lands in the low byte.
-const fn encode_pair_table(alphabet: &[u8; 64]) -> [u16; 4096] {
-    let mut table = [0u16; 4096];
-    let mut i = 0;
-    while i < 4096 {
-        table[i] = (alphabet[i >> 6] as u16) | ((alphabet[i & 0x3F] as u16) << 8);
-        i += 1;
-    }
-    table
-}
-
-static STANDARD_ENCODE_PAIRS: [u16; 4096] = encode_pair_table(STANDARD_ALPHABET);
-static URL_SAFE_ENCODE_PAIRS: [u16; 4096] = encode_pair_table(URL_SAFE_ALPHABET);
-
-/// Reverse lookup with the 6-bit index pre-shifted into its position within a
-/// 24-bit group. Invalid characters map to `u32::MAX`, so OR-ing a whole group
-/// together pushes the result above `0x00FF_FFFF` if any character was bad.
-const fn decode_shift_table(alphabet: &[u8; 64], shift: u32) -> [u32; 256] {
-    let mut table = [u32::MAX; 256];
-    let mut i: u32 = 0;
-    while i < 64 {
-        table[alphabet[i as usize] as usize] = i << shift;
-        i += 1;
-    }
-    table
-}
-
-/// The four position tables as one array, indexed by a character's position
-/// within its 4-character group. Keeping them contiguous matters: as four
-/// separate statics, selecting the alphabet costs four `cmov`s that LLVM hoists
-/// into the function entry even when the fast loop never runs, which is pure
-/// overhead for inputs of a few characters. As one array it is a single `cmov`
-/// plus constant offsets.
-const fn decode_shift_tables(alphabet: &[u8; 64]) -> [[u32; 256]; 4] {
-    [
-        decode_shift_table(alphabet, 18),
-        decode_shift_table(alphabet, 12),
-        decode_shift_table(alphabet, 6),
-        decode_shift_table(alphabet, 0),
-    ]
-}
-
-static STANDARD_DECODE_SHIFTED: [[u32; 256]; 4] = decode_shift_tables(STANDARD_ALPHABET);
-static URL_SAFE_DECODE_SHIFTED: [[u32; 256]; 4] = decode_shift_tables(URL_SAFE_ALPHABET);
+use crate::{Config, Error};
 
 /// Largest value a valid 4-character group can OR to (24 significant bits).
 const GROUP_MAX: u32 = 0x00FF_FFFF;
@@ -91,16 +43,10 @@ const GROUP_MAX: u32 = 0x00FF_FFFF;
 /// `Engine::encode`), which size the buffer automatically.
 #[inline]
 pub(crate) fn encode_slice(config: &Config, input: &[u8], dst: &mut [u8]) {
-    // Select the table based on configuration. This branch predicts perfectly
-    // since config doesn't change during the loop. The tail below reads its
-    // characters out of this same table so that this stays the *only* selection
-    // in the function; a second one is hoisted into the entry block by LLVM and
-    // measurably slows down one- and two-byte inputs, which do no other work.
-    let pairs: &[u16; 4096] = if config.url_safe {
-        &URL_SAFE_ENCODE_PAIRS
-    } else {
-        &STANDARD_ENCODE_PAIRS
-    };
+    // One load, no selection: the alphabet's tables hang off the `Config`, so
+    // there is no per-call branch to hoist and the tail below reads its
+    // characters out of this same table.
+    let pairs: &[u16; 4096] = config.alphabet.pairs();
 
     let len = input.len();
     let blocks = len / 6; // full 6-byte input blocks
@@ -230,11 +176,7 @@ fn decode_slice_impl(
 
     // The table maps valid characters to 0..=63 and invalid characters to 0xFF.
     // It is only needed by the tail; the fast loop uses the pre-shifted tables.
-    let table = if config.url_safe {
-        &URL_SAFE_DECODE_TABLE
-    } else {
-        &STANDARD_DECODE_TABLE
-    };
+    let table = config.alphabet.decode_table();
     // Fast loop bounds: process 8 input bytes -> 6 output bytes per iteration,
     // reserving the last 4 input bytes so the tail can handle padding carefully.
     let len_safe = len.saturating_sub(4);
@@ -242,11 +184,7 @@ fn decode_slice_impl(
     // `len_fast <= len - 4`, so this is always within `decoded_len_estimate`.
     let out_fast = len_fast / 8 * 6;
 
-    let shifted: &[[u32; 256]; 4] = if config.url_safe {
-        &URL_SAFE_DECODE_SHIFTED
-    } else {
-        &STANDARD_DECODE_SHIFTED
-    };
+    let shifted: &[[u32; 256]; 4] = config.alphabet.shifted();
 
     // --- FAST LOOP (Middle Chunks) ---
     // Slicing both sides up front and pairing them with `as_chunks` hoists

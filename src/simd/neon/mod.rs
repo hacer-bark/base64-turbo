@@ -81,7 +81,7 @@ pub(crate) unsafe fn encode_slice_neon(config: &Config, input: &[u8], dst_slice:
     let delta_lower = vdupq_n_s8(6);
     let set_51 = vdupq_n_u8(51);
 
-    let (sym_plus, sym_slash): (i8, i8) = if config.url_safe {
+    let (sym_plus, sym_slash): (i8, i8) = if config.alphabet.is_url_safe() {
         (-88, -39)
     } else {
         (-90, -87)
@@ -186,7 +186,7 @@ unsafe fn decode_constants_neon(config: &Config) -> DecodeConstantsNeon {
     };
 
     // Special character handling
-    let (char_62, char_63) = if config.url_safe {
+    let (char_62, char_63) = if config.alphabet.is_url_safe() {
         (b'-', b'_')
     } else {
         (b'+', b'/')
@@ -194,7 +194,11 @@ unsafe fn decode_constants_neon(config: &Config) -> DecodeConstantsNeon {
     let sym_62 = vdupq_n_u8(char_62);
     let sym_63 = vdupq_n_u8(char_63);
 
-    let (fix_62, fix_63): (i8, i8) = if config.url_safe { (-2, 33) } else { (0, -3) };
+    let (fix_62, fix_63): (i8, i8) = if config.alphabet.is_url_safe() {
+        (-2, 33)
+    } else {
+        (0, -3)
+    };
     let delta_62 = vdupq_n_s8(fix_62);
     let delta_63 = vdupq_n_s8(fix_63);
 

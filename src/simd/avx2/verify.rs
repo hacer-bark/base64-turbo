@@ -334,7 +334,7 @@ mod kani_verification_avx2 {
     /// parameter (not symbolic) since it only selects constant LUTs.
     fn roundtrip_kernel(url_safe: bool) {
         let config = Config {
-            url_safe,
+            alphabet: crate::alphabet::builtin(url_safe),
             padding: true,
         };
         let input: [u8; ENC_KERNEL_LEN] = kani::any();
@@ -395,7 +395,7 @@ mod kani_verification_avx2 {
     #[kani::stub(_mm256_madd_epi16, m::_mm256_madd_epi16_stub)]
     fn check_avx2_decode_matches_scalar() {
         let config = Config {
-            url_safe: kani::any(),
+            alphabet: crate::alphabet::builtin(kani::any()),
             padding: true,
         };
         let input: [u8; DEC_KERNEL_LEN] = kani::any();
@@ -804,7 +804,7 @@ mod miri_avx2_coverage {
     #[test]
     fn miri_avx2_standard() {
         let config = Config {
-            url_safe: false,
+            alphabet: crate::alphabet::builtin(false),
             padding: true,
         };
         for &(len, tier) in TIER_LENGTHS {
@@ -816,7 +816,7 @@ mod miri_avx2_coverage {
     #[test]
     fn miri_avx2_url_safe() {
         let config = Config {
-            url_safe: true,
+            alphabet: crate::alphabet::builtin(true),
             padding: true,
         };
         for &(len, tier) in TIER_LENGTHS {
@@ -828,7 +828,7 @@ mod miri_avx2_coverage {
     #[test]
     fn miri_avx2_no_padding() {
         let config = Config {
-            url_safe: false,
+            alphabet: crate::alphabet::builtin(false),
             padding: false,
         };
         for &(len, tier) in TIER_LENGTHS {
@@ -843,7 +843,7 @@ mod miri_avx2_coverage {
     #[test]
     fn miri_avx2_decode_rejects_invalid() {
         let config = Config {
-            url_safe: false,
+            alphabet: crate::alphabet::builtin(false),
             padding: true,
         };
         let mut dst = [0u8; 512];
@@ -922,7 +922,7 @@ mod avx2_decode_lut_exhaustive {
     #[test]
     fn avx2_lut_standard_matches_scalar() {
         let config = Config {
-            url_safe: false,
+            alphabet: crate::alphabet::builtin(false),
             padding: true,
         };
         check_all_byte_values(&config);
@@ -931,7 +931,7 @@ mod avx2_decode_lut_exhaustive {
     #[test]
     fn avx2_lut_url_safe_matches_scalar() {
         let config = Config {
-            url_safe: true,
+            alphabet: crate::alphabet::builtin(true),
             padding: true,
         };
         check_all_byte_values(&config);
@@ -961,14 +961,14 @@ mod avx2_encode_non_temporal {
             for (config, oracle) in [
                 (
                     Config {
-                        url_safe: false,
+                        alphabet: crate::alphabet::builtin(false),
                         padding: true,
                     },
                     &REF_STANDARD,
                 ),
                 (
                     Config {
-                        url_safe: true,
+                        alphabet: crate::alphabet::builtin(true),
                         padding: true,
                     },
                     &REF_URL_SAFE,
@@ -982,7 +982,7 @@ mod avx2_encode_non_temporal {
                         core::str::from_utf8(&dst[shift..]).unwrap(),
                         expected,
                         "len {len}, url_safe {}, dst shift {shift}",
-                        config.url_safe
+                        config.alphabet.is_url_safe()
                     );
                 }
             }
@@ -1004,7 +1004,7 @@ mod avx2_encode_length_sweep {
     #[test]
     fn avx2_encode_standard_all_lengths_0_to_400() {
         let config = Config {
-            url_safe: false,
+            alphabet: crate::alphabet::builtin(false),
             padding: true,
         };
         for len in 0..=400 {
@@ -1015,7 +1015,7 @@ mod avx2_encode_length_sweep {
     #[test]
     fn avx2_encode_url_safe_all_lengths_0_to_400() {
         let config = Config {
-            url_safe: true,
+            alphabet: crate::alphabet::builtin(true),
             padding: true,
         };
         for len in 0..=400 {
@@ -1026,7 +1026,7 @@ mod avx2_encode_length_sweep {
     #[test]
     fn avx2_encode_large_lengths() {
         let config = Config {
-            url_safe: false,
+            alphabet: crate::alphabet::builtin(false),
             padding: true,
         };
         for len in [1_000, 10_000, 100_000, 1_000_003] {

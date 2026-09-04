@@ -62,6 +62,33 @@
 //! assert_eq!(&output[..len], b"UmF3IGJ5dGVz");
 //! ```
 //!
+//! ### Custom Alphabets
+//!
+//! Any 64-character set works, not only the two RFC 4648 ones. [`Alphabet::new`] is a
+//! `const fn`, so its lookup tables are built at compile time into a `static`:
+//!
+//! ```rust
+//! use base64_turbo::{Alphabet, Engine};
+//!
+//! // bcrypt / crypt(3): `.` and `/` first, digits after the letters.
+//! static BCRYPT: Alphabet = match Alphabet::new(
+//!     b"./ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789",
+//! ) {
+//!     Some(a) => a,
+//!     None => unreachable!(),
+//! };
+//! static ENGINE: Engine = Engine::custom(&BCRYPT, false);
+//!
+//! # #[cfg(feature = "std")] {
+//! assert_eq!(ENGINE.encode(b"hello"), "YETqZE6");
+//! # }
+//! ```
+//!
+//! The scalar and AVX-512 VBMI kernels are table lookups driven by the alphabet, so a
+//! custom one runs on both at full speed. The AVX2 and NEON kernels map characters
+//! arithmetically from the RFC 4648 layout and cannot serve one, so those targets fall
+//! back to the scalar kernel — see [`Engine::custom`].
+//!
 //! ## Feature Flags
 //!
 //! Each x86 SIMD kernel is an independent knob, so a target can compile in only
@@ -119,11 +146,14 @@
 #[doc = include_str!("../README.md")]
 struct ReadmeDoctests;
 
+mod alphabet;
 // Scalar implementation
 mod scalar;
 // SIMD implementations, compiled when any vectorized kernel is enabled.
 #[cfg(unsafe_simd)]
 mod simd;
+
+pub use alphabet::Alphabet;
 
 /// Runtime CPU capability detection for the x86 kernels, resolved once and cached.
 ///
@@ -213,54 +243,14 @@ impl core::fmt::Display for Error {
 impl std::error::Error for Error {}
 
 // ======================================================================
-// Internal Lookup Tables
-// ======================================================================
-
-/// The Standard RFC 4648 Base64 Alphabet.
-/// Used for `STANDARD` and `STANDARD_NO_PAD`.
-const STANDARD_ALPHABET: &[u8; 64] =
-    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-/// Computed compile-time reverse lookup table for the Standard alphabet.
-/// Maps ASCII bytes back to 6-bit indices. 0xFF indicates an invalid character.
-#[allow(clippy::cast_possible_truncation)] // `i` is always < 64, fits in u8
-const STANDARD_DECODE_TABLE: [u8; 256] = {
-    let mut table = [0xFF; 256];
-    let mut i = 0;
-    while i < 64 {
-        table[STANDARD_ALPHABET[i] as usize] = i as u8;
-        i += 1;
-    }
-    table
-};
-
-/// The URL-Safe Base64 Alphabet.
-/// Replaces `+` with `-` and `/` with `_`. Used for `URL_SAFE` and `URL_SAFE_NO_PAD`.
-const URL_SAFE_ALPHABET: &[u8; 64] =
-    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-
-/// Computed compile-time reverse lookup table for the URL-Safe alphabet.
-/// Maps ASCII bytes back to 6-bit indices. 0xFF indicates an invalid character.
-#[allow(clippy::cast_possible_truncation)] // `i` is always < 64, fits in u8
-const URL_SAFE_DECODE_TABLE: [u8; 256] = {
-    let mut table = [0xFF; 256];
-    let mut i = 0;
-    while i < 64 {
-        table[URL_SAFE_ALPHABET[i] as usize] = i as u8;
-        i += 1;
-    }
-    table
-};
-
-// ======================================================================
 // Configuration & Types
 // ======================================================================
 
 /// Internal configuration for the Base64 engine.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Config {
-    /// If true, uses `-` and `_` instead of `+` and `/`.
-    pub url_safe: bool,
+    /// The alphabet and every lookup table the kernels drive from it.
+    pub alphabet: &'static Alphabet,
     /// If true, writes `=` padding characters to the output.
     pub padding: bool,
 }
@@ -303,7 +293,7 @@ pub struct Engine {
 /// Uses the `+` and `/` characters. This is the most common configuration.
 pub const STANDARD: Engine = Engine {
     config: Config {
-        url_safe: false,
+        alphabet: &alphabet::STANDARD_TABLE,
         padding: true,
     },
     decode_padding_indifferent: false,
@@ -315,7 +305,7 @@ pub const STANDARD: Engine = Engine {
 /// Useful for raw data streams or specific protocol requirements.
 pub const STANDARD_NO_PAD: Engine = Engine {
     config: Config {
-        url_safe: false,
+        alphabet: &alphabet::STANDARD_TABLE,
         padding: false,
     },
     decode_padding_indifferent: false,
@@ -326,7 +316,7 @@ pub const STANDARD_NO_PAD: Engine = Engine {
 /// Uses `-` and `_` instead of `+` and `/`. Safe for use in filenames and URLs.
 pub const URL_SAFE: Engine = Engine {
     config: Config {
-        url_safe: true,
+        alphabet: &alphabet::URL_SAFE_TABLE,
         padding: true,
     },
     decode_padding_indifferent: false,
@@ -337,7 +327,7 @@ pub const URL_SAFE: Engine = Engine {
 /// Uses `-` and `_`. Commonly used in JWTs (JSON Web Tokens) and other web standards.
 pub const URL_SAFE_NO_PAD: Engine = Engine {
     config: Config {
-        url_safe: true,
+        alphabet: &alphabet::URL_SAFE_TABLE,
         padding: false,
     },
     decode_padding_indifferent: false,
@@ -346,7 +336,7 @@ pub const URL_SAFE_NO_PAD: Engine = Engine {
 /// Standard Base64 with padding when encoding, accepting padded or unpadded input when decoding.
 pub const STANDARD_PAD_INDIFFERENT: Engine = Engine {
     config: Config {
-        url_safe: false,
+        alphabet: &alphabet::STANDARD_TABLE,
         padding: true,
     },
     decode_padding_indifferent: true,
@@ -355,7 +345,7 @@ pub const STANDARD_PAD_INDIFFERENT: Engine = Engine {
 /// URL-safe Base64 with padding when encoding, accepting padded or unpadded input when decoding.
 pub const URL_SAFE_PAD_INDIFFERENT: Engine = Engine {
     config: Config {
-        url_safe: true,
+        alphabet: &alphabet::URL_SAFE_TABLE,
         padding: true,
     },
     decode_padding_indifferent: true,
@@ -413,6 +403,64 @@ fn into_ascii_string(bytes: Vec<u8>) -> String {
 }
 
 impl Engine {
+    // ======================================================================
+    // Construction
+    // ======================================================================
+
+    /// Builds an engine over a custom [`Alphabet`].
+    ///
+    /// `padding` selects whether encoding appends `=` and whether decoding
+    /// requires it, exactly as it does for the built-in engines; the padding
+    /// character is `=` for every alphabet.
+    ///
+    /// The alphabet must outlive the program because the engines are `Copy` and
+    /// carry no lifetime. [`Alphabet::new`] is a `const fn`, so the usual way
+    /// there is a `static`; an alphabet only known at run time can be given the
+    /// same lifetime with `Box::leak`.
+    ///
+    /// # Performance
+    ///
+    /// A custom alphabet runs on the scalar and AVX-512-VBMI kernels at their
+    /// full speed — both are table lookups, and the tables come from the
+    /// alphabet. The AVX2 and NEON kernels compute characters arithmetically
+    /// from the RFC 4648 layout, so they cannot serve one; those targets fall
+    /// back to the scalar kernel. An alphabet built from the standard or
+    /// URL-safe characters is recognized as such and keeps every kernel.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use base64_turbo::{Alphabet, Engine};
+    ///
+    /// static ORDERED: Alphabet = match Alphabet::new(
+    ///     b"-0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz",
+    /// ) {
+    ///     Some(a) => a,
+    ///     None => unreachable!(),
+    /// };
+    /// static ENGINE: Engine = Engine::custom(&ORDERED, true);
+    ///
+    /// # #[cfg(feature = "std")] {
+    /// let encoded = ENGINE.encode(b"Hello world");
+    /// assert_eq!(ENGINE.decode(&encoded).unwrap(), b"Hello world");
+    /// # }
+    /// ```
+    #[inline]
+    #[must_use]
+    pub const fn custom(alphabet: &'static Alphabet, padding: bool) -> Self {
+        Self {
+            config: Config { alphabet, padding },
+            decode_padding_indifferent: false,
+        }
+    }
+
+    /// The alphabet this engine encodes and decodes with.
+    #[inline]
+    #[must_use]
+    pub const fn alphabet(&self) -> &'static Alphabet {
+        self.config.alphabet
+    }
+
     // ======================================================================
     // Length calculations
     // ======================================================================
@@ -619,7 +667,7 @@ impl Engine {
     // Internal Dispatchers
     // ========================================================================
 
-    // `&self` (a 2-byte Copy `Engine`) is kept by-ref for consistency with the
+    // `&self` (a small Copy `Engine`) is kept by-ref for consistency with the
     // rest of the `Engine` methods, not because the reference is required.
     #[allow(clippy::trivially_copy_pass_by_ref)]
     #[inline]
@@ -640,7 +688,7 @@ impl Engine {
                 return;
             }
             #[cfg(feature = "avx2")]
-            if len >= 32 && tier >= cpu::AVX2 {
+            if len >= 32 && tier >= cpu::AVX2 && self.config.alphabet.has_arithmetic_kernels() {
                 // SAFETY: tier() confirmed AVX2 on this CPU.
                 unsafe { simd::encode_slice_avx2(&self.config, input, dst) };
                 return;
@@ -649,7 +697,7 @@ impl Engine {
 
         // NEON path (aarch64): compile-time dispatch, no runtime detection.
         #[cfg(all(target_arch = "aarch64", feature = "neon"))]
-        if input.len() >= 16 {
+        if input.len() >= 16 && self.config.alphabet.has_arithmetic_kernels() {
             // SAFETY: NEON is baseline on aarch64.
             unsafe { simd::encode_slice_neon(&self.config, input, dst) };
             return;
@@ -680,7 +728,7 @@ impl Engine {
                 return unsafe { simd::decode_slice_avx512_vbmi(&self.config, input, dst) };
             }
             #[cfg(feature = "avx2")]
-            if len >= 36 && tier >= cpu::AVX2 {
+            if len >= 36 && tier >= cpu::AVX2 && self.config.alphabet.has_arithmetic_kernels() {
                 // SAFETY: tier() confirmed AVX2 on this CPU.
                 return unsafe { simd::decode_slice_avx2(&self.config, input, dst) };
             }
@@ -690,7 +738,7 @@ impl Engine {
         // Its single tier is a 16-in/12-out block plus a 4-byte read-ahead
         // margin (see `neon::decode_slice_neon`), so it needs 20 bytes to run.
         #[cfg(all(target_arch = "aarch64", feature = "neon"))]
-        if input.len() >= 20 {
+        if input.len() >= 20 && self.config.alphabet.has_arithmetic_kernels() {
             // SAFETY: NEON is baseline on aarch64.
             return unsafe { simd::decode_slice_neon(&self.config, input, dst) };
         }

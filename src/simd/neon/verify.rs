@@ -17,7 +17,7 @@ mod miri_neon_coverage {
     }
 
     const STD: Config = Config {
-        url_safe: false,
+        alphabet: crate::alphabet::builtin(false),
         padding: true,
     };
 
@@ -47,7 +47,7 @@ mod miri_neon_coverage {
     fn miri_neon_encode_url_safe() {
         enc(
             &Config {
-                url_safe: true,
+                alphabet: crate::alphabet::builtin(true),
                 padding: true,
             },
             &URL_SAFE,
@@ -79,7 +79,7 @@ mod miri_neon_coverage {
     #[test]
     fn miri_neon_decode_url_safe() {
         let config = Config {
-            url_safe: true,
+            alphabet: crate::alphabet::builtin(true),
             padding: false,
         };
         let input = b"-_-_-_-_-_-_-_-_"; // 16 bytes
@@ -117,7 +117,7 @@ mod miri_neon_coverage {
     #[test]
     fn miri_neon_encode_no_padding() {
         let config = Config {
-            url_safe: false,
+            alphabet: crate::alphabet::builtin(false),
             padding: false,
         };
         for &len in &[1, 12, 13, 24, 48, 49] {
@@ -128,7 +128,7 @@ mod miri_neon_coverage {
     #[test]
     fn miri_neon_decode_no_padding() {
         let config = Config {
-            url_safe: false,
+            alphabet: crate::alphabet::builtin(false),
             padding: false,
         };
         for &len in &[3, 12, 13, 24, 48, 49] {
@@ -140,7 +140,7 @@ mod miri_neon_coverage {
     fn miri_neon_decode_url_safe_padded() {
         dec(
             &Config {
-                url_safe: true,
+                alphabet: crate::alphabet::builtin(true),
                 padding: true,
             },
             &URL_SAFE,
