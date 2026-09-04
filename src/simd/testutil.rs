@@ -7,8 +7,6 @@
 //! Which helpers are live depends on the target arch and whether Miri is
 //! running, so unused ones are expected under some build configs.
 #![allow(dead_code)]
-// `&Config` mirrors the production `encode`/`decode` signatures the fn
-// pointers point at, so keep it by-reference here too.
 #![allow(clippy::trivially_copy_pass_by_ref)]
 
 use crate::{Config, Error};
