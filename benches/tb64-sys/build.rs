@@ -34,25 +34,32 @@ fn main() {
         src.join("turbob64.h").display()
     );
 
+    let out = PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
     let arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
-    // Upstream builds `turbob64v128.c` twice on x86_64 (SSSE3 and AVX), which is why the
-    // same file appears under two group names: each group gets its own object directory.
-    let groups: &[(&str, &[&str], &[&str])] = match arch.as_str() {
-        "x86_64" => &[
-            ("v128", &["turbob64v128.c"], &["-mssse3"]),
+
+    let groups: Vec<(Vec<PathBuf>, &[&str])> = match arch.as_str() {
+        "x86_64" => vec![
+            (vec![src.join("turbob64v128.c")], &["-mssse3"]),
+            // Upstream compiles turbob64v128.c a second time as an AVX build; the file
+            // renames its own symbols under `__AVX__`. It is copied to a distinct name
+            // first because two archive members may not share one: the linker resolves
+            // the symbol index by member name, and would silently pick the AVX object,
+            // which omits everything guarded by `#ifndef __AVX__` — `tb64ini`, `_tb64e`,
+            // `_tb64d`, `cpuini`, `cpustr`.
             (
-                "v128a",
-                &["turbob64v128.c"],
+                vec![copy_to(
+                    &src.join("turbob64v128.c"),
+                    &out.join("turbob64v128a.c"),
+                )],
                 &["-march=corei7-avx", "-mtune=corei7-avx", "-mno-aes"],
             ),
-            ("v256", &["turbob64v256.c"], &["-march=haswell"]),
+            (vec![src.join("turbob64v256.c")], &["-march=haswell"]),
             (
-                "v512",
-                &["turbob64v512.c"],
+                vec![src.join("turbob64v512.c")],
                 &["-march=skylake-avx512", "-mavx512vbmi"],
             ),
         ],
-        "aarch64" => &[("v128", &["turbob64v128.c"], &["-march=armv8-a"])],
+        "aarch64" => vec![(vec![src.join("turbob64v128.c")], &["-march=armv8-a"])],
         other => {
             skip(&format!(
                 "Turbo-Base64 has no kernel set wired up for target arch `{other}`"
@@ -61,17 +68,43 @@ fn main() {
         }
     };
 
-    let out = PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
-    let mut objects = compile(&src, &out, "base", &["turbob64c.c", "turbob64d.c"], &[]);
-    for (name, files, flags) in groups {
-        objects.extend(compile(&src, &out, name, files, flags));
+    let mut objects = compile(
+        &src,
+        &[src.join("turbob64c.c"), src.join("turbob64d.c")],
+        &[],
+    );
+    for (files, flags) in &groups {
+        objects.extend(compile(&src, files, flags));
     }
     // The FFI floor control is ours, and is deliberately built with the same compiler and
     // flags as the base unit so its call costs what a tb64 call costs.
-    objects.extend(compile(&manifest, &out, "floor", &["src/ffi_floor.c"], &[]));
+    objects.extend(compile(&src, &[manifest.join("src/ffi_floor.c")], &[]));
 
+    assert_unique(&objects);
     cc::Build::new().objects(objects).compile("tb64");
     println!("cargo::rustc-cfg=tb64");
+}
+
+/// Copies `from` to `to`, returning `to`. Used to give the second build of a source file
+/// an object name of its own.
+fn copy_to(from: &Path, to: &Path) -> PathBuf {
+    std::fs::copy(from, to)
+        .unwrap_or_else(|e| panic!("cannot copy {} to {}: {e}", from.display(), to.display()));
+    to.to_path_buf()
+}
+
+/// Two archive members sharing a file name link in a way that depends on the linker, so
+/// refuse to build one rather than debug it later.
+fn assert_unique(objects: &[PathBuf]) {
+    let mut names: Vec<_> = objects.iter().filter_map(|o| o.file_name()).collect();
+    names.sort_unstable();
+    let before = names.len();
+    names.dedup();
+    assert_eq!(
+        before,
+        names.len(),
+        "duplicate object file names in libtb64.a"
+    );
 }
 
 /// `TB64_SRC`, else the default checkout path, else nothing.
@@ -85,17 +118,16 @@ fn skip(reason: &str) {
     println!("cargo::warning={reason}; the tb64 benchmark candidates are disabled.");
 }
 
-fn compile(dir: &Path, out: &Path, name: &str, files: &[&str], flags: &[&str]) -> Vec<PathBuf> {
+fn compile(include: &Path, files: &[PathBuf], flags: &[&str]) -> Vec<PathBuf> {
     let mut build = cc::Build::new();
     build
-        .out_dir(out.join(name))
-        .include(dir)
+        .include(include)
         .opt_level(3)
         .define("NDEBUG", None)
         .flag("-fstrict-aliasing")
         .warnings(false)
         .cargo_metadata(false)
-        .files(files.iter().map(|f| dir.join(f)));
+        .files(files);
 
     // Upstream adds this for gcc only; clang rejects it.
     if !build.get_compiler().is_like_clang() {

@@ -109,6 +109,7 @@ pub(crate) fn decode(alphabet: &Alphabet, input: &[u8], dst: &mut [u8]) -> Resul
 }
 
 #[cfg(test)]
+#[cfg(not(miri))]
 mod tests {
     use super::*;
     use crate::Config;
