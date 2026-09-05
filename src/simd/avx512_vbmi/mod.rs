@@ -2,8 +2,7 @@
 //! `vpermi2b` replace the plain AVX-512F/BW arithmetic character mapping, and
 //! `vpmultishiftqb` replaces the encoder's shift/mask chain outright.
 //!
-//! Both kernels are bound by port 5 (every byte permute issues there), so the
-//! design goal is simply to retire fewer ops per vector:
+//! The design goal is to retire fewer ops per vector:
 //!
 //! * encode: gather -> `vpmultishiftqb` -> alphabet `vpermb` is 3 ops per
 //!   48-byte vector, down from 6.
@@ -13,18 +12,34 @@
 //! Both also run their remainder through masked vector passes rather than
 //! handing tens of bytes to the scalar kernel; a masked `vmovdqu8` cannot fault
 //! on a masked-off element, so the loops need no read-ahead slack and scalar
-//! only ever sees the final partial group.
+//! only ever sees the final group — and even that is placed here, by
+//! [`encode_final_group`] / [`decode_final_group`], because entering the scalar
+//! kernel for one group cost a flat ~20 cycles (decode) and ~6-9 (encode),
+//! which is half the cost of a 128-byte decode and 40% of a 512-byte one.
 //!
 //! Both permutes read their control vector — the 64-byte alphabet for encode,
 //! the low 128 entries of the reverse table for decode — straight out of the
 //! `Config`'s [`Alphabet`](crate::Alphabet), so this kernel serves a custom
 //! alphabet at exactly the speed it serves the built-ins.
 //!
-//! Port 5 is also where the tuning stops. Measured on Sapphire Rapids, both
-//! kernels already dispatch ~1.0 port-5 uops per cycle on an L1-resident input
-//! (`uops_dispatched.port_5_11` within 2% of `cycles`), so the shuffle chain has
-//! no slack left to reclaim and the only thing still on the table is the write
-//! stream — see [`NONTEMPORAL_MIN`].
+//! Where the tuning stops is microarchitecture-specific, and the two vendors
+//! measured so far do not agree:
+//!
+//! * **Sapphire Rapids** — both kernels are bound by port 5, where every byte
+//!   permute issues, dispatching ~1.0 port-5 uops per cycle on an L1-resident
+//!   input (`uops_dispatched.port_5_11` within 2% of `cycles`).
+//! * **Zen 5** (EPYC 9R45) — port 5 is an Intel structure and the model does not
+//!   carry over. The decoder is *FP-dispatch* bound: ~8 FP ops per 64-character
+//!   vector at 3.98 dispatched per cycle, a flat ceiling. The encoder is neither
+//!   — it is **store bound**, spending 33% of its cycles in dispatch stalls on
+//!   store-queue tokens (`de_dispatch_stall_cycle_dynamic_tokens_part1.store_queue_rsrc_stall`)
+//!   because it writes 4/3 of what it reads, while FP-scheduler stalls are under
+//!   0.5%. Unroll factor was swept there (1/2/4/8) and 4 is the best of them.
+//!
+//! Either way the shuffle chain itself has no slack left to reclaim, and past
+//! L2 both kernels sit on memory bandwidth — on Zen 5 each moves ~73 GiB/s of
+//! total traffic, encode at 7/3 bytes per input byte and decode at 7/4. The only
+//! thing still on the table there is the write stream — see [`NONTEMPORAL_MIN`].
 
 use crate::{Config, Error};
 
@@ -223,6 +238,21 @@ const LOW_48: u64 = (1u64 << DEC_VEC_OUT) - 1;
 /// 2 MiB L2) against a flushed destination, this is worth +33% at 512 KiB
 /// rising to +44% at 16 MiB for the encoder, and +33% to +41% for the decoder.
 ///
+/// That figure is not portable. On Zen 5 (c8a.large, 1 MiB L2, 8 MiB L3) the
+/// same flushed-destination measurement gives the decoder +6.6% at the threshold
+/// rising to ~+10%, and the encoder essentially nothing (−0.7% to +2.9%).
+///
+/// It is also conditional on the destination being *cold*, which is the case
+/// this constant was tuned for and the case `Engine::encode` produces by
+/// allocating. A caller that reuses one large resident buffer inverts the sign
+/// hard — measured −77% to −147% (encode) and −18% to −124% (decode) on Zen 5,
+/// because streaming throws away an L2 hit and goes to DRAM. No threshold value
+/// fixes that; the kernel cannot see residency.
+///
+/// One wrinkle worth knowing: this is compared against `rem`, which is input
+/// *bytes* in the encoder but input *characters* in the decoder, so one constant
+/// gates two different working-set footprints (7/3·E against 7/4·C).
+///
 /// Below the threshold it is a large *loss* — the destination still lives in
 /// L2, and streaming it to DRAM instead measured -21% (encode) and -17%
 /// (decode) at a 256 KiB input. The crossover sits between 256 and 512 KiB for
@@ -335,6 +365,119 @@ fn sfence() {
     unsafe {
         _mm_sfence();
     }
+}
+
+/// Encodes the trailing one- or two-byte group without entering the scalar
+/// kernel.
+///
+/// The masked tier consumes every whole triple, so this is all that can be left,
+/// and the handoff costs more than the work: entering `scalar::encode_slice` to
+/// place two bytes measured 6-9 cycles on Zen 5, which a 128-byte encode has
+/// nothing to hide behind.
+///
+/// Returns `false` without writing if `dst` has no room, leaving the caller to
+/// fall back to the scalar kernel.
+///
+/// # Safety
+/// `src` must have `left` readable bytes, and `left` must be 1 or 2.
+#[inline]
+unsafe fn encode_final_group(
+    config: &Config,
+    src: *const u8,
+    dst: *mut u8,
+    left: usize,
+    room: usize,
+) -> bool {
+    let out = if config.padding { 4 } else { left + 1 };
+    if out > room {
+        return false;
+    }
+    let a = config.alphabet.as_bytes();
+    let b0 = unsafe { *src };
+    let b1 = if left == 2 { unsafe { *src.add(1) } } else { 0 };
+    let n = (u32::from(b0) << 16) | (u32::from(b1) << 8);
+    unsafe {
+        *dst = a[(n >> 18) as usize & 0x3F];
+        *dst.add(1) = a[(n >> 12) as usize & 0x3F];
+        if left == 2 {
+            *dst.add(2) = a[(n >> 6) as usize & 0x3F];
+        }
+        if config.padding {
+            if left == 1 {
+                *dst.add(2) = b'=';
+            }
+            *dst.add(3) = b'=';
+        }
+    }
+    true
+}
+
+/// Decodes the trailing four-character group without entering the scalar kernel.
+///
+/// Every tier stops at least [`DEC_LEAD`] short of the end, so the scalar kernel
+/// is otherwise entered on *every* call just to place one group -- a flat ~20
+/// cycles on Zen 5, which is half the cost of a 128-byte decode and 40% of a
+/// 512-byte one.
+///
+/// Only the plain four-character shape is handled, which is what every
+/// well-formed padded input ends with. Anything else -- an unpadded remainder, a
+/// misplaced `=`, a destination with no room -- returns `None` so the caller
+/// falls back to the scalar kernel, which keeps sole ownership of the padding
+/// and length rules.
+///
+/// On success returns the number of bytes written (1, 2 or 3).
+///
+/// # Safety
+/// `src` must have four readable characters.
+#[inline]
+unsafe fn decode_final_group(
+    config: &Config,
+    src: *const u8,
+    dst: *mut u8,
+    room: usize,
+) -> Option<Result<usize, Error>> {
+    let c0 = unsafe { *src };
+    let c1 = unsafe { *src.add(1) };
+    let c2 = unsafe { *src.add(2) };
+    let c3 = unsafe { *src.add(3) };
+    // `=` is legal only as the last one or two characters, and only for a config
+    // that pads at all.
+    let pad = usize::from(c2 == b'=') + usize::from(c3 == b'=');
+    let shape_ok = c0 != b'=' && c1 != b'=' && (c2 != b'=' || c3 == b'=');
+    if !shape_ok || (pad > 0 && !config.padding) || 3 - pad > room {
+        return None;
+    }
+    let t = config.alphabet.decode_table();
+    let d0 = t[usize::from(c0)];
+    let d1 = t[usize::from(c1)];
+    let d2 = if c2 == b'=' { 0 } else { t[usize::from(c2)] };
+    let d3 = if c3 == b'=' { 0 } else { t[usize::from(c3)] };
+    // Valid entries are 0..=63 and the sentinel is 0xFF, so one test on the OR
+    // covers all four.
+    if (d0 | d1 | d2 | d3) >= 0x80 {
+        return Some(Err(Error::InvalidCharacter));
+    }
+    // A padded group must be canonical: the bits the dropped byte(s) would have
+    // carried have to be zero. `XX==` keeps only the top two bits of `d1`, and
+    // `XXX=` only the top four of `d2`. The scalar kernel rejects a group that
+    // sets the rest, so this path has to as well or the two disagree.
+    if (pad == 2 && d1 & 0x0F != 0) || (pad == 1 && d2 & 0x03 != 0) {
+        return Some(Err(Error::InvalidCharacter));
+    }
+    let n = (u32::from(d0) << 18) | (u32::from(d1) << 12) | (u32::from(d2) << 6) | u32::from(d3);
+    // The triple sits in bits 0..23, so big-endian bytes 1..3 are exactly the
+    // output and no truncating cast is needed.
+    let b = n.to_be_bytes();
+    unsafe {
+        *dst = b[1];
+        if pad < 2 {
+            *dst.add(1) = b[2];
+        }
+        if pad == 0 {
+            *dst.add(2) = b[3];
+        }
+    }
+    Some(Ok(3 - pad))
 }
 
 // --- VBMI encoder ---
@@ -452,6 +595,18 @@ pub(crate) unsafe fn encode_slice_avx512_vbmi(config: &Config, input: &[u8], dst
     // Scalar now sees at most the final 1-2 bytes, plus whatever padding the
     // config asks for.
     let dst_off = unsafe { dst.offset_from(dst_start) }.cast_unsigned();
+
+    // The masked tier above runs until fewer than three bytes are left, so `rem`
+    // already *is* the size of the final partial group. Reading it beats
+    // recovering the same number from the pointers, which is what the scalar
+    // handoff does on entry.
+    debug_assert!(rem < ENC_GROUP);
+    if rem == 0 {
+        return;
+    }
+    if unsafe { encode_final_group(config, src, dst, rem, dst_slice.len() - dst_off) } {
+        return;
+    }
     unsafe { super::tail::encode(config, input, src, dst_slice, dst_off) };
 }
 
@@ -745,6 +900,12 @@ pub(crate) unsafe fn decode_slice_avx512_vbmi(
     }
 
     let dst_off = unsafe { dst.offset_from(dst_start) }.cast_unsigned();
+    let done = unsafe { src.offset_from(input.as_ptr()) }.cast_unsigned();
+    if input.len() - done == DEC_GROUP
+        && let Some(r) = unsafe { decode_final_group(config, src, dst, dst_slice.len() - dst_off) }
+    {
+        return r.map(|written| dst_off + written);
+    }
     unsafe { super::tail::decode(config, input, src, dst_slice, dst_off) }
 }
 

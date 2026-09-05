@@ -680,8 +680,16 @@ impl Engine {
             // Smart degrade by length: a kernel is only worth entering once the
             // input fills its vector width. AVX2's single tier runs from 32
             // bytes up.
+            //
+            // VBMI starts far earlier than that. Its masked tiers and inline
+            // final group mean a short input costs little more than the table
+            // setup, and racing the two kernels directly on Zen 5 puts the
+            // encode crossover between 8 and 12 bytes: at 12 bytes VBMI is
+            // already 20% ahead, at 16 bytes 28%, at 24 bytes 45%. 16 keeps
+            // margin over the measured crossover, since this constant is shared
+            // with Intel parts that were not measured.
             #[cfg(feature = "avx512-vbmi")]
-            if len >= 32 && tier == cpu::AVX512_VBMI {
+            if len >= 16 && tier == cpu::AVX512_VBMI {
                 // VBMI fast-path: vpermb replaces the 8-instruction char mapping.
                 // SAFETY: tier() confirmed AVX-512F/BW/VBMI on this CPU.
                 unsafe { simd::encode_slice_avx512_vbmi(&self.config, input, dst) };
@@ -720,9 +728,16 @@ impl Engine {
             let tier = cpu::tier();
 
             // As in `encode_dispatch`, the masked tails let VBMI start earlier
-            // than AVX2.
+            // than AVX2. `len` is characters here.
+            //
+            // This one has to be measured through the allocating API, not by
+            // racing the two kernels in a loop: back to back, VBMI already wins
+            // at 24 characters, but interleaved with an allocation the way a
+            // real caller runs it, 24 characters is 23% *slower* and only 28 and
+            // up come out ahead (+7%). A tight loop keeps the lookup vectors and
+            // the branch history hot in a way that one short call does not.
             #[cfg(feature = "avx512-vbmi")]
-            if len >= 32 && tier == cpu::AVX512_VBMI {
+            if len >= 28 && tier == cpu::AVX512_VBMI {
                 // VBMI fast-path: vpermi2b collapses decode+validate to ~4 instructions.
                 // SAFETY: tier() confirmed AVX-512F/BW/VBMI on this CPU.
                 return unsafe { simd::decode_slice_avx512_vbmi(&self.config, input, dst) };

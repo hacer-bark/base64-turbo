@@ -58,31 +58,33 @@ pub(crate) fn encode_slice(config: &Config, input: &[u8], dst: &mut [u8]) {
     let (out_main, out_tail) = dst.split_at_mut(blocks * 8);
 
     // --- MAIN LOOP ---
-    // Process 6 input bytes -> 8 output bytes per iteration.
-    for (chunk, out) in in_main
-        .as_chunks::<6>()
-        .0
-        .iter()
-        .zip(out_main.as_chunks_mut::<8>().0.iter_mut())
-    {
-        // Read two overlapping big-endian u32s to avoid complex shifting logic.
-        // `first_chunk`/`last_chunk` (bytes 0..4 and 2..6 of a 6-byte chunk) are
-        // what let LLVM emit two 32-bit loads here; indexing the chunk
-        // byte-by-byte instead compiles to a `movzbl`-and-shift pile. Neither
-        // can be `None`, and both fold away once the chunk length is known.
-        let reg_a = u32::from_be_bytes(chunk.first_chunk::<4>().copied().unwrap_or_default());
-        let reg_b = u32::from_be_bytes(chunk.last_chunk::<4>().copied().unwrap_or_default());
-
-        let n1 = (reg_a >> 8) as usize; // Bytes 0, 1, 2
-        let n2 = (reg_b & 0x00_FF_FF_FF) as usize; // Bytes 3, 4, 5
-
-        // Two 12-bit halves per group, two characters per lookup. Emitting two
-        // 32-bit stores rather than assembling one u64 keeps the OR chain short.
-        let lo = u32::from(pairs[n1 >> 12]) | (u32::from(pairs[n1 & 0xFFF]) << 16);
-        let hi = u32::from(pairs[n2 >> 12]) | (u32::from(pairs[n2 & 0xFFF]) << 16);
-
-        out[0..4].copy_from_slice(&lo.to_le_bytes());
-        out[4..8].copy_from_slice(&hi.to_le_bytes());
+    // Two blocks per iteration once the input is long enough to pay for the
+    // wider setup, and the original one-block loop below that.
+    //
+    // The wide form lives out of line on purpose. Inlining it here grows
+    // `encode_slice` enough to push `Engine::encode` past LLVM's inlining
+    // threshold, turning the whole allocating API into an out-of-line call --
+    // worth -8% on an 8- or 12-byte encode, which never reaches the wide loop at
+    // all. Keeping it behind a call leaves the short path exactly as small as it
+    // was, and a call amortised over 8+ blocks costs the long path nothing.
+    if blocks >= 8 {
+        encode_main_wide(pairs, in_main, out_main);
+    } else {
+        for (chunk, out) in in_main
+            .as_chunks::<6>()
+            .0
+            .iter()
+            .zip(out_main.as_chunks_mut::<8>().0.iter_mut())
+        {
+            let reg_a = u32::from_be_bytes(chunk.first_chunk::<4>().copied().unwrap_or_default());
+            let reg_b = u32::from_be_bytes(chunk.last_chunk::<4>().copied().unwrap_or_default());
+            let n1 = (reg_a >> 8) as usize;
+            let n2 = (reg_b & 0x00_FF_FF_FF) as usize;
+            let lo = u32::from(pairs[n1 >> 12]) | (u32::from(pairs[n1 & 0xFFF]) << 16);
+            let hi = u32::from(pairs[n2 >> 12]) | (u32::from(pairs[n2 & 0xFFF]) << 16);
+            out[0..4].copy_from_slice(&lo.to_le_bytes());
+            out[4..8].copy_from_slice(&hi.to_le_bytes());
+        }
     }
 
     // --- TAIL HANDLING ---
@@ -133,6 +135,64 @@ pub(crate) fn encode_slice(config: &Config, input: &[u8], dst: &mut [u8]) {
             out_tail[oi + 2] = b'=';
             out_tail[oi + 3] = b'=';
         }
+    }
+}
+
+/// The encoder's two-blocks-per-iteration main loop, for inputs with at least
+/// eight whole blocks in them.
+///
+/// `in_main` is a whole number of 6-byte blocks and `out_main` the matching
+/// 8-byte outputs; both are consumed entirely. Out of line so that
+/// [`encode_slice`] stays small enough for `Engine::encode` to keep inlining it
+/// -- see the comment at the call site. Measured on Zen 5 at +6% for 384 bytes
+/// rising to +10% from 4 KiB up, against the one-block loop.
+#[inline(never)]
+fn encode_main_wide(pairs: &[u16; 4096], in_main: &[u8], out_main: &mut [u8]) {
+    let pairs_of_blocks = in_main.len() / 12;
+    let (in_wide, in_rest) = in_main.split_at(pairs_of_blocks * 12);
+    let (out_wide, out_rest) = out_main.split_at_mut(pairs_of_blocks * 16);
+
+    for (chunk, out) in in_wide
+        .as_chunks::<12>()
+        .0
+        .iter()
+        .zip(out_wide.as_chunks_mut::<16>().0.iter_mut())
+    {
+        // Two overlapping big-endian `u32`s per block, as in the single-block
+        // form: `first_chunk`/`last_chunk` are what let LLVM emit 32-bit loads
+        // instead of a `movzbl`-and-shift pile.
+        let a0 = u32::from_be_bytes(chunk.first_chunk::<4>().copied().unwrap_or_default());
+        let b0 = u32::from_be_bytes(chunk[2..6].first_chunk::<4>().copied().unwrap_or_default());
+        let a1 = u32::from_be_bytes(chunk[6..10].first_chunk::<4>().copied().unwrap_or_default());
+        let b1 = u32::from_be_bytes(chunk[8..12].first_chunk::<4>().copied().unwrap_or_default());
+
+        let n1 = (a0 >> 8) as usize;
+        let n2 = (b0 & 0x00_FF_FF_FF) as usize;
+        let n3 = (a1 >> 8) as usize;
+        let n4 = (b1 & 0x00_FF_FF_FF) as usize;
+
+        let w0 = u32::from(pairs[n1 >> 12]) | (u32::from(pairs[n1 & 0xFFF]) << 16);
+        let w1 = u32::from(pairs[n2 >> 12]) | (u32::from(pairs[n2 & 0xFFF]) << 16);
+        let w2 = u32::from(pairs[n3 >> 12]) | (u32::from(pairs[n3 & 0xFFF]) << 16);
+        let w3 = u32::from(pairs[n4 >> 12]) | (u32::from(pairs[n4 & 0xFFF]) << 16);
+
+        out[0..4].copy_from_slice(&w0.to_le_bytes());
+        out[4..8].copy_from_slice(&w1.to_le_bytes());
+        out[8..12].copy_from_slice(&w2.to_le_bytes());
+        out[12..16].copy_from_slice(&w3.to_le_bytes());
+    }
+
+    // At most one 6-byte block is left over.
+    if let (Some(chunk), Some(out)) = (in_rest.first_chunk::<6>(), out_rest.first_chunk_mut::<8>())
+    {
+        let reg_a = u32::from_be_bytes(chunk.first_chunk::<4>().copied().unwrap_or_default());
+        let reg_b = u32::from_be_bytes(chunk.last_chunk::<4>().copied().unwrap_or_default());
+        let n1 = (reg_a >> 8) as usize;
+        let n2 = (reg_b & 0x00_FF_FF_FF) as usize;
+        let lo = u32::from(pairs[n1 >> 12]) | (u32::from(pairs[n1 & 0xFFF]) << 16);
+        let hi = u32::from(pairs[n2 >> 12]) | (u32::from(pairs[n2 & 0xFFF]) << 16);
+        out[0..4].copy_from_slice(&lo.to_le_bytes());
+        out[4..8].copy_from_slice(&hi.to_le_bytes());
     }
 }
 
