@@ -18,6 +18,12 @@ pub(crate) use neon::{decode_slice_neon, encode_slice_neon};
 #[cfg(test)]
 mod testutil;
 
+// The naive oracle the Kani kernel proofs check the vector kernels against.
+// Compiled under `test` as well so the ordinary build still type-checks it and
+// its own differential test can pin it to the scalar kernel.
+#[cfg(any(kani, test))]
+mod refcodec;
+
 /// Shared SIMD -> scalar handoff. Each backend runs its vectorized loops, then
 /// calls these with the pointer/offset state they left off at; `src` points at
 /// the first unconsumed input byte and `dst_off` is how many bytes the loops

@@ -258,10 +258,12 @@ that cover each other's blind spots.
 | **AVX512-VBMI** | ✅ | ✅ | ✅ | ✅ |
 | **NEON** | ✅ | ✅ | ❌ | ❌ |
 
-* **Kani** proves the kernels don't panic, don't read/write out of bounds, and produce the
-  right bytes — AVX512-VBMI's encoder against RFC 4648 §4 transcribed directly, AVX2's
-  pair against a round-trip. For AVX2 and AVX512-VBMI the bounds result holds for *every*
-  input length, by a machine-checked induction over the loop's offset arithmetic.
+* **Kani** proves the kernels don't panic, don't read/write out of bounds, and agree —
+  bytes decoded and inputs rejected alike — with a naive safe-Rust transcription of
+  RFC 4648 (`src/simd/refcodec.rs`), which shares no code with either kernel and is itself
+  pinned to the scalar kernel by a test. For AVX2 and AVX512-VBMI the bounds result holds
+  for *every* input length, by a machine-checked induction over the loop's offset
+  arithmetic.
 * **MIRI** catches Undefined Behavior (provenance, alignment, OOB pointer arithmetic,
   data races) on every distinct code path — single-vector loop, wide unrolled loop,
   masked tail, scalar tail, non-temporal tier — for Scalar, AVX2 and AVX512-VBMI. Branch
@@ -315,10 +317,11 @@ proofs plus a runtime re-test on the loop guard.
    but a green tick is not by itself evidence that the models were checked against
    silicon that run.
 4. Kani harnesses run only if `verification.yml` names them, and that list is
-   hand-maintained. `check_vbmi_roundtrip_standard` is deliberately not in it — it
-   carries the encoder's symbolic output through the decoder, far more state than
-   starting from free bytes — and is meant to be run by hand when either kernel changes
-   shape.
+   hand-maintained. The round-trip harnesses (`check_vbmi_roundtrip_standard`,
+   `check_avx2_roundtrip_*`) are deliberately not in it — they carry the encoder's
+   symbolic output through the decoder, far more state than starting from free bytes,
+   and the `matches_ref` harnesses that replaced them in CI are the stronger property
+   anyway. Run them by hand when either kernel changes shape.
 5. NEON has no Kani harness at all, and rests on MIRI, MSan and fuzzing.
 
 Read the [CI logs](https://github.com/hacer-bark/base64-turbo/actions) and the `unsafe`

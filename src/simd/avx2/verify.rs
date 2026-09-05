@@ -7,6 +7,7 @@ use super::*;
 #[cfg(kani)]
 mod kani_verification_avx2 {
     use super::*;
+    use crate::simd::refcodec;
     use crate::{Config, STANDARD as TURBO_STANDARD, STANDARD_NO_PAD as TURBO_STANDARD_NO_PAD};
 
     // Only used inside `#[kani::stub(...)]` paths, which don't count as a use.
@@ -330,8 +331,36 @@ mod kani_verification_avx2 {
     const ENC_KERNEL_DEC_CAP: usize = TURBO_STANDARD.decoded_len_estimate(ENC_KERNEL_CAP);
     const DEC_KERNEL_CAP: usize = TURBO_STANDARD.decoded_len_estimate(DEC_KERNEL_LEN);
 
-    /// `Decode(Encode(x)) == x` over every 37-byte input. `url_safe` is a
+    /// The vectorized encoder agrees with [`refcodec`] — RFC 4648 §4 written out
+    /// straight — on every input of [`ENC_KERNEL_LEN`] bytes. `url_safe` is a
     /// parameter (not symbolic) since it only selects constant LUTs.
+    ///
+    /// Stronger than the round-trip this replaced, which cannot see an encode
+    /// bug the decoder inverts.
+    fn encode_matches_ref(url_safe: bool) {
+        let alphabet = crate::alphabet::builtin(url_safe);
+        let config = Config {
+            alphabet,
+            padding: true,
+        };
+        let input: [u8; ENC_KERNEL_LEN] = kani::any();
+
+        let mut simd_out = [0u8; ENC_KERNEL_CAP];
+        let mut ref_out = [0u8; ENC_KERNEL_CAP];
+
+        unsafe { encode_slice_avx2(&config, &input, &mut simd_out) };
+        refcodec::encode(alphabet, &input, &mut ref_out);
+
+        assert_eq!(simd_out, ref_out, "kernel disagrees with RFC 4648");
+    }
+
+    /// `Decode(Encode(x)) == x` over every input of [`ENC_KERNEL_LEN`] bytes.
+    ///
+    /// **Not in `verification.yml`, deliberately.** The decoder's input is the
+    /// *encoder's* symbolic output, so CBMC carries the whole encode expression
+    /// tree through a second kernel instead of starting from free bytes. The
+    /// `matches_ref` harnesses cover both directions more cheaply and more
+    /// strictly; run this by hand when either kernel changes shape.
     fn roundtrip_kernel(url_safe: bool) {
         let config = Config {
             alphabet: crate::alphabet::builtin(url_safe),
@@ -359,6 +388,30 @@ mod kani_verification_avx2 {
     #[kani::stub(_mm256_madd_epi16, m::_mm256_madd_epi16_stub)]
     #[kani::stub(_mm256_mullo_epi16, m::_mm256_mullo_epi16_stub)]
     #[kani::stub(_mm256_permutevar8x32_epi32, m::_mm256_permutevar8x32_epi32_stub)]
+    fn check_avx2_encode_matches_ref_standard() {
+        encode_matches_ref(false);
+    }
+
+    #[kani::proof]
+    #[kani::stub(_mm256_shuffle_epi8, m::_mm256_shuffle_epi8_stub)]
+    #[kani::stub(_mm256_subs_epu8, m::_mm256_subs_epu8_stub)]
+    #[kani::stub(_mm256_testz_si256, m::_mm256_testz_si256_stub)]
+    #[kani::stub(_mm256_maddubs_epi16, m::_mm256_maddubs_epi16_stub)]
+    #[kani::stub(_mm256_madd_epi16, m::_mm256_madd_epi16_stub)]
+    #[kani::stub(_mm256_mullo_epi16, m::_mm256_mullo_epi16_stub)]
+    #[kani::stub(_mm256_permutevar8x32_epi32, m::_mm256_permutevar8x32_epi32_stub)]
+    fn check_avx2_encode_matches_ref_url_safe() {
+        encode_matches_ref(true);
+    }
+
+    #[kani::proof]
+    #[kani::stub(_mm256_shuffle_epi8, m::_mm256_shuffle_epi8_stub)]
+    #[kani::stub(_mm256_subs_epu8, m::_mm256_subs_epu8_stub)]
+    #[kani::stub(_mm256_testz_si256, m::_mm256_testz_si256_stub)]
+    #[kani::stub(_mm256_maddubs_epi16, m::_mm256_maddubs_epi16_stub)]
+    #[kani::stub(_mm256_madd_epi16, m::_mm256_madd_epi16_stub)]
+    #[kani::stub(_mm256_mullo_epi16, m::_mm256_mullo_epi16_stub)]
+    #[kani::stub(_mm256_permutevar8x32_epi32, m::_mm256_permutevar8x32_epi32_stub)]
     fn check_avx2_roundtrip_standard() {
         roundtrip_kernel(false);
     }
@@ -375,11 +428,10 @@ mod kani_verification_avx2 {
         roundtrip_kernel(true);
     }
 
-    /// The vectorized decoder agrees with the scalar one on every 36-character
+    /// The vectorized decoder agrees with [`refcodec`] on every 36-character
     /// input, which is strictly stronger than the panic-freedom this harness
     /// used to prove: it pins *rejection* as well, over all 256 values in every
-    /// lane at once. `crate::scalar` is `#![forbid(unsafe_code)]` and separately
-    /// tested, so it is the natural oracle.
+    /// lane at once.
     ///
     /// Error *kinds* are deliberately not compared. The two decoders reach a bad
     /// input at different points — the vector path ORs every lane's verdict into
@@ -393,30 +445,31 @@ mod kani_verification_avx2 {
     #[kani::stub(_mm256_testz_si256, m::_mm256_testz_si256_stub)]
     #[kani::stub(_mm256_maddubs_epi16, m::_mm256_maddubs_epi16_stub)]
     #[kani::stub(_mm256_madd_epi16, m::_mm256_madd_epi16_stub)]
-    fn check_avx2_decode_matches_scalar() {
+    fn check_avx2_decode_matches_ref() {
+        let alphabet = crate::alphabet::builtin(kani::any());
         let config = Config {
-            alphabet: crate::alphabet::builtin(kani::any()),
+            alphabet,
             padding: true,
         };
         let input: [u8; DEC_KERNEL_LEN] = kani::any();
 
         // Both sized as the public API sizes them, so a real overrun still fails.
         let mut simd_out = [0u8; DEC_KERNEL_CAP];
-        let mut scalar_out = [0u8; DEC_KERNEL_CAP];
+        let mut ref_out = [0u8; DEC_KERNEL_CAP];
 
         let simd = unsafe { decode_slice_avx2(&config, &input, &mut simd_out) };
-        let scalar = crate::scalar::decode_slice(&config, &input, &mut scalar_out);
+        let expected = refcodec::decode(alphabet, &input, &mut ref_out);
 
-        match scalar {
+        match expected {
             Ok(n) => {
-                assert_eq!(simd, Ok(n), "scalar accepted an input the kernel rejected");
+                assert_eq!(simd, Ok(n), "kernel rejected a valid encoding");
                 assert_eq!(
                     &simd_out[..n],
-                    &scalar_out[..n],
-                    "kernel and scalar decoded to different bytes"
+                    &ref_out[..n],
+                    "kernel decoded to bytes RFC 4648 does not"
                 );
             }
-            Err(_) => assert!(simd.is_err(), "kernel accepted an input scalar rejected"),
+            Err(_) => assert!(simd.is_err(), "kernel accepted an invalid encoding"),
         }
     }
 }

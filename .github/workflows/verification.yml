@@ -36,6 +36,7 @@ jobs:
               - 'src/lib.rs'
               - 'src/scalar.rs'
               - 'src/simd/mod.rs'
+              - 'src/simd/refcodec.rs'
               - 'build.rs'
               - 'Cargo.toml'
               - 'Cargo.lock'
@@ -95,8 +96,9 @@ jobs:
       fail-fast: false
       matrix:
         harness:
-          - check_avx2_roundtrip_standard
-          - check_avx2_roundtrip_url_safe
+          - check_avx2_encode_matches_ref_standard
+          - check_avx2_encode_matches_ref_url_safe
+          - check_avx2_decode_matches_ref
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -120,8 +122,10 @@ jobs:
       fail-fast: false
       matrix:
         harness:
-          - check_vbmi_encode_matches_scalar_standard
-          - check_vbmi_encode_matches_scalar_url_safe
+          - check_vbmi_encode_matches_ref_standard
+          - check_vbmi_encode_matches_ref_url_safe
+          - check_vbmi_decode_matches_ref
+          - check_vbmi_decode_matches_ref_masked
     steps:
       - name: Checkout code
         uses: actions/checkout@v5

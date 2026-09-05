@@ -7,7 +7,7 @@ use super::*;
 #[cfg(kani)]
 mod kani_verification_avx512_vbmi {
     use super::*;
-    use crate::alphabet::Alphabet;
+    use crate::simd::refcodec;
     use crate::{Config, STANDARD as TURBO_STANDARD, STANDARD_NO_PAD as TURBO_STANDARD_NO_PAD};
 
     // Only used inside `#[kani::stub(...)]` paths, which don't count as a use.
@@ -664,35 +664,10 @@ mod kani_verification_avx512_vbmi {
     const ROUNDTRIP_ENC_CAP: usize = TURBO_STANDARD.encoded_len(ROUNDTRIP_LEN).unwrap();
     const ROUNDTRIP_DEC_CAP: usize = TURBO_STANDARD.decoded_len_estimate(ROUNDTRIP_ENC_CAP);
 
-    /// RFC 4648 §4 transcribed straight: three input bytes become four
-    /// characters through the alphabet, and a partial final group is padded.
-    fn rfc4648_encode(alphabet: &Alphabet, input: &[u8], dst: &mut [u8]) {
-        let chars = alphabet.as_bytes();
-        let mut out = 0;
-
-        for group in input.chunks(3) {
-            let mut acc = 0u32;
-            for (i, &b) in group.iter().enumerate() {
-                acc |= u32::from(b) << (16 - 8 * i);
-            }
-
-            // A whole group emits 4 characters; a partial one emits a character
-            // per 6 bits it actually covers, then pads out to 4.
-            let emitted = group.len() + 1;
-            for i in 0..emitted {
-                dst[out + i] = chars[(acc >> (18 - 6 * i)) as usize & 63];
-            }
-            for i in emitted..4 {
-                dst[out + i] = b'=';
-            }
-            out += 4;
-        }
-    }
-
-    /// The vectorized encoder agrees with RFC 4648 on every input of this
-    /// length — a stronger property than a round-trip, which cannot see an
-    /// encode bug that the decoder inverts.
-    fn encode_matches_scalar(url_safe: bool) {
+    /// The vectorized encoder agrees with [`refcodec`] — RFC 4648 §4 written out
+    /// straight — on every input of this length. That is a stronger property
+    /// than a round-trip, which cannot see an encode bug the decoder inverts.
+    fn encode_matches_ref(url_safe: bool) {
         let alphabet = crate::alphabet::builtin(url_safe);
         let config = Config {
             alphabet,
@@ -701,12 +676,12 @@ mod kani_verification_avx512_vbmi {
         let input: [u8; ENC_KERNEL_LEN] = kani::any();
 
         let mut vbmi_out = [0u8; ENC_KERNEL_CAP];
-        let mut rfc_out = [0u8; ENC_KERNEL_CAP];
+        let mut ref_out = [0u8; ENC_KERNEL_CAP];
 
         unsafe { encode_slice_avx512_vbmi(&config, &input, &mut vbmi_out) };
-        rfc4648_encode(alphabet, &input, &mut rfc_out);
+        refcodec::encode(alphabet, &input, &mut ref_out);
 
-        assert_eq!(vbmi_out, rfc_out, "kernel disagrees with RFC 4648");
+        assert_eq!(vbmi_out, ref_out, "kernel disagrees with RFC 4648");
     }
 
     #[kani::proof]
@@ -720,8 +695,8 @@ mod kani_verification_avx512_vbmi {
     #[kani::stub(_mm512_mask_loadu_epi8, m::mask_loadu_epi8_model)]
     #[kani::stub(_mm512_maskz_loadu_epi8, m::maskz_loadu_epi8_model)]
     #[kani::stub(_mm512_mask_storeu_epi8, m::mask_storeu_epi8_model)]
-    fn check_vbmi_encode_matches_scalar_standard() {
-        encode_matches_scalar(false);
+    fn check_vbmi_encode_matches_ref_standard() {
+        encode_matches_ref(false);
     }
 
     #[kani::proof]
@@ -735,11 +710,11 @@ mod kani_verification_avx512_vbmi {
     #[kani::stub(_mm512_mask_loadu_epi8, m::mask_loadu_epi8_model)]
     #[kani::stub(_mm512_maskz_loadu_epi8, m::maskz_loadu_epi8_model)]
     #[kani::stub(_mm512_mask_storeu_epi8, m::mask_storeu_epi8_model)]
-    fn check_vbmi_encode_matches_scalar_url_safe() {
-        encode_matches_scalar(true);
+    fn check_vbmi_encode_matches_ref_url_safe() {
+        encode_matches_ref(true);
     }
 
-    /// The vectorized decoder agrees with the scalar one over every input of
+    /// The vectorized decoder agrees with [`refcodec`] over every input of
     /// length `N`, which pins *rejection* as well as value — including VBMI's
     /// second rejection route, where a byte >= 0x80 aliases into the 128-entry
     /// table via bit 6 and has to be caught by the accumulator's other half.
@@ -750,29 +725,30 @@ mod kani_verification_avx512_vbmi {
     /// tail ever runs, so an input that is both mis-sized and mis-charactered
     /// can legitimately be `InvalidLength` for one and `InvalidCharacter` for
     /// the other. Rejecting it at all is the contract.
-    fn decode_matches_scalar<const N: usize, const CAP: usize>() {
+    fn decode_matches_ref<const N: usize, const CAP: usize>() {
+        let alphabet = crate::alphabet::builtin(kani::any());
         let config = Config {
-            alphabet: crate::alphabet::builtin(kani::any()),
+            alphabet,
             padding: true,
         };
         let input: [u8; N] = kani::any();
 
         let mut vbmi_out = [0u8; CAP];
-        let mut scalar_out = [0u8; CAP];
+        let mut ref_out = [0u8; CAP];
 
         let vbmi = unsafe { decode_slice_avx512_vbmi(&config, &input, &mut vbmi_out) };
-        let scalar = crate::scalar::decode_slice(&config, &input, &mut scalar_out);
+        let expected = refcodec::decode(alphabet, &input, &mut ref_out);
 
-        match scalar {
+        match expected {
             Ok(n) => {
-                assert_eq!(vbmi, Ok(n), "scalar accepted an input the kernel rejected");
+                assert_eq!(vbmi, Ok(n), "kernel rejected a valid encoding");
                 assert_eq!(
                     &vbmi_out[..n],
-                    &scalar_out[..n],
-                    "kernel and scalar decoded to different bytes"
+                    &ref_out[..n],
+                    "kernel decoded to bytes RFC 4648 does not"
                 );
             }
-            Err(_) => assert!(vbmi.is_err(), "kernel accepted an input scalar rejected"),
+            Err(_) => assert!(vbmi.is_err(), "kernel accepted an invalid encoding"),
         }
     }
 
@@ -787,8 +763,8 @@ mod kani_verification_avx512_vbmi {
     #[kani::stub(_mm512_mask_loadu_epi8, m::mask_loadu_epi8_model)]
     #[kani::stub(_mm512_maskz_loadu_epi8, m::maskz_loadu_epi8_model)]
     #[kani::stub(_mm512_mask_storeu_epi8, m::mask_storeu_epi8_model)]
-    fn check_vbmi_decode_matches_scalar() {
-        decode_matches_scalar::<DEC_KERNEL_LEN, DEC_KERNEL_CAP>();
+    fn check_vbmi_decode_matches_ref() {
+        decode_matches_ref::<DEC_KERNEL_LEN, DEC_KERNEL_CAP>();
     }
 
     #[kani::proof]
@@ -802,8 +778,8 @@ mod kani_verification_avx512_vbmi {
     #[kani::stub(_mm512_mask_loadu_epi8, m::mask_loadu_epi8_model)]
     #[kani::stub(_mm512_maskz_loadu_epi8, m::maskz_loadu_epi8_model)]
     #[kani::stub(_mm512_mask_storeu_epi8, m::mask_storeu_epi8_model)]
-    fn check_vbmi_decode_matches_scalar_masked() {
-        decode_matches_scalar::<DEC_MASKED_KERNEL_LEN, DEC_MASKED_KERNEL_CAP>();
+    fn check_vbmi_decode_matches_ref_masked() {
+        decode_matches_ref::<DEC_MASKED_KERNEL_LEN, DEC_MASKED_KERNEL_CAP>();
     }
 
     /// `Decode(Encode(x)) == x` over every input of [`ROUNDTRIP_LEN`] bytes,
@@ -814,7 +790,7 @@ mod kani_verification_avx512_vbmi {
     /// symbolic output, so CBMC carries the whole encode expression tree through
     /// a second kernel instead of starting from free bytes. Run it by hand
     /// (`cargo kani --harness check_vbmi_roundtrip_standard`) when either kernel
-    /// changes shape. The two `matches_scalar` harnesses are the ones CI runs,
+    /// changes shape. The `matches_ref` harnesses are the ones CI runs,
     /// and they are also the stronger property: a round-trip cannot see an
     /// encode bug that the decoder happens to invert.
     #[kani::proof]
