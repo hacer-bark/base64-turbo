@@ -4,8 +4,8 @@ A dev-only FFI shim that lets the `base64-turbo` benchmarks call
 [Turbo-Base64](https://github.com/powturbo/Turbo-Base64) as a competitor.
 
 **No Turbo-Base64 code is vendored here.** Turbo-Base64 is GPL-3; `base64-turbo` is 0BSD.
-This directory contains only original 0BSD code: a build script, four `extern "C"`
-declarations, and one small C file (`src/ffi_floor.c`) used as a measurement control.
+This directory contains only original 0BSD code: a build script and a handful of
+`extern "C"` declarations.
 
 ## Enabling the tb64 benchmark candidates
 

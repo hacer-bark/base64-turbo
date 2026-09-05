@@ -13,10 +13,6 @@
 //!   buffer — upstream's own driver never runs them against an exactly sized one — so
 //!   without the slack tb64 would be unsound here, and giving the slack to tb64 alone
 //!   would change its cache footprint relative to everyone else;
-//! * `Encode/FfiFloor` and `Decode/FfiFloor` measure an empty call through the same kind
-//!   of global function pointer tb64 dispatches through. Rust candidates are inlined into
-//!   the loop and tb64 cannot be, so at the small sizes that floor is a real part of the
-//!   tb64 number and has to be visible rather than silently charged to the C code.
 //!
 //! Because linking the C library moves every symbol in the binary, comparisons are only
 //! meaningful within one build: keep the tb64 checkout in place for every run you compare,
@@ -55,8 +51,8 @@ fn slack_buf(len: usize) -> Vec<u8> {
 
 /// Helper to check if a specific engine should be benchmarked based on ENV vars.
 /// Usage: `BENCH_TARGET=turbo cargo bench` or `BENCH_TARGET=all cargo bench`
-/// Targets: `turbo`, `std`, `simd`, `ng`, `tb64`, and the two controls `memcpy`
-/// (byte-copy roofline) and `ffifloor` (empty FFI call), neither of which is a codec.
+/// Targets: `turbo`, `std`, `simd`, `ng`, `tb64`, and the control `memcpy`
+/// (byte-copy roofline), which is not a codec.
 fn should_run(target_name: &str) -> bool {
     let var = env::var("BENCH_TARGET").unwrap_or_else(|_| "turbo".to_string());
     let targets: Vec<String> = var.split(',').map(|s| s.trim().to_lowercase()).collect();
@@ -232,15 +228,6 @@ fn bench_comparison(c: &mut Criterion) {
             });
         }
 
-        // Control, not a codec: an empty call through the same kind of global function
-        // pointer tb64 dispatches through. No tb64 number here can be lower than this.
-        if tb64::AVAILABLE && should_run("ffifloor") {
-            group.bench_with_input(BenchmarkId::new("Encode/FfiFloor", size), &input, |b, d| {
-                // SAFETY: the floor function touches neither pointer.
-                b.iter(|| unsafe { tb64::ffi_floor(black_box(d), black_box(&mut encode_buf)) });
-            });
-        }
-
         // base64 (std)
         if should_run("std") || should_run("base64") {
             group.bench_with_input(BenchmarkId::new("Encode/Std", size), &input, |b, d| {
@@ -294,17 +281,6 @@ fn bench_comparison(c: &mut Criterion) {
                 // SAFETY: `decode_buf` carries `tb64::SLACK` trailing bytes.
                 b.iter(|| unsafe { tb64::decode(black_box(s), black_box(&mut decode_buf)) });
             });
-        }
-
-        if tb64::AVAILABLE && should_run("ffifloor") {
-            group.bench_with_input(
-                BenchmarkId::new("Decode/FfiFloor", size),
-                &encoded,
-                |b, s| {
-                    // SAFETY: the floor function touches neither pointer.
-                    b.iter(|| unsafe { tb64::ffi_floor(black_box(s), black_box(&mut decode_buf)) });
-                },
-            );
         }
 
         // base64 (std)

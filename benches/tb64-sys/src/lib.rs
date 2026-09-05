@@ -41,7 +41,6 @@ mod ffi {
     unsafe extern "C" {
         pub static _tb64e: Func;
         pub static _tb64d: Func;
-        pub static tb64_floor: Func;
 
         pub fn tb64ini(id: u32, isshort: u32);
         pub fn cpuini(cpuisa: u32) -> u32;
@@ -108,24 +107,6 @@ pub unsafe fn decode(src: &[u8], dst: &mut [u8]) -> usize {
     #[cfg(not(tb64))]
     let written = unavailable(src, dst);
     written
-}
-
-/// The cost of reaching C and coming back, with no codec work in between.
-///
-/// See `src/ffi_floor.c`. Returns `src.len()` so the call cannot be optimised away.
-///
-/// # Safety
-///
-/// `dst` is never written, but is taken by `&mut` to keep the call shape identical to
-/// [`encode`].
-#[must_use]
-pub unsafe fn ffi_floor(src: &[u8], dst: &mut [u8]) -> usize {
-    #[cfg(tb64)]
-    // SAFETY: `floor_impl` touches neither pointer.
-    let n = unsafe { (ffi::tb64_floor)(src.as_ptr(), src.len(), dst.as_mut_ptr()) };
-    #[cfg(not(tb64))]
-    let n = unavailable(src, dst);
-    n
 }
 
 #[cfg(not(tb64))]

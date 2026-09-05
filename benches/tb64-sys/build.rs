@@ -16,10 +16,6 @@ fn main() {
     println!("cargo::rerun-if-env-changed=TB64_SRC");
 
     let manifest = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
-    println!(
-        "cargo::rerun-if-changed={}",
-        manifest.join("src/ffi_floor.c").display()
-    );
 
     let Some(src) = locate(&manifest) else {
         skip(
@@ -83,10 +79,6 @@ fn main() {
     for (files, flags) in &groups {
         objects.extend(compile(&src, files, flags));
     }
-    // The FFI floor control is ours, and is deliberately built with the same compiler and
-    // flags as the base unit so its call costs what a tb64 call costs.
-    objects.extend(compile(&src, &[manifest.join("src/ffi_floor.c")], &[]));
-
     assert_unique(&objects);
     cc::Build::new().objects(objects).compile("tb64");
     println!("cargo::rustc-cfg=tb64");

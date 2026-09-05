@@ -846,11 +846,16 @@ mod miri_avx2_coverage {
         (32, "encode: first block, no loop"),
         (37, "encode: first block + unaligned scalar tail"),
         (53, "encode: first block + one single-tier round"),
+        (
+            99,
+            "decode: single-tier passes only, wide window not yet reached",
+        ),
+        (100, "decode: first wide pass just reachable"),
         (124, "encode: single-tier rounds only"),
-        (192, "decode: single-tier passes only"),
+        (219, "encode: one round short of the wide tier"),
+        (220, "encode: wide-tier entry, no single-tier round left"),
         (244, "encode: one wide pass, then a single-tier round"),
-        (260, "decode: wide window not yet reached"),
-        (292, "decode: one wide pass, then a single-tier pass"),
+        (292, "decode: two wide passes, then a single-tier pass"),
         (700, "both: several wide passes plus single-tier rounds"),
     ];
 
@@ -1038,6 +1043,93 @@ mod avx2_encode_non_temporal {
                         config.alphabet.is_url_safe()
                     );
                 }
+            }
+        }
+    }
+}
+
+/// Length-boundary regression for `decode_slice_avx2`, which the encode sweep
+/// below does not reach: the decoder has its own tiering
+/// (`DEC_UNROLL` vectors wide, then single vectors, then the scalar tail) and
+/// its own validation. Both are checked at every length 0..=400, which crosses
+/// the wide-tier entry and several wide/single handoffs, plus large lengths.
+///
+/// The rejection half matters because the validation is a bitmask lookup whose
+/// low-nibble table is stored complemented and combined with `vpandn`: a byte
+/// `>= 0x80` reaches it only through `vpshufb`'s zeroing behaviour, so an
+/// invalid byte has to be rejected from every tier, not just the first.
+#[cfg(test)]
+#[cfg(not(miri))]
+mod avx2_decode_length_sweep {
+    use super::*;
+    use crate::simd::testutil::check_decode;
+    use base64::Engine as _;
+    use base64::engine::general_purpose::{STANDARD as REF_STANDARD, URL_SAFE as REF_URL_SAFE};
+
+    #[test]
+    fn avx2_decode_standard_all_lengths_0_to_400() {
+        let config = Config {
+            alphabet: crate::alphabet::builtin(false),
+            padding: true,
+        };
+        for len in 0..=400 {
+            check_decode(&config, &REF_STANDARD, decode_slice_avx2, len);
+        }
+    }
+
+    #[test]
+    fn avx2_decode_url_safe_all_lengths_0_to_400() {
+        let config = Config {
+            alphabet: crate::alphabet::builtin(true),
+            padding: true,
+        };
+        for len in 0..=400 {
+            check_decode(&config, &REF_URL_SAFE, decode_slice_avx2, len);
+        }
+    }
+
+    #[test]
+    fn avx2_decode_large_lengths() {
+        let config = Config {
+            alphabet: crate::alphabet::builtin(false),
+            padding: true,
+        };
+        for len in [1_000, 10_000, 100_000, 1_000_003] {
+            check_decode(&config, &REF_STANDARD, decode_slice_avx2, len);
+        }
+    }
+
+    /// Every non-alphabet byte, planted at a position in each tier, must be
+    /// rejected -- including the bytes `>= 0x80` that the low-nibble lookup
+    /// only catches via its high-nibble partner.
+    #[test]
+    fn avx2_decode_rejects_invalid_in_every_tier() {
+        let config = Config {
+            alphabet: crate::alphabet::builtin(false),
+            padding: true,
+        };
+        // 700 raw bytes -> 936 characters: several wide passes, then single
+        // passes, then a scalar tail.
+        let input = crate::simd::testutil::bytes(700);
+        let encoded = REF_STANDARD.encode(&input);
+        let valid = encoded.as_bytes();
+
+        // First wide pass, a later wide pass, the single-vector tier, and the
+        // scalar tail.
+        let positions = [0, 1, 31, 127, 128, 500, 895, valid.len() - 1];
+        for &pos in &positions {
+            for candidate in 0u8..=255 {
+                if valid.contains(&candidate) || candidate == b'=' {
+                    continue;
+                }
+                let mut corrupt = valid.to_vec();
+                corrupt[pos] = candidate;
+                let mut dst = vec![0u8; input.len() + 64];
+                assert_eq!(
+                    unsafe { decode_slice_avx2(&config, &corrupt, &mut dst) },
+                    Err(Error::InvalidCharacter),
+                    "byte {candidate:#04x} at position {pos} was accepted"
+                );
             }
         }
     }

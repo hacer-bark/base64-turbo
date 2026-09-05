@@ -677,9 +677,15 @@ impl Engine {
             let len = input.len();
             let tier = cpu::tier();
 
-            // Smart degrade by length: a kernel is only worth entering once the
-            // input fills its vector width. AVX2's single tier runs from 32
-            // bytes up.
+            // Smart degrade by length: a kernel is only worth entering once it
+            // beats the scalar kernel, which is not the same thing as its vector
+            // width. AVX2 encode covers one 24-byte round and hands the rest to
+            // the scalar tail, so below ~44 bytes it is doing a vector round
+            // *and* most of the scalar work; racing the two kernels in one
+            // binary on Coffee Lake, scalar wins by 16% at 32 bytes and 17% at
+            // 40, and AVX2 wins by 15% at 48. Decode has no such gap -- its
+            // vector tier already covers 32 of the 44 characters a 32-byte
+            // input encodes to -- and keeps its own threshold.
             //
             // VBMI starts far earlier than that. Its masked tiers and inline
             // final group mean a short input costs little more than the table
@@ -696,7 +702,7 @@ impl Engine {
                 return;
             }
             #[cfg(feature = "avx2")]
-            if len >= 32 && tier >= cpu::AVX2 && self.config.alphabet.has_arithmetic_kernels() {
+            if len >= 48 && tier >= cpu::AVX2 && self.config.alphabet.has_arithmetic_kernels() {
                 // SAFETY: tier() confirmed AVX2 on this CPU.
                 unsafe { simd::encode_slice_avx2(&self.config, input, dst) };
                 return;
