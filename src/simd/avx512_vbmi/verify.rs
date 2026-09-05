@@ -7,6 +7,7 @@ use super::*;
 #[cfg(kani)]
 mod kani_verification_avx512_vbmi {
     use super::*;
+    use crate::alphabet::Alphabet;
     use crate::{Config, STANDARD as TURBO_STANDARD, STANDARD_NO_PAD as TURBO_STANDARD_NO_PAD};
 
     // Only used inside `#[kani::stub(...)]` paths, which don't count as a use.
@@ -258,6 +259,10 @@ mod kani_verification_avx512_vbmi {
 
         let addr: usize = kani::any();
         kani::assume(addr % 4 == 0); // gate `dst.addr().is_multiple_of(4)`
+        // `dst` points into an allocation with room for what this tier writes,
+        // and no allocation wraps the address space, so the peel's own address
+        // arithmetic cannot overflow. `head < ENC_VEC`.
+        kani::assume(addr <= usize::MAX - ENC_VEC);
 
         let head = (ENC_VEC - (addr & (ENC_VEC - 1))) & (ENC_VEC - 1);
         let take = head / 4 * ENC_GROUP;
@@ -315,6 +320,9 @@ mod kani_verification_avx512_vbmi {
 
         let addr: usize = kani::any();
         kani::assume(addr % ENC_VEC == 0); // the loop's own re-tested guard
+        // One iteration's stores fit in the allocation behind `dst`, which
+        // cannot wrap the address space.
+        kani::assume(addr <= usize::MAX - ENC_QUAD_OUT);
 
         assert!(
             done + 3 * ENC_VEC_IN + ENC_VEC <= len,
@@ -485,9 +493,12 @@ mod kani_verification_avx512_vbmi {
         kani::assume(rem >= NONTEMPORAL_MIN); // gate `if rem >= NONTEMPORAL_MIN`
         let cap = dec_cap(len);
 
-        // No precondition on the address: 3 is coprime with 64, so some whole
-        // number of groups reaches a boundary from anywhere.
+        // No precondition on the address beyond non-wrapping: 3 is coprime with
+        // 64, so some whole number of groups reaches a boundary from anywhere.
+        // The peel writes `head < 3 * DEC_VEC_IN` bytes into an allocation, and
+        // no allocation wraps the address space.
         let addr: usize = kani::any();
+        kani::assume(addr <= usize::MAX - 3 * DEC_VEC_IN);
 
         let mut head = (DEC_VEC_IN - (addr & (DEC_VEC_IN - 1))) & (DEC_VEC_IN - 1);
         while head % 3 != 0 {
@@ -570,6 +581,9 @@ mod kani_verification_avx512_vbmi {
 
         let addr: usize = kani::any();
         kani::assume(addr % DEC_VEC_IN == 0); // the loop's own re-tested guard
+        // One iteration's stores fit in the allocation behind `dst`, which
+        // cannot wrap the address space.
+        kani::assume(addr <= usize::MAX - DEC_QUAD_OUT);
 
         assert!(
             done + 3 * DEC_VEC_IN + DEC_VEC_IN <= len,
@@ -650,27 +664,49 @@ mod kani_verification_avx512_vbmi {
     const ROUNDTRIP_ENC_CAP: usize = TURBO_STANDARD.encoded_len(ROUNDTRIP_LEN).unwrap();
     const ROUNDTRIP_DEC_CAP: usize = TURBO_STANDARD.decoded_len_estimate(ROUNDTRIP_ENC_CAP);
 
-    /// The vectorized encoder agrees with the scalar one on every input of this
-    /// length. `crate::scalar` is `#![forbid(unsafe_code)]` and separately
-    /// tested, so it is the natural oracle — and a stronger one than a
-    /// round-trip, which cannot see an encode bug that the decoder inverts.
+    /// RFC 4648 §4 transcribed straight: three input bytes become four
+    /// characters through the alphabet, and a partial final group is padded.
+    fn rfc4648_encode(alphabet: &Alphabet, input: &[u8], dst: &mut [u8]) {
+        let chars = alphabet.as_bytes();
+        let mut out = 0;
+
+        for group in input.chunks(3) {
+            let mut acc = 0u32;
+            for (i, &b) in group.iter().enumerate() {
+                acc |= u32::from(b) << (16 - 8 * i);
+            }
+
+            // A whole group emits 4 characters; a partial one emits a character
+            // per 6 bits it actually covers, then pads out to 4.
+            let emitted = group.len() + 1;
+            for i in 0..emitted {
+                dst[out + i] = chars[(acc >> (18 - 6 * i)) as usize & 63];
+            }
+            for i in emitted..4 {
+                dst[out + i] = b'=';
+            }
+            out += 4;
+        }
+    }
+
+    /// The vectorized encoder agrees with RFC 4648 on every input of this
+    /// length — a stronger property than a round-trip, which cannot see an
+    /// encode bug that the decoder inverts.
     fn encode_matches_scalar(url_safe: bool) {
+        let alphabet = crate::alphabet::builtin(url_safe);
         let config = Config {
-            alphabet: crate::alphabet::builtin(url_safe),
+            alphabet,
             padding: true,
         };
         let input: [u8; ENC_KERNEL_LEN] = kani::any();
 
         let mut vbmi_out = [0u8; ENC_KERNEL_CAP];
-        let mut scalar_out = [0u8; ENC_KERNEL_CAP];
+        let mut rfc_out = [0u8; ENC_KERNEL_CAP];
 
         unsafe { encode_slice_avx512_vbmi(&config, &input, &mut vbmi_out) };
-        crate::scalar::encode_slice(&config, &input, &mut scalar_out);
+        rfc4648_encode(alphabet, &input, &mut rfc_out);
 
-        assert_eq!(
-            vbmi_out, scalar_out,
-            "kernel and scalar encoded differently"
-        );
+        assert_eq!(vbmi_out, rfc_out, "kernel disagrees with RFC 4648");
     }
 
     #[kani::proof]

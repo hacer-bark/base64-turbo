@@ -110,10 +110,10 @@ Which kernels a custom alphabet gets:
 
 | Kernel | Standard / URL-safe | Custom alphabet |
 | :--- | :---: | :---: |
-| Scalar | ✅ | ✅ full speed |
-| AVX512-VBMI | ✅ | ✅ full speed |
-| AVX2 | ✅ | ❌ falls back to scalar |
-| NEON | ✅ | ❌ falls back to scalar |
+| Scalar | ✅ | ✅ |
+| AVX512-VBMI | ✅ | ✅ |
+| AVX2 | ✅ | ❌ |
+| NEON | ✅ | ❌ |
 
 Scalar and AVX-512 VBMI are pure table lookups and the tables come out of the `Alphabet`,
 so a custom alphabet runs there at exactly built-in speed. AVX2 and NEON compute
@@ -258,8 +258,9 @@ that cover each other's blind spots.
 | **AVX512-VBMI** | ✅ | ✅ | ✅ | ✅ |
 | **NEON** | ✅ | ✅ | ❌ | ❌ |
 
-* **Kani** proves the kernels don't panic, don't read/write out of bounds, and agree with
-  the safe scalar kernel. For AVX2 and AVX512-VBMI the bounds result holds for *every*
+* **Kani** proves the kernels don't panic, don't read/write out of bounds, and produce the
+  right bytes — AVX512-VBMI's encoder against RFC 4648 §4 transcribed directly, AVX2's
+  pair against a round-trip. For AVX2 and AVX512-VBMI the bounds result holds for *every*
   input length, by a machine-checked induction over the loop's offset arithmetic.
 * **MIRI** catches Undefined Behavior (provenance, alignment, OOB pointer arithmetic,
   data races) on every distinct code path — single-vector loop, wide unrolled loop,

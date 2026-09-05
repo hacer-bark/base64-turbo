@@ -243,8 +243,12 @@ pub(crate) static STANDARD_TABLE: Alphabet = Alphabet::build(STANDARD_CHARS);
 pub(crate) static URL_SAFE_TABLE: Alphabet = Alphabet::build(URL_SAFE_CHARS);
 
 /// Picks a built-in by the flag the older `Config` carried. Used by the
-/// verification harnesses, which enumerate both built-ins by boolean.
-#[cfg(all(unsafe_simd, any(test, kani)))]
+/// verification harnesses, which enumerate both built-ins by boolean. Those
+/// live under `test`/`kani` on x86 and under Miri only on aarch64.
+#[cfg(any(
+    all(x86_simd, any(test, kani)),
+    all(target_arch = "aarch64", feature = "neon", test, miri)
+))]
 pub(crate) const fn builtin(url_safe: bool) -> &'static Alphabet {
     if url_safe {
         &URL_SAFE_TABLE
