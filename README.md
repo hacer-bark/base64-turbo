@@ -229,14 +229,38 @@ Small-input latency (32 B, zero-alloc `_into`): ~10 ns encode, ~13 ns decode.
 Reproduce it:
 
 ```bash
-sudo apt update && sudo apt install -y build-essential git
+# 1. Box prep
+df -h /
+sudo apt-get update
+sudo apt-get install -y build-essential git python3-pip
+pip install --break-system-packages plotly kaleido
+
+# 2. Toolchain
 curl --proto '=https' --tlsv1.3 -sSf https://sh.rustup.rs | sh -s -- -y
 source "$HOME/.cargo/env"
 
+# 3. Sources
 git clone https://github.com/hacer-bark/base64-turbo
 cd base64-turbo
+
+# Turbo-Base64 is GPL-3 and is NOT vendored. It goes in target/, which is
+# git-ignored and never packaged. Override the location with TB64_SRC if you
+# want it elsewhere.
+git clone --depth 1 https://github.com/powturbo/Turbo-Base64 target/tb64-src
+
+# 4. Pre-flight: the C competitor must actually be linked
+cargo build --benches 2>&1 | grep -i "Turbo-Base64 source not found" \
+  && echo "STOP: tb64 not linked, fix before benching"
+
+# 5. Full run
+mkdir -p benches/results
 BENCH_TARGET=all cargo bench 2>&1 | tee benches/results/raw.txt
+
+# 6. Plot
 python3 benches/scripts/plot_bench.py benches/results/raw.txt
+
+# 7. Pull results back
+# scp ubuntu@127.0.0.1:base64-turbo/benches/results/{raw.txt,throughput.png} .
 ```
 
 Select comparison targets with `BENCH_TARGET` (comma-separated): `turbo` (default,

@@ -1,9 +1,26 @@
 //! Throughput benchmarks comparing `base64-turbo` against the `base64`, `base64-simd`
-//! and `base64-ng` crates.
+//! and `base64-ng` crates, and against the Turbo-Base64 C library when a checkout of it
+//! is present (see `benches/tb64-sys/README.md`).
 //!
 //! Every candidate is driven through its fastest zero-allocation slice API, writing into
 //! a pre-sized buffer that is reused across iterations, so the numbers reflect codec work
 //! rather than allocator behaviour.
+//!
+//! Two rules keep the C competitor on equal footing:
+//!
+//! * every buffer carries `tb64_sys::SLACK` trailing bytes and every candidate is handed
+//!   an exact-length slice of it. tb64's vector kernels may touch past the end of a
+//!   buffer — upstream's own driver never runs them against an exactly sized one — so
+//!   without the slack tb64 would be unsound here, and giving the slack to tb64 alone
+//!   would change its cache footprint relative to everyone else;
+//! * `Encode/FfiFloor` and `Decode/FfiFloor` measure an empty call through the same kind
+//!   of global function pointer tb64 dispatches through. Rust candidates are inlined into
+//!   the loop and tb64 cannot be, so at the small sizes that floor is a real part of the
+//!   tb64 number and has to be visible rather than silently charged to the C code.
+//!
+//! Because linking the C library moves every symbol in the binary, comparisons are only
+//! meaningful within one build: keep the tb64 checkout in place for every run you compare,
+//! and select candidates with `BENCH_TARGET`, not by rebuilding without it.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -29,16 +46,17 @@ use base64::{
 };
 use base64_ng::STANDARD as NG_ENGINE;
 use base64_simd::{AsOut, STANDARD as SIMD_ENGINE};
+use tb64_sys as tb64;
 
-fn generate_random_data(size: usize) -> Vec<u8> {
-    let mut data = vec![0u8; size];
-    rand::rng().fill(&mut data[..]);
-    data
+/// Allocates `len` usable bytes plus the trailing slack every candidate is given.
+fn slack_buf(len: usize) -> Vec<u8> {
+    vec![0u8; len + tb64::SLACK]
 }
 
 /// Helper to check if a specific engine should be benchmarked based on ENV vars.
 /// Usage: `BENCH_TARGET=turbo cargo bench` or `BENCH_TARGET=all cargo bench`
-/// The `memcpy` target is a byte-copy roofline, not a codec.
+/// Targets: `turbo`, `std`, `simd`, `ng`, `tb64`, and the two controls `memcpy`
+/// (byte-copy roofline) and `ffifloor` (empty FFI call), neither of which is a codec.
 fn should_run(target_name: &str) -> bool {
     let var = env::var("BENCH_TARGET").unwrap_or_else(|_| "turbo".to_string());
     let targets: Vec<String> = var.split(',').map(|s| s.trim().to_lowercase()).collect();
@@ -53,12 +71,12 @@ fn should_run(target_name: &str) -> bool {
 fn verify_candidates(
     std_engine: &Simd,
     input: &[u8],
-    encoded: &str,
+    encoded: &[u8],
     encode_buf: &mut [u8],
     decode_buf: &mut [u8],
 ) {
     let expect_enc = |written: usize, buf: &[u8]| {
-        assert_eq!(&buf[..written], encoded.as_bytes());
+        assert_eq!(&buf[..written], encoded);
     };
     let expect_dec = |written: usize, buf: &[u8]| {
         assert_eq!(&buf[..written], input);
@@ -81,7 +99,7 @@ fn verify_candidates(
         encode_buf,
     );
 
-    let src = encoded.as_bytes();
+    let src = encoded;
     expect_dec(
         TURBO_ENGINE.decode_slice(src, decode_buf).unwrap(),
         decode_buf,
@@ -95,11 +113,29 @@ fn verify_candidates(
         decode_buf,
     );
     expect_dec(NG_ENGINE.decode_slice(src, decode_buf).unwrap(), decode_buf);
+
+    if tb64::AVAILABLE {
+        // SAFETY: `tb64::init` ran in `bench_comparison`, and both buffers were allocated
+        // with `tb64::SLACK` trailing bytes.
+        unsafe {
+            expect_enc(tb64::encode(input, encode_buf), encode_buf);
+            expect_dec(tb64::decode(src, decode_buf), decode_buf);
+        }
+    }
 }
 
 fn bench_comparison(c: &mut Criterion) {
     // Runtime-detects AVX2/NEON once; matches STANDARD's alphabet/padding.
     let std_engine = Simd::standard(GeneralPurposeConfig::new());
+
+    // tb64 dispatches through globals that stay at the scalar fallback until this runs.
+    // Once, outside every timed loop.
+    if tb64::AVAILABLE {
+        tb64::init();
+        println!("tb64: linked, simd set = {}", tb64::isa());
+    } else {
+        println!("tb64: not linked, candidates skipped (see benches/tb64-sys/README.md)");
+    }
 
     let mut group = c.benchmark_group("Base64_Performances");
 
@@ -121,20 +157,29 @@ fn bench_comparison(c: &mut Criterion) {
     ];
 
     for size in &sizes {
-        let input_data = generate_random_data(*size);
-        let encoded_str = std_engine.encode(&input_data);
+        // Source buffers carry the same trailing slack as the destinations, so a candidate
+        // that reads past the end of its input stays in bounds. Every candidate is handed
+        // the exact-length slice, so nobody sees a longer input than anybody else.
+        let mut input_store = slack_buf(*size);
+        rand::rng().fill(&mut input_store[..*size]);
+        let input = &input_store[..*size];
+
+        let encoded_str = std_engine.encode(input);
+        let mut encoded_store = slack_buf(encoded_str.len());
+        encoded_store[..encoded_str.len()].copy_from_slice(encoded_str.as_bytes());
+        let encoded = &encoded_store[..encoded_str.len()];
 
         // Shared destination buffers, allocated once per size and reused by every
         // candidate so no engine pays for a `Vec`/`String` inside the timed loop.
-        let mut encode_buf = vec![0u8; TURBO_ENGINE.encoded_len(*size).unwrap()];
-        let mut decode_buf = vec![0u8; TURBO_ENGINE.decoded_len_estimate(encoded_str.len())];
+        let mut encode_buf = slack_buf(TURBO_ENGINE.encoded_len(*size).unwrap());
+        let mut decode_buf = slack_buf(TURBO_ENGINE.decoded_len_estimate(encoded.len()));
 
         // Guard against timing a silently failing call: every candidate must reproduce the
         // reference result through the exact API and buffers the benchmark uses.
         verify_candidates(
             &std_engine,
-            &input_data,
-            &encoded_str,
+            input,
+            encoded,
             &mut encode_buf,
             &mut decode_buf,
         );
@@ -164,55 +209,59 @@ fn bench_comparison(c: &mut Criterion) {
         // Roofline reference: a plain byte copy of the same input, so every encode number
         // can be read against the cost of just moving the bytes.
         if should_run("memcpy") {
-            group.bench_with_input(
-                BenchmarkId::new("Encode/Memcpy", size),
-                &input_data,
-                |b, d| {
-                    b.iter(|| {
-                        let src = black_box(d);
-                        black_box(&mut encode_buf)[..src.len()].copy_from_slice(src);
-                    });
-                },
-            );
+            group.bench_with_input(BenchmarkId::new("Encode/Memcpy", size), &input, |b, d| {
+                b.iter(|| {
+                    let src = black_box(d);
+                    black_box(&mut encode_buf)[..src.len()].copy_from_slice(src);
+                });
+            });
         }
 
         if should_run("turbo") {
-            group.bench_with_input(
-                BenchmarkId::new("Encode/Turbo", size),
-                &input_data,
-                |b, d| {
-                    b.iter(|| TURBO_ENGINE.encode_slice(black_box(d), black_box(&mut encode_buf)));
-                },
-            );
+            group.bench_with_input(BenchmarkId::new("Encode/Turbo", size), &input, |b, d| {
+                b.iter(|| TURBO_ENGINE.encode_slice(black_box(d), black_box(&mut encode_buf)));
+            });
+        }
+
+        // Turbo-Base64 (C). `_tb64e` is the entry point upstream documents as fastest,
+        // skipping the wrapper call and its dispatch check.
+        if tb64::AVAILABLE && should_run("tb64") {
+            group.bench_with_input(BenchmarkId::new("Encode/Tb64", size), &input, |b, d| {
+                // SAFETY: `encode_buf` carries `tb64::SLACK` trailing bytes.
+                b.iter(|| unsafe { tb64::encode(black_box(d), black_box(&mut encode_buf)) });
+            });
+        }
+
+        // Control, not a codec: an empty call through the same kind of global function
+        // pointer tb64 dispatches through. No tb64 number here can be lower than this.
+        if tb64::AVAILABLE && should_run("ffifloor") {
+            group.bench_with_input(BenchmarkId::new("Encode/FfiFloor", size), &input, |b, d| {
+                // SAFETY: the floor function touches neither pointer.
+                b.iter(|| unsafe { tb64::ffi_floor(black_box(d), black_box(&mut encode_buf)) });
+            });
         }
 
         // base64 (std)
         if should_run("std") || should_run("base64") {
-            group.bench_with_input(BenchmarkId::new("Encode/Std", size), &input_data, |b, d| {
+            group.bench_with_input(BenchmarkId::new("Encode/Std", size), &input, |b, d| {
                 b.iter(|| std_engine.encode_slice(black_box(d), black_box(&mut encode_buf)));
             });
         }
 
         // base64-simd
         if should_run("simd") {
-            group.bench_with_input(
-                BenchmarkId::new("Encode/Simd", size),
-                &input_data,
-                |b, d| {
-                    // Returns a borrow of the buffer; keep only the length so the
-                    // closure stays `FnMut`.
-                    b.iter(|| {
-                        SIMD_ENGINE
-                            .encode(black_box(d), black_box(&mut encode_buf).as_out())
-                            .len()
-                    });
-                },
-            );
+            group.bench_with_input(BenchmarkId::new("Encode/Simd", size), &input, |b, d| {
+                b.iter(|| {
+                    SIMD_ENGINE
+                        .encode(black_box(d), black_box(&mut encode_buf).as_out())
+                        .len()
+                });
+            });
         }
 
         // base64-ng
         if should_run("ng") {
-            group.bench_with_input(BenchmarkId::new("Encode/Ng", size), &input_data, |b, d| {
+            group.bench_with_input(BenchmarkId::new("Encode/Ng", size), &input, |b, d| {
                 b.iter(|| NG_ENGINE.encode_slice(black_box(d), black_box(&mut encode_buf)));
             });
         }
@@ -220,70 +269,66 @@ fn bench_comparison(c: &mut Criterion) {
         // --- Decode ---
 
         // Throughput is measured against the encoded (input) text size.
-        group.throughput(Throughput::Bytes(encoded_str.len() as u64));
+        group.throughput(Throughput::Bytes(encoded.len() as u64));
 
         // Same reference for the decode side: `encode_buf` is exactly the encoded length,
         // so this moves the same byte count the decoders read.
         if should_run("memcpy") {
-            group.bench_with_input(
-                BenchmarkId::new("Decode/Memcpy", size),
-                &encoded_str,
-                |b, s| {
-                    b.iter(|| {
-                        let src = black_box(s.as_bytes());
-                        black_box(&mut encode_buf)[..src.len()].copy_from_slice(src);
-                    });
-                },
-            );
+            group.bench_with_input(BenchmarkId::new("Decode/Memcpy", size), &encoded, |b, s| {
+                b.iter(|| {
+                    let src = black_box(s);
+                    black_box(&mut encode_buf)[..src.len()].copy_from_slice(src);
+                });
+            });
         }
 
         if should_run("turbo") {
+            group.bench_with_input(BenchmarkId::new("Decode/Turbo", size), &encoded, |b, s| {
+                b.iter(|| TURBO_ENGINE.decode_slice(black_box(s), black_box(&mut decode_buf)));
+            });
+        }
+
+        // Turbo-Base64 (C); see the encode side.
+        if tb64::AVAILABLE && should_run("tb64") {
+            group.bench_with_input(BenchmarkId::new("Decode/Tb64", size), &encoded, |b, s| {
+                // SAFETY: `decode_buf` carries `tb64::SLACK` trailing bytes.
+                b.iter(|| unsafe { tb64::decode(black_box(s), black_box(&mut decode_buf)) });
+            });
+        }
+
+        if tb64::AVAILABLE && should_run("ffifloor") {
             group.bench_with_input(
-                BenchmarkId::new("Decode/Turbo", size),
-                &encoded_str,
+                BenchmarkId::new("Decode/FfiFloor", size),
+                &encoded,
                 |b, s| {
-                    b.iter(|| {
-                        TURBO_ENGINE
-                            .decode_slice(black_box(s.as_bytes()), black_box(&mut decode_buf))
-                    });
+                    // SAFETY: the floor function touches neither pointer.
+                    b.iter(|| unsafe { tb64::ffi_floor(black_box(s), black_box(&mut decode_buf)) });
                 },
             );
         }
 
         // base64 (std)
         if should_run("std") || should_run("base64") {
-            group.bench_with_input(
-                BenchmarkId::new("Decode/Std", size),
-                &encoded_str,
-                |b, s| {
-                    b.iter(|| {
-                        std_engine.decode_slice(black_box(s.as_bytes()), black_box(&mut decode_buf))
-                    });
-                },
-            );
+            group.bench_with_input(BenchmarkId::new("Decode/Std", size), &encoded, |b, s| {
+                b.iter(|| std_engine.decode_slice(black_box(s), black_box(&mut decode_buf)));
+            });
         }
 
         // base64-simd
         if should_run("simd") {
-            group.bench_with_input(
-                BenchmarkId::new("Decode/Simd", size),
-                &encoded_str,
-                |b, s| {
-                    b.iter(|| {
-                        SIMD_ENGINE
-                            .decode(black_box(s.as_bytes()), black_box(&mut decode_buf).as_out())
-                            .map(|out| out.len())
-                    });
-                },
-            );
+            group.bench_with_input(BenchmarkId::new("Decode/Simd", size), &encoded, |b, s| {
+                b.iter(|| {
+                    SIMD_ENGINE
+                        .decode(black_box(s), black_box(&mut decode_buf).as_out())
+                        .map(|out| out.len())
+                });
+            });
         }
 
         // base64-ng
         if should_run("ng") {
-            group.bench_with_input(BenchmarkId::new("Decode/Ng", size), &encoded_str, |b, s| {
-                b.iter(|| {
-                    NG_ENGINE.decode_slice(black_box(s.as_bytes()), black_box(&mut decode_buf))
-                });
+            group.bench_with_input(BenchmarkId::new("Decode/Ng", size), &encoded, |b, s| {
+                b.iter(|| NG_ENGINE.decode_slice(black_box(s), black_box(&mut decode_buf)));
             });
         }
     }

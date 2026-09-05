@@ -17,17 +17,22 @@ THRPT_RE = re.compile(
 
 UNIT_TO_MIB = {"KiB": 1 / 1024, "MiB": 1.0, "GiB": 1024.0}
 
-LIBRARY_ORDER = ["Turbo", "TurboBuff", "Simd", "Std"]
+# Codecs only. The Memcpy and FfiFloor controls are deliberately absent: they are
+# reference points for reading the numbers, not competitors, and their throughput would
+# flatten every real bar on the chart.
+LIBRARY_ORDER = ["Turbo", "Tb64", "Simd", "Ng", "Std"]
 LIBRARY_LABEL = {
     "Turbo": "base64-turbo",
-    "TurboBuff": "base64-turbo (zero-alloc)",
+    "Tb64": "Turbo-Base64 (C)",
     "Simd": "base64-simd",
+    "Ng": "base64-ng",
     "Std": "base64",
 }
 COLORS = {
     "Turbo": "#2a78d6",
-    "TurboBuff": "#1baf7a",
+    "Tb64": "#8e44ad",
     "Simd": "#eb6834",
+    "Ng": "#1baf7a",
     "Std": "#eda100",
 }
 

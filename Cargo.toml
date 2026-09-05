@@ -10,7 +10,13 @@ repository = "https://github.com/hacer-bark/base64-turbo"
 documentation = "https://docs.rs/base64-turbo"
 keywords = ["base64", "simd", "avx512-vbmi", "neon", "encoding"]
 categories = ["encoding", "hardware-support", "no-std", "web-programming"]
-exclude = ["benches/scripts/", "benches/results/"]
+exclude = ["benches/scripts/", "benches/results/", "benches/tb64-sys/"]
+
+# `benches/tb64-sys` is a dev-only member so it shares this target dir and lock file.
+# `fuzz` stays outside, as cargo-fuzz expects.
+[workspace]
+members = ["benches/tb64-sys"]
+exclude = ["fuzz"]
 
 [features]
 default = ["std", "simd", "neon"]
@@ -35,6 +41,9 @@ criterion = { version = "0.8", features = ["html_reports"] }
 base64 = "0.23"
 base64-simd = "0.8"
 base64-ng = { version = "2", features = ["simd"] }
+# Turbo-Base64 (C) competitor. Compiles to stubs unless a checkout is present;
+# see benches/tb64-sys/README.md.
+tb64-sys = { path = "benches/tb64-sys" }
 
 [lints.rust]
 warnings = "deny"

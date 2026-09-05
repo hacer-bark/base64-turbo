@@ -1,0 +1,11 @@
+[package]
+name = "tb64-sys"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.89"
+license = "0BSD"
+publish = false
+description = "Dev-only FFI shim used by the base64-turbo benchmarks to call the Turbo-Base64 C library."
+
+[build-dependencies]
+cc = "1"
