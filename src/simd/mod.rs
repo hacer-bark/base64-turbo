@@ -20,8 +20,11 @@ mod testutil;
 
 // The naive oracle the Kani kernel proofs check the vector kernels against.
 // Compiled under `test` as well so the ordinary build still type-checks it and
-// its own differential test can pin it to the scalar kernel.
-#[cfg(any(kani, test))]
+// its own differential test can pin it to the scalar kernel. Under Miri that
+// differential test is skipped -- it is a pure-logic check with nothing for Miri
+// to find -- and it is the oracle's only non-Kani caller, so the module comes out
+// with it rather than being dead code.
+#[cfg(any(kani, all(test, not(miri))))]
 mod refcodec;
 
 /// Shared SIMD -> scalar handoff. Each backend runs its vectorized loops, then

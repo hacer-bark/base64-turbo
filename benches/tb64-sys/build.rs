@@ -34,12 +34,19 @@ fn main() {
         src.join("turbob64.h").display()
     );
 
+    warn_on_inherited_cflags();
+
     let out = PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
     let arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
 
     let groups: Vec<(Vec<PathBuf>, &[&str])> = match arch.as_str() {
         "x86_64" => vec![
-            (vec![src.join("turbob64v128.c")], &["-mssse3"]),
+            // `-mno-avx` is not upstream's flag, it is insurance: this unit is the only
+            // one that defines `tb64ini`, `_tb64e`, `_tb64d`, `cpuini` and `cpustr`, and
+            // it guards them with `#ifndef __AVX__`. Anything that leaks AVX into this
+            // compile -- an inherited `CFLAGS=-march=native`, say -- makes all five
+            // vanish and the bench fails to link.
+            (vec![src.join("turbob64v128.c")], &["-mssse3", "-mno-avx"]),
             // Upstream compiles turbob64v128.c a second time as an AVX build; the file
             // renames its own symbols under `__AVX__`. It is copied to a distinct name
             // first because two archive members may not share one: the linker resolves
@@ -83,6 +90,27 @@ fn main() {
     assert_unique(&objects);
     cc::Build::new().objects(objects).compile("tb64");
     println!("cargo::rustc-cfg=tb64");
+}
+
+/// `cc` picks up `CFLAGS` from the environment, which would silently build the C
+/// competitor with flags its author never uses and make the comparison something other
+/// than what it claims to be.
+fn warn_on_inherited_cflags() {
+    for var in [
+        "CFLAGS",
+        "TARGET_CFLAGS",
+        "HOST_CFLAGS",
+        "CFLAGS_x86_64_unknown_linux_gnu",
+    ] {
+        println!("cargo::rerun-if-env-changed={var}");
+        if let Some(value) = std::env::var_os(var) {
+            println!(
+                "cargo::warning={var}={value:?} is set. Turbo-Base64 is meant to be built \
+                 with its own per-file flags; inherited flags make the benchmark comparison \
+                 something other than upstream's own build."
+            );
+        }
+    }
 }
 
 /// Copies `from` to `to`, returning `to`. Used to give the second build of a source file
