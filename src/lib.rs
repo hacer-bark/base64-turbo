@@ -205,9 +205,18 @@ mod cpu {
     /// type 0; instruction caches are skipped, since the thing being sized is a
     /// data working set.
     ///
-    /// Absent under Miri, which executes no `cpuid` and whose only caller — the
-    /// AVX-512 streaming gate — takes its floor there instead.
-    #[cfg(not(miri))]
+    /// Absent under Miri and Kani. Neither executes `cpuid` — Miri interprets,
+    /// Kani is symbolic — and neither needs to: the only caller, the AVX-512
+    /// streaming gate, takes its floor when no cache size is available, which
+    /// is exactly the bound the stream-peel proofs are stated against.
+    ///
+    /// `__cpuid_count` became a safe function in 1.94; at this crate's 1.93 MSRV
+    /// it is still `unsafe`. The blocks are what 1.93 needs, and the `allow` is
+    /// what stops 1.94-and-later failing the crate's `unused` deny over blocks
+    /// it considers redundant. Both halves are load-bearing until the MSRV
+    /// reaches 1.94.
+    #[cfg(not(any(miri, kani)))]
+    #[allow(unused_unsafe)]
     fn detect_llc() -> Option<usize> {
         #[cfg(target_arch = "x86")]
         use std::arch::x86::__cpuid_count;
@@ -216,9 +225,9 @@ mod cpu {
 
         // Both leaves have to be checked for existence first: reading an
         // unimplemented leaf returns another leaf's contents, not zeros.
-        let leaf = if __cpuid_count(0x8000_0000, 0).eax >= 0x8000_001D {
+        let leaf = if unsafe { __cpuid_count(0x8000_0000, 0) }.eax >= 0x8000_001D {
             0x8000_001D
-        } else if __cpuid_count(0, 0).eax >= 4 {
+        } else if unsafe { __cpuid_count(0, 0) }.eax >= 4 {
             4
         } else {
             return None;
@@ -226,7 +235,7 @@ mod cpu {
 
         let mut best: u64 = 0;
         for sub in 0..16 {
-            let r = __cpuid_count(leaf, sub);
+            let r = unsafe { __cpuid_count(leaf, sub) };
             match r.eax & 0x1f {
                 0 => break,    // no cache at this sub-leaf, and none after it
                 2 => continue, // instruction cache
@@ -243,7 +252,7 @@ mod cpu {
 
     /// Size of the last-level data cache, detected once and cached. `None` if
     /// `CPUID` does not report one; callers pick their own fallback.
-    #[cfg(not(miri))]
+    #[cfg(not(any(miri, kani)))]
     #[inline]
     pub(crate) fn llc_bytes() -> Option<usize> {
         static CACHE: OnceLock<Option<usize>> = OnceLock::new();

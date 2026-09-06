@@ -2,7 +2,7 @@
 name = "base64-turbo"
 version = "0.3.0"
 edition = "2024"
-rust-version = "1.89"
+rust-version = "1.93"
 authors = ["Hacer-Bark <hacer.bark@proton.me>"]
 license = "0BSD"
 description = "A Base64 engine that peaks past 100 GiB/s, formally verified (Kani/MIRI/MSan)."

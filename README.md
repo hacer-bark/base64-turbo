@@ -143,8 +143,8 @@ configuration.
 
 ## Compatibility & Stability
 
-**MSRV:** Rust 1.89.0. We rely on recently stabilized AVX-512 intrinsics in `core` and do
-not plan to lower this.
+**MSRV:** Rust 1.93.0. We rely on recently stabilized AVX-512 intrinsics in `core`, the
+last of which — `_mm_sfence` becoming safe — landed in 1.93. We do not plan to lower this.
 
 **API stability:** The public API is **Stable** and follows Semantic Versioning. It stays
 valid and backward-compatible throughout the `0.3.x` lifecycle.
