@@ -33,7 +33,7 @@ mod kani_verification_avx512_vbmi {
         DEC_GROUP, DEC_LEAD, DEC_MASKED_MIN, DEC_PEEL_MAX, DEC_QUAD_IN, DEC_QUAD_MIN, DEC_QUAD_OUT,
         DEC_SINGLE_MIN, DEC_VEC_IN, DEC_VEC_OUT, ENC_GROUP, ENC_PEEL_MAX, ENC_QUAD_IN,
         ENC_QUAD_MIN, ENC_QUAD_OUT, ENC_SINGLE_MIN, ENC_VEC, ENC_VEC_IN, ENC_VEC_OUT,
-        NONTEMPORAL_MIN,
+        NONTEMPORAL_FLOOR,
     };
 
     /// Largest `len` considered: above `usize::MAX / 4` the unpadded
@@ -239,7 +239,7 @@ mod kani_verification_avx512_vbmi {
     ///
     /// This is the obligation [`check_vbmi_enc_masked_step`] does *not*
     /// discharge: that proof assumes `rem < ENC_SINGLE_MIN`, and the peel runs
-    /// the same masked step with `rem` at least [`NONTEMPORAL_MIN`]. Nothing
+    /// the same masked step with `rem` at least [`NONTEMPORAL_FLOOR`]. Nothing
     /// about the step's mask shifts or bounds may depend on that assumption.
     ///
     /// `dst` is `dst_start + dst_off` for a `dst_start` this proof cannot see,
@@ -254,7 +254,7 @@ mod kani_verification_avx512_vbmi {
         kani::assume(len <= MAX_LEN);
 
         let (done, dst_off, rem) = any_enc_state(len);
-        kani::assume(rem >= NONTEMPORAL_MIN); // gate `if rem >= NONTEMPORAL_MIN`
+        kani::assume(rem >= NONTEMPORAL_FLOOR); // gate `if rem >= NONTEMPORAL_FLOOR`
         let cap = enc_cap(len, padding);
 
         let addr: usize = kani::any();
@@ -470,14 +470,14 @@ mod kani_verification_avx512_vbmi {
     /// Three separate things need proving here, and only the first is a memory
     /// obligation:
     ///
-    /// 1. every chunk is a legal masked step, under `rem >= NONTEMPORAL_MIN`
+    /// 1. every chunk is a legal masked step, under `rem >= NONTEMPORAL_FLOOR`
     ///    rather than the `rem < DEC_SINGLE_MIN` its own proof assumes;
     /// 2. both loops terminate — the `head` adjustment because 3 is coprime with
     ///    64, the chunk loop because every pass consumes at least a group;
     /// 3. the chunk loop's `rem >= DEC_QUAD_MIN` condition never fires early.
     ///    That one is load-bearing: if it did, the peel would stop with `dst`
     ///    unaligned, and the streaming loop would be skipped. The kernel's
-    ///    `NONTEMPORAL_MIN` guard is sized off [`DEC_PEEL_MAX`] precisely so
+    ///    `NONTEMPORAL_FLOOR` guard is sized off [`DEC_PEEL_MAX`] precisely so
     ///    that it cannot, and this re-derives that symbolically.
     ///
     /// The unwind bound is four `head` additions and five chunks, one more than
@@ -490,7 +490,7 @@ mod kani_verification_avx512_vbmi {
         kani::assume(len <= MAX_LEN);
 
         let (done, dst_off, rem) = any_dec_state(len);
-        kani::assume(rem >= NONTEMPORAL_MIN); // gate `if rem >= NONTEMPORAL_MIN`
+        kani::assume(rem >= NONTEMPORAL_FLOOR); // gate `if rem >= NONTEMPORAL_FLOOR`
         let cap = dec_cap(len);
 
         // No precondition on the address beyond non-wrapping: 3 is coprime with
@@ -1472,7 +1472,7 @@ mod miri_avx512_vbmi_coverage {
 
     /// The non-temporal streaming tier and its alignment peel.
     ///
-    /// `NONTEMPORAL_MIN` is lowered to 1024 under Miri precisely so this is
+    /// `NONTEMPORAL_FLOOR` is lowered to 1024 under Miri precisely so this is
     /// reachable — at the shipped 512 KiB no Miri suite could ever enter it. The
     /// lengths bracket the gate from both sides and then step across a peel's
     /// worth of remainder, so the peel is exercised at several `head` values
@@ -1692,6 +1692,80 @@ mod avx512_vbmi_hardware_coverage {
             check_decode_exact(&standard, &STANDARD, decode_slice_avx512_vbmi, len);
             check_decode_exact(&url_safe, &URL_SAFE, decode_slice_avx512_vbmi, len);
             check_decode_exact(&no_pad, &STANDARD_NO_PAD, decode_slice_avx512_vbmi, len);
+        }
+    }
+
+    /// The non-temporal tier, on real silicon, at the threshold *this* machine
+    /// picks.
+    ///
+    /// Miri covers the tier's addressing at its lowered floor, but it cannot
+    /// cover `vmovntdq`'s alignment requirement — only hardware faults on that
+    /// — and since [`nontemporal_min`] is derived from the last-level cache,
+    /// the length that reaches the tier is a property of the machine rather
+    /// than a constant a test could hard-code. So the test asks the kernel
+    /// where its gate is and brackets it, at every destination misalignment the
+    /// alignment peel has to cope with: offset 0 is the case that is right by
+    /// accident, and the odd offsets are the ones where the encoder must detect
+    /// that no whole number of 4-character groups ever reaches a 64-byte
+    /// boundary and skip the tier instead.
+    ///
+    /// Skipped when the host's cache puts the gate somewhere a unit test has no
+    /// business allocating.
+    #[test]
+    fn hw_avx512_vbmi_stream_tier_at_runtime_threshold() {
+        use crate::simd::testutil::bytes;
+        use base64::Engine as _;
+
+        if !(std::is_x86_feature_detected!("avx512f")
+            && std::is_x86_feature_detected!("avx512bw")
+            && std::is_x86_feature_detected!("avx512vbmi"))
+        {
+            eprintln!("skipping: host CPU lacks AVX-512-VBMI");
+            return;
+        }
+        let gate = super::nontemporal_min();
+        if gate > 64 << 20 {
+            eprintln!("skipping: streaming gate at {gate} bytes is too large to allocate");
+            return;
+        }
+
+        let standard = Config {
+            alphabet: crate::alphabet::builtin(false),
+            padding: true,
+        };
+        // Generated once at the longest length any case needs and sliced, so
+        // the test is dominated by the kernel rather than by input generation.
+        let lengths = [gate - 1, gate, gate + 1, gate + 129];
+        let longest = gate + 129;
+        let pool = bytes(longest);
+        let dec_pool = bytes(longest / 4 * 3 + 129);
+
+        for off in [0usize, 1, 2, 8, 15, 16, 17, 30, 31] {
+            for len in lengths {
+                // The encoder's gate is on input bytes.
+                let input = &pool[..len];
+                let expected = STANDARD.encode(input);
+                let mut dst = vec![0u8; expected.len() + off];
+                unsafe { encode_slice_avx512_vbmi(&standard, input, &mut dst[off..]) };
+                assert_eq!(
+                    &dst[off..],
+                    expected.as_bytes(),
+                    "stream encode: len {len}, dst+{off}"
+                );
+
+                // The decoder's gate is on input *characters*, so the plain
+                // length is scaled to put that many characters in front of it.
+                let plain = len / 4 * 3;
+                let src = &dec_pool[..plain];
+                let encoded = STANDARD.encode(src);
+                let mut out = vec![0u8; plain + off];
+                let n = unsafe {
+                    decode_slice_avx512_vbmi(&standard, encoded.as_bytes(), &mut out[off..])
+                        .expect("valid input failed to decode")
+                };
+                assert_eq!(n, plain, "stream decode len: {plain}, dst+{off}");
+                assert_eq!(&out[off..], src, "stream decode: len {plain}, dst+{off}");
+            }
         }
     }
 

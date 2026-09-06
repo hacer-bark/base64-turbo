@@ -195,6 +195,60 @@ mod cpu {
         static CACHE: OnceLock<u8> = OnceLock::new();
         *CACHE.get_or_init(detect)
     }
+
+    /// Size in bytes of the largest data cache `CPUID` reports, or `None` when
+    /// it reports none — an emulator, or a hypervisor that masks the leaves.
+    ///
+    /// Intel's leaf 4 and AMD's leaf `0x8000_001D` encode a cache's geometry in
+    /// exactly the same EAX/EBX/ECX layout, so one walk serves both vendors and
+    /// only the leaf number differs. Sub-leaves are enumerated until one reports
+    /// type 0; instruction caches are skipped, since the thing being sized is a
+    /// data working set.
+    ///
+    /// Absent under Miri, which executes no `cpuid` and whose only caller — the
+    /// AVX-512 streaming gate — takes its floor there instead.
+    #[cfg(not(miri))]
+    fn detect_llc() -> Option<usize> {
+        #[cfg(target_arch = "x86")]
+        use std::arch::x86::__cpuid_count;
+        #[cfg(target_arch = "x86_64")]
+        use std::arch::x86_64::__cpuid_count;
+
+        // Both leaves have to be checked for existence first: reading an
+        // unimplemented leaf returns another leaf's contents, not zeros.
+        let leaf = if __cpuid_count(0x8000_0000, 0).eax >= 0x8000_001D {
+            0x8000_001D
+        } else if __cpuid_count(0, 0).eax >= 4 {
+            4
+        } else {
+            return None;
+        };
+
+        let mut best: u64 = 0;
+        for sub in 0..16 {
+            let r = __cpuid_count(leaf, sub);
+            match r.eax & 0x1f {
+                0 => break,    // no cache at this sub-leaf, and none after it
+                2 => continue, // instruction cache
+                _ => {}
+            }
+            let ways = u64::from((r.ebx >> 22) & 0x3ff) + 1;
+            let partitions = u64::from((r.ebx >> 12) & 0x3ff) + 1;
+            let line = u64::from(r.ebx & 0xfff) + 1;
+            let sets = u64::from(r.ecx) + 1;
+            best = best.max(ways * partitions * line * sets);
+        }
+        (best > 0).then(|| usize::try_from(best).unwrap_or(usize::MAX))
+    }
+
+    /// Size of the last-level data cache, detected once and cached. `None` if
+    /// `CPUID` does not report one; callers pick their own fallback.
+    #[cfg(not(miri))]
+    #[inline]
+    pub(crate) fn llc_bytes() -> Option<usize> {
+        static CACHE: OnceLock<Option<usize>> = OnceLock::new();
+        *CACHE.get_or_init(detect_llc)
+    }
 }
 
 // ======================================================================

@@ -37,9 +37,16 @@
 //!   0.5%. Unroll factor was swept there (1/2/4/8) and 4 is the best of them.
 //!
 //! Either way the shuffle chain itself has no slack left to reclaim, and past
-//! L2 both kernels sit on memory bandwidth — on Zen 5 each moves ~73 GiB/s of
-//! total traffic, encode at 7/3 bytes per input byte and decode at 7/4. The only
-//! thing still on the table there is the write stream — see [`NONTEMPORAL_MIN`].
+//! the last-level cache neither kernel is compute-bound at all: both sit on
+//! memory bandwidth, encode moving 7/3 bytes of traffic per input byte and
+//! decode 7/4. On the Zen 5 lab box one core tops out at ~56 GiB/s of total
+//! traffic (measured with a hand-rolled non-temporal `memcpy`, against a
+//! ~45 GiB/s pure-read ceiling), which puts a hard roof of ~24 GiB/s on encode
+//! and ~32 GiB/s on decode at 100 MiB no matter what the kernels do — they
+//! reach ~22 and ~29. Unroll factor and software prefetch were both swept again
+//! in that regime and every variant landed within 2% of the shipped loop, so
+//! the only thing that actually moves at these sizes is the write stream — see
+//! [`nontemporal_min`].
 
 use crate::{Config, Error};
 
@@ -229,47 +236,107 @@ const LOW_48: u64 = (1u64 << DEC_VEC_OUT) - 1;
 
 // --- Non-temporal threshold ---
 
+/// Floor on the input length at which either kernel may switch its top tier to
+/// non-temporal stores, and the bound the Kani stream-peel proofs are stated
+/// against.
+///
+/// The tuned threshold is [`nontemporal_min`], which is derived from the
+/// last-level cache and is never below this; the proofs assume only this
+/// weaker gate, so any larger runtime value is covered by them.
+///
+/// The binding requirement is that the gate leave a whole quad step after the
+/// worst-case alignment peel. Otherwise the decoder's peel loop — which stops
+/// if `rem` falls under the quad guard — could exit with `dst` still unaligned,
+/// and the streaming loop it exists for would be skipped entirely. The static
+/// assertion below makes that a consequence of the constants rather than a
+/// coincidence.
+#[cfg(not(miri))]
+const NONTEMPORAL_FLOOR: usize = 512 * 1024;
+/// Lowered under Miri, whose suites run at tiny lengths and would otherwise
+/// never reach the streaming tier or its alignment peel at all. This is the
+/// value that actually needs the assertion below checking.
+#[cfg(miri)]
+const NONTEMPORAL_FLOOR: usize = 1024;
+
+/// Fraction of the last-level cache above which streaming stores start paying,
+/// as `RATIO / DIV`.
+///
+/// Whether `vmovntdq` helps depends on something the kernel cannot see: whether
+/// the destination was going to stay in cache. Both cases were measured on
+/// Zen 5 (c8a.large, 8 MiB L3), racing this kernel against a twin with the tier
+/// disabled, each variant reading its own slot of a 640 MiB pool so neither
+/// inherits a buffer the other just warmed:
+///
+/// * **Cold destination** — a large payload streamed through once. Streaming
+///   wins at every size from 512 KiB up, +11% to +24%, and never loses: the
+///   output is never read again, so read-for-ownership traffic is pure waste.
+/// * **Resident destination** — one buffer encoded over and over, which is what
+///   a working set that fits in cache looks like. Streaming *loses* heavily
+///   below ~0.6x LLC — -39% (encode) and -36% (decode) at 1 MiB — because it
+///   throws away a destination that would have stayed in L2/L3, and wins above
+///   it, rising to +22% at 64 MiB.
+///
+/// The two agree above the crossover and conflict below it, so the gate is put
+/// where the resident case turns: 5/8 of the last-level cache, ~5 MiB here,
+/// which is where the output stops co-residing with the input. Above it
+/// streaming is right for both. Below it the resident case is the one that
+/// decides, because its penalty is the larger of the two — -39% against the
+/// -13% the cold case pays for not streaming.
+///
+/// This is a ratio and not a length because the crossover tracks the cache
+/// rather than the machine. The value it replaces was a flat 512 KiB, tuned on
+/// Sapphire Rapids (c7i.large) against a flushed destination — the cold case
+/// only, which as measured above has no crossover to find. Carried onto a Zen 5
+/// box with an 8 MiB L3 it put the gate at a sixteenth of where the resident
+/// case turns, which is the 3.6x cliff at 1 MiB this replaces. Sapphire Rapids
+/// has not been re-measured under the resident case; if its crossover also
+/// tracks its last-level cache, this ratio covers it, and that is the claim
+/// worth re-checking first on any new microarchitecture.
+#[cfg(not(miri))]
+const NONTEMPORAL_LLC_RATIO: usize = 5;
+#[cfg(not(miri))]
+const NONTEMPORAL_LLC_DIV: usize = 8;
+
 /// Input length at which both kernels switch their top tier to non-temporal
 /// stores.
 ///
-/// Both write more than they read, so above L2 most of the cost is
-/// read-for-ownership traffic on a destination whose old contents are dead.
-/// `vmovntdq` skips it. Measured on Sapphire Rapids (c7i.large, 48 KiB L1d,
-/// 2 MiB L2) against a flushed destination, this is worth +33% at 512 KiB
-/// rising to +44% at 16 MiB for the encoder, and +33% to +41% for the decoder.
+/// Both write more than they read, so once the working set no longer fits in
+/// cache most of the cost is read-for-ownership traffic on a destination whose
+/// old contents are dead, and `vmovntdq` skips it. Below that point the same
+/// instruction is a large *loss*, because it throws away a cache hit the
+/// regular store would have got.
 ///
-/// That figure is not portable. On Zen 5 (c8a.large, 1 MiB L2, 8 MiB L3) the
-/// same flushed-destination measurement gives the decoder +6.6% at the threshold
-/// rising to ~+10%, and the encoder essentially nothing (−0.7% to +2.9%).
+/// Where that crossover sits is a property of the machine, not a constant: it
+/// tracks the last-level cache, which is why this reads the cache size rather
+/// than hard-coding a length. See [`NONTEMPORAL_LLC_RATIO`] for the measurement
+/// behind the ratio.
 ///
-/// It is also conditional on the destination being *cold*, which is the case
-/// this constant was tuned for and the case `Engine::encode` produces by
-/// allocating. A caller that reuses one large resident buffer inverts the sign
-/// hard — measured −77% to −147% (encode) and −18% to −124% (decode) on Zen 5,
-/// because streaming throws away an L2 hit and goes to DRAM. No threshold value
-/// fixes that; the kernel cannot see residency.
-///
-/// One wrinkle worth knowing: this is compared against `rem`, which is input
-/// *bytes* in the encoder but input *characters* in the decoder, so one constant
-/// gates two different working-set footprints (7/3·E against 7/4·C).
-///
-/// Below the threshold it is a large *loss* — the destination still lives in
-/// L2, and streaming it to DRAM instead measured -21% (encode) and -17%
-/// (decode) at a 256 KiB input. The crossover sits between 256 and 512 KiB for
-/// both, i.e. where the two buffers together stop fitting comfortably in L2;
-/// 512 KiB is the round number above it, so the tier never engages anywhere it
-/// was measured to lose.
-///
-/// Software prefetch inside the streaming loop was tried at 512 and 1024 bytes
-/// ahead and is not here: it measured under +2% at 1 MiB and slightly negative
-/// at 4 MiB and above, which is inside the run-to-run spread.
-#[cfg(not(miri))]
-const NONTEMPORAL_MIN: usize = 512 * 1024;
-/// Lowered under Miri, whose suites run at tiny lengths and would otherwise
-/// never reach the streaming tier or its alignment peel at all. The floor below
-/// is what keeps this a threshold change rather than a semantic one.
-#[cfg(miri)]
-const NONTEMPORAL_MIN: usize = 1024;
+/// One wrinkle worth knowing: the result is compared against `rem`, which is
+/// input *bytes* in the encoder but input *characters* in the decoder, so one
+/// threshold gates two different working-set footprints (7/3·E against 7/4·C).
+/// The measured crossover lands at the same *input* length for both, so that is
+/// the unit it is expressed in.
+#[inline]
+fn nontemporal_min() -> usize {
+    // Miri runs neither `cpuid` nor inputs anywhere near a real threshold, so
+    // there it is the floor that makes the streaming tier reachable at all.
+    #[cfg(miri)]
+    {
+        NONTEMPORAL_FLOOR
+    }
+    #[cfg(not(miri))]
+    {
+        // Resolved once inside `cpu::llc_bytes`; what is left here is a load
+        // and a multiply, on an input already known to be a quad step long.
+        // With no cache size to scale against, the floor is the threshold.
+        let Some(llc) = crate::cpu::llc_bytes() else {
+            return NONTEMPORAL_FLOOR;
+        };
+        (llc / NONTEMPORAL_LLC_DIV)
+            .saturating_mul(NONTEMPORAL_LLC_RATIO)
+            .max(NONTEMPORAL_FLOOR)
+    }
+}
 
 /// Worst-case input each kernel's alignment peel consumes before the streaming
 /// loop starts.
@@ -281,17 +348,11 @@ const NONTEMPORAL_MIN: usize = 1024;
 const ENC_PEEL_MAX: usize = (ENC_VEC - 4) / 4 * ENC_GROUP;
 const DEC_PEEL_MAX: usize = (3 * DEC_VEC_IN - 3) / 3 * DEC_GROUP;
 
-// The gate has to leave a whole quad step after the worst-case peel. Otherwise
-// the decoder's peel loop — which stops if `rem` falls under the quad guard —
-// could exit with `dst` still unaligned, and the streaming loop it exists for
-// would be skipped entirely. Making that a consequence of the constants rather
-// than a coincidence is the point: at the shipped 512 KiB it is true with four
-// orders of magnitude to spare, and it is the Miri value that actually needs
-// checking. The Kani proofs in `verify` re-derive the same bound symbolically.
+// The Kani proofs in `verify` re-derive the same bound symbolically.
 const _: () = assert!(
-    NONTEMPORAL_MIN >= ENC_QUAD_MIN + ENC_PEEL_MAX
-        && NONTEMPORAL_MIN >= DEC_QUAD_MIN + DEC_PEEL_MAX,
-    "NONTEMPORAL_MIN must leave a full quad step after the worst-case alignment peel"
+    NONTEMPORAL_FLOOR >= ENC_QUAD_MIN + ENC_PEEL_MAX
+        && NONTEMPORAL_FLOOR >= DEC_QUAD_MIN + DEC_PEEL_MAX,
+    "NONTEMPORAL_FLOOR must leave a full quad step after the worst-case alignment peel"
 );
 
 // ======================================================================
@@ -557,7 +618,7 @@ pub(crate) unsafe fn encode_slice_avx512_vbmi(config: &Config, input: &[u8], dst
         // is only reachable at all when `dst` is 4-byte aligned: a group always
         // emits 4 characters, so `dst % 4` is invariant and an output that
         // starts at an odd address can never reach a 64-byte boundary.
-        if rem >= NONTEMPORAL_MIN && dst.addr().is_multiple_of(4) {
+        if rem >= nontemporal_min() && dst.addr().is_multiple_of(4) {
             let head = (ENC_VEC - (dst.addr() & (ENC_VEC - 1))) & (ENC_VEC - 1);
             if head > 0 {
                 encode_masked!(head / 4 * ENC_GROUP);
@@ -673,13 +734,13 @@ struct StreamState {
 /// need the three-vector packer described on [`VBMI_STREAM_PACK`].
 ///
 /// Out of line because it is entered at most once per call, above
-/// [`NONTEMPORAL_MIN`], so the call costs nothing measurable — and keeping it
+/// [`nontemporal_min`], so the call costs nothing measurable — and keeping it
 /// out of the main kernel keeps that function's register pressure and its
 /// length where they were.
 ///
 /// # Safety
 /// `src`/`dst` must have `rem` characters and the corresponding output bytes
-/// available, and `rem` must be at least [`NONTEMPORAL_MIN`].
+/// available, and `rem` must be at least [`NONTEMPORAL_FLOOR`].
 #[inline]
 #[target_feature(enable = "avx512f,avx512bw,avx512vbmi")]
 unsafe fn decode_stream_loop(
@@ -845,7 +906,7 @@ pub(crate) unsafe fn decode_slice_avx512_vbmi(
         // a group emits 3 bytes and 3 is coprime with 64, so some whole number
         // of groups reaches a boundary from *any* destination address. At most
         // three 64-byte steps of peel are needed, hence `head < 192`.
-        if rem >= NONTEMPORAL_MIN {
+        if rem >= nontemporal_min() {
             let stream = unsafe { decode_stream_loop(&luts, src, dst, rem) };
             src = stream.src;
             dst = stream.dst;
