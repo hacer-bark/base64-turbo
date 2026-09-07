@@ -21,10 +21,10 @@ Behavior is unacceptable. It picks the best kernel available at runtime:
 
 <p align="center"><sub>AWS <code>c8a.large</code> (AMD EPYC 9R45). See <a href="#benchmarks">Benchmarks</a>.</sub></p>
 
-The 100+ GiB/s figures are the peak of the sweep above (4 KiB encode, 64 KiB decode), not
-a sustained number at every size — [Benchmarks](#benchmarks) has the full curve and how to
-reproduce it, and [Safety & Verification](#safety--verification) says exactly what's
-proven and what still rests on human judgment.
+The 100+ GiB/s figures are the peak of the sweep above (both at 4 KiB, where the buffers
+still sit in L1/L2), not a sustained number at every size — [Benchmarks](#benchmarks) has
+the full curve and how to reproduce it, and [Safety & Verification](#safety--verification)
+says exactly what's proven and what still rests on human judgment.
 
 If you need WASM SIMD, stable NEON, or a dozen encodings in one crate, this isn't that
 crate — see the [FAQ](#faq).
@@ -39,7 +39,6 @@ crate — see the [FAQ](#faq).
 - [Performance & Architecture](#performance--architecture)
 - [Benchmarks](#benchmarks)
 - [Safety & Verification](#safety--verification)
-- [Ecosystem](#ecosystem)
 - [FAQ](#faq)
 - [Acknowledgements](#acknowledgements)
 - [License](#license)
@@ -200,31 +199,66 @@ per group. Input sizes span 32 B → 10 MB to cross L1/L2/RAM boundaries. `std` 
 (AVX2/NEON with runtime detection) is active — the number most callers of that crate
 actually get.
 
-At 64 KiB, both boxes, encode / decode:
+Every implementation below is measured by the same harness, on the same box, in the same
+session, pinned to one core — including Turbo-Base64, the C library that was the one to
+beat. At 64 KiB, encode / decode:
 
-| Machine | base64-turbo | `base64-simd` | `base64` (std) |
-| :--- | ---: | ---: | ---: |
-| `c8a.large` (AMD EPYC 9R45) | 81.1 / 107.5 GiB/s | 14.6 / 14.6 GiB/s | 9.8 / 25.6 GiB/s |
-| `c7i.large` (Xeon Platinum 8488C) | 30.9 / 46.7 GiB/s | 11.1 / 10.2 GiB/s | 6.9 / 13.2 GiB/s |
+| Library | Lang | Verified `unsafe` | `c8a.large` | `c7i.large` |
+| :--- | :---: | :--- | ---: | ---: |
+| **base64-turbo** | Rust | Kani + MIRI + MSan + Fuzz | **81.6 / 106.5** | **25.7 / 36.9** |
+| [Turbo-Base64](https://github.com/powturbo/Turbo-Base64) † | C | none published | 80.7 / 107.8 | 18.2 / 38.5 |
+| [base64-ng](https://crates.io/crates/base64-ng) | Rust | none published | 49.9 / 0.9 | 17.4 / 0.4 |
+| [base64](https://crates.io/crates/base64) (std) | Rust | MIRI + Fuzz | 13.5 / 27.9 | 8.9 / 13.7 |
+| [base64-simd](https://crates.io/crates/base64-simd) | Rust | none published | 14.7 / 14.6 | 9.2 / 9.1 |
 
-**AWS `c8a.large`, the chart above:** the sweep peaks at 105.6 GiB/s encode (4 KiB) and
-107.5 GiB/s decode (64 KiB) — both past 100 GiB/s, single-threaded, from a
-Kani/MIRI/MSan-checked kernel rather than an unaudited one. Small-input latency (32 B,
-zero-alloc `_into`): ~7.4 ns encode, ~10.0 ns decode.
+<sub>GiB/s, higher is better. `c8a.large` = AMD EPYC 9R45 (Zen 5), `c7i.large` = Intel Xeon
+Platinum 8488C (Sapphire Rapids).</sub>
 
-The two machines agree on the shape of the curve (same dip past L2/L3, same ordering of
-libraries) and disagree by roughly 2-3x on the absolute ceiling — which is itself the
-point: the 100+ GiB/s number is a real peak on real hardware, not a property of the
-algorithm that holds everywhere.
+64 KiB is one slice through the sweep; the full curves are charted above and below, and
+the ordering does move across sizes. **On `c8a.large`** the sweep peaks at 123.0 GiB/s
+encode and 118.1 GiB/s decode, both at 4 KiB, single-threaded, out of a Kani/MIRI/MSan-checked kernel.
+32 B latency: ~6.6 ns encode, ~7.1 ns decode.
+
+The two machines agree on the shape of the curve — same climb to a 4 KiB peak, same dip
+once the buffers leave L2, same ordering of libraries — and disagree by roughly 3x on the
+absolute ceiling. That disagreement is the point: the 100+ GiB/s number is a real peak on
+real hardware, not a property of the algorithm that holds everywhere.
 
 <details>
 <summary>AWS <code>c7i.large</code> chart — smaller/cheaper box, same methodology</summary>
 
 <img alt="Base64 throughput by payload size on AWS c7i.large (Intel Xeon Platinum 8488C) — a smaller instance run with the same methodology" src="benches/results/throughput-c7i.png">
 
-Small-input latency (32 B, zero-alloc `_into`): ~10 ns encode, ~13 ns decode.
+Peaks at 41.1 GiB/s encode and 40.7 GiB/s decode, both at 4 KiB. 32 B latency: ~8.9 ns
+encode, ~11.2 ns decode.
 
 </details>
+
+Reading the table:
+
+* **[Turbo-Base64](https://github.com/powturbo/Turbo-Base64)** is the fastest thing in the
+  space and now sits in our own bench rather than in a citation. We trade wins with it,
+  and where the split falls depends on the box. On `c7i` we lead encode across the whole
+  sweep, sometimes by 40%+, and decode is a coin-flip. On `c8a` we lead everything that
+  fits in cache and it pulls ahead once the working set is DRAM-resident — at 10 MB it is
+  ~28% up on encode and ~22% on decode. No general win for either side, which is itself
+  the result: we no longer assume unchecked C is automatically ahead. It is GPLv3, against
+  our 0BSD.
+* **`base64` (std)** added a SIMD path in 0.23 (default-on `simd-unsafe`, AVX2/NEON with
+  runtime detection), so it's no longer the zero-`unsafe` scalar crate it used to be. It
+  publishes MIRI and fuzz coverage for that path, but no Kani or MSan.
+* **`base64-simd`** is a strong crate that raised the bar before us; we measure faster at
+  every size on both boxes except 32 B decode, where it wins on latency, and we publish
+  Kani/MIRI/MSan we couldn't find for it.
+* **`base64-ng`** encodes competitively at large sizes but its decoder is
+  scalar-speed — under 1 GiB/s everywhere, which is why its line sits on the floor of the
+  decode panel.
+
+† — For Turbo-Base64 we cloned its real upstream C source, built it with its own official
+per-kernel flags (its `avx512vbmi2` kernel auto-selects on both CPUs, confirmed at
+runtime), verified our harness round-trips and rejects corrupt input the same as its own
+checked decode, and ran both back to back. The C-side timing harness is ours, not theirs,
+so treat its margins as directional rather than criterion-grade.
 
 Reproduce it:
 
@@ -232,8 +266,7 @@ Reproduce it:
 # 1. Box prep
 df -h /
 sudo apt-get update
-sudo apt-get install -y build-essential git python3-pip
-pip install --break-system-packages plotly kaleido
+sudo apt-get install -y build-essential git
 
 # 2. Toolchain
 curl --proto '=https' --tlsv1.3 -sSf https://sh.rustup.rs | sh -s -- -y
@@ -243,9 +276,7 @@ source "$HOME/.cargo/env"
 git clone https://github.com/hacer-bark/base64-turbo
 cd base64-turbo
 
-# Turbo-Base64 is GPL-3 and is NOT vendored. It goes in target/, which is
-# git-ignored and never packaged. Override the location with TB64_SRC if you
-# want it elsewhere.
+# Turbo-Base64 is GPL-3 and is NOT vendored.
 git clone --depth 1 https://github.com/powturbo/Turbo-Base64 target/tb64-src
 
 # 4. Pre-flight: the C competitor must actually be linked
@@ -253,18 +284,12 @@ cargo build --benches 2>&1 | grep -i "Turbo-Base64 source not found" \
   && echo "STOP: tb64 not linked, fix before benching"
 
 # 5. Full run
-mkdir -p benches/results
-BENCH_TARGET=all cargo bench 2>&1 | tee benches/results/raw.txt
-
-# 6. Plot
-python3 benches/scripts/plot_bench.py benches/results/raw.txt
-
-# 7. Pull results back
-# scp ubuntu@127.0.0.1:base64-turbo/benches/results/{raw.txt,throughput.png} .
+BENCH_TARGET=all cargo bench
 ```
 
-Select comparison targets with `BENCH_TARGET` (comma-separated): `turbo` (default,
-allocating API), `turbo-buff` (zero-allocation API), `simd`, `std`, `all`.
+Select comparison targets with `BENCH_TARGET` (comma-separated): `turbo` (default), `std`,
+`simd`, `ng`, `tb64`, plus the control `memcpy` (byte-copy roofline, not a codec). `all`
+runs every one of them.
 
 Raw `cargo bench` output — 32 B through 10 MB, every target — is checked in:
 [`c8a-large-latest.txt`](benches/results/c8a-large-latest.txt) and
@@ -364,51 +389,6 @@ from it instead of from scratch.
 
 </details>
 
-## Ecosystem
-
-| Library | Lang | SIMD | Verified `unsafe` | Encode (64 KiB) | Decode (64 KiB) | Source |
-| :--- | :---: | :---: | :---: | ---: | ---: | :--- |
-| **base64-turbo** | Rust | ✅ | ✅ Kani + MIRI + MSan + Fuzz | 27.1 GiB/s | 34.6 GiB/s | our bench, same box † |
-| [Turbo-Base64](https://github.com/powturbo/Turbo-Base64) | C | ✅ | ❌ | 18.4 GiB/s | 37.8 GiB/s | our bench, same box † |
-| [base64](https://crates.io/crates/base64) (std) | Rust | ✅ (0.23+) | ✅ MIRI + Fuzz | 6.9 GiB/s | 13.2 GiB/s | our bench |
-| [base64-simd](https://crates.io/crates/base64-simd) | Rust | ✅ | ❌ | 11.1 GiB/s | 10.2 GiB/s | our bench |
-| [base64-ng](https://crates.io/crates/base64-ng) | Rust | ✅ | ❌ | — | — | not yet benched |
-| [aklomp/base64](https://github.com/aklomp/base64) | C | ✅ | ❌ | 24.4 GiB/s | 21.0 GiB/s | vendor bench |
-| [fastbase64](https://github.com/lemire/fastbase64) | C | ✅ | ❌ | 22.1 GiB/s | 19.8 GiB/s | vendor bench |
-
-All Rust rows (except `base64-ng`) and the Turbo-Base64 row are ours, measured on the same
-AWS `c7i.large` in the same session, pinned to one core. The aklomp/base64 and fastbase64
-rows are the vendors' own published numbers on an Intel i7-9700K from 2022
-([source](https://github.com/powturbo/Turbo-Base64#benchmark-incl-the-best-simd-base64-libs),
-decimal MB/s converted to GiB/s), unreproduced by us — treat those two as directional only.
-
-† — For Turbo-Base64 we cloned its real upstream C source, built it with its own official
-per-kernel flags (its `tb64v512vbmi` kernel auto-selects on this CPU, confirmed at
-runtime), verified our harness round-trips and rejects corrupt input the same as its own
-checked decode, and ran both back to back. But the C-side timing harness is ours, not
-theirs — one measurement session, not the statistical rigor criterion gives the Rust
-numbers, so treat the margins as directional. On that comparison we're ahead on both
-directions — wide on encode, narrow on decode — which is close enough that we no longer
-assume unchecked C is automatically ahead, without claiming a general win either.
-
-How the Rust alternatives compare:
-
-* **`base64` (std)** added a SIMD path in 0.23 (default-on `simd-unsafe`, AVX2/NEON with
-  runtime detection), so it's no longer the zero-`unsafe` scalar crate it used to be. It
-  publishes MIRI and fuzz coverage for that path, but no Kani or MSan.
-* **`base64-simd`** is a strong crate that raised the bar before us; we measure faster
-  overall on this box and publish Kani/MIRI/MSan we couldn't find for it.
-* **`base64-ng`** is a newer entrant we haven't benchmarked — no speed claim either way.
-* **The C libraries** still get real advantages from unchecked pointer arithmetic and no
-  published verification (`turbo-base64` is also GPLv3, against our 0BSD) — pick them if
-  you need the absolute ceiling on unfamiliar hardware and will own the risk.
-
-Also in the space: [vb64](https://crates.io/crates/vb64) (unmaintained),
-[base-d](https://crates.io/crates/base-d) (33+ alphabets, decode-only SIMD),
-[webbuf](https://crates.io/crates/webbuf) and [baste64](https://crates.io/crates/baste64)
-(WASM-oriented). None of these publish Kani or MIRI verification of their `unsafe` code,
-as far as we could find.
-
 ## FAQ
 
 **Why no SSE, WASM, or other SIMD backends?**
@@ -425,7 +405,7 @@ as best-effort; it may be deprecated in a future release.
 **Does this replace the `base64` crate?**
 For most callers, yes — `STANDARD` and `URL_SAFE` are drop-in RFC 4648 compatible, and
 [custom alphabets](#custom-alphabets) are supported too. The difference is throughput and
-verification depth (see [Ecosystem](#ecosystem)), not API surface. If you need streaming
+verification depth (see [Benchmarks](#benchmarks)), not API surface. If you need streaming
 `Read`/`Write` adapters or don't care about the last 20-80 GiB/s, the `base64` crate is a
 perfectly reasonable, smaller dependency.
 

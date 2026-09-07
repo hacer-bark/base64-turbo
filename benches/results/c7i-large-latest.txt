@@ -1,223 +1,335 @@
-Benchmarking Base64_Performances/Encode/Turbo/32
-  time:   [14.668 ns 14.678 ns 14.686 ns]
-  thrpt:  [2.0292 GiB/s 2.0305 GiB/s 2.0317 GiB/s]
+Benchmarking Base64_Performances/Encode/Memcpy/32
+  time:   [2.6668 ns 2.7082 ns 2.7460 ns]
+  thrpt:  [10.853 GiB/s 11.004 GiB/s 11.175 GiB/s]
 
-Benchmarking Base64_Performances/Encode/TurboBuff/32
-  time:   [10.047 ns 10.051 ns 10.055 ns]
-  thrpt:  [2.9639 GiB/s 2.9651 GiB/s 2.9663 GiB/s]
+Benchmarking Base64_Performances/Encode/Turbo/32
+  time:   [8.8911 ns 8.9356 ns 8.9985 ns]
+  thrpt:  [3.3119 GiB/s 3.3352 GiB/s 3.3519 GiB/s]
+
+Benchmarking Base64_Performances/Encode/Tb64/32
+  time:   [7.6486 ns 7.6495 ns 7.6505 ns]
+  thrpt:  [3.8955 GiB/s 3.8960 GiB/s 3.8964 GiB/s]
 
 Benchmarking Base64_Performances/Encode/Std/32
-  time:   [31.882 ns 31.902 ns 31.923 ns]
-  thrpt:  [955.98 MiB/s 956.61 MiB/s 957.20 MiB/s]
+  time:   [20.999 ns 21.001 ns 21.004 ns]
+  thrpt:  [1.4189 GiB/s 1.4191 GiB/s 1.4192 GiB/s]
 
 Benchmarking Base64_Performances/Encode/Simd/32
-  time:   [22.205 ns 22.208 ns 22.213 ns]
-  thrpt:  [1.3417 GiB/s 1.3419 GiB/s 1.3422 GiB/s]
+  time:   [12.675 ns 12.678 ns 12.680 ns]
+  thrpt:  [2.3504 GiB/s 2.3508 GiB/s 2.3512 GiB/s]
+
+Benchmarking Base64_Performances/Encode/Ng/32
+  time:   [362.03 ns 362.09 ns 362.15 ns]
+  thrpt:  [84.267 MiB/s 84.282 MiB/s 84.296 MiB/s]
+
+Benchmarking Base64_Performances/Decode/Memcpy/32
+  time:   [2.6170 ns 2.6609 ns 2.7013 ns]
+  thrpt:  [15.170 GiB/s 15.400 GiB/s 15.659 GiB/s]
 
 Benchmarking Base64_Performances/Decode/Turbo/32
-  time:   [21.370 ns 21.377 ns 21.384 ns]
-  thrpt:  [1.9163 GiB/s 1.9169 GiB/s 1.9175 GiB/s]
+  time:   [11.235 ns 11.245 ns 11.256 ns]
+  thrpt:  [3.6404 GiB/s 3.6441 GiB/s 3.6473 GiB/s]
 
-Benchmarking Base64_Performances/Decode/TurboBuff/32
-  time:   [13.355 ns 13.358 ns 13.362 ns]
-  thrpt:  [3.0668 GiB/s 3.0676 GiB/s 3.0684 GiB/s]
+Benchmarking Base64_Performances/Decode/Tb64/32
+  time:   [12.395 ns 12.396 ns 12.397 ns]
+  thrpt:  [3.3054 GiB/s 3.3058 GiB/s 3.3060 GiB/s]
 
 Benchmarking Base64_Performances/Decode/Std/32
-  time:   [33.923 ns 33.931 ns 33.938 ns]
-  thrpt:  [1.2075 GiB/s 1.2077 GiB/s 1.2080 GiB/s]
+  time:   [32.337 ns 32.599 ns 32.987 ns]
+  thrpt:  [1.2422 GiB/s 1.2570 GiB/s 1.2672 GiB/s]
 
 Benchmarking Base64_Performances/Decode/Simd/32
-  time:   [13.256 ns 13.259 ns 13.263 ns]
-  thrpt:  [3.0896 GiB/s 3.0906 GiB/s 3.0913 GiB/s]
+  time:   [9.9360 ns 9.9848 ns 10.077 ns]
+  thrpt:  [4.0665 GiB/s 4.1041 GiB/s 4.1242 GiB/s]
+
+Benchmarking Base64_Performances/Decode/Ng/32
+  time:   [448.21 ns 448.42 ns 448.63 ns]
+  thrpt:  [93.533 MiB/s 93.577 MiB/s 93.620 MiB/s]
+
+Benchmarking Base64_Performances/Encode/Memcpy/512
+  time:   [5.7501 ns 5.7694 ns 5.7866 ns]
+  thrpt:  [82.404 GiB/s 82.650 GiB/s 82.927 GiB/s]
 
 Benchmarking Base64_Performances/Encode/Turbo/512
-  time:   [17.432 ns 17.440 ns 17.449 ns]
-  thrpt:  [27.328 GiB/s 27.341 GiB/s 27.354 GiB/s]
+  time:   [15.807 ns 15.810 ns 15.812 ns]
+  thrpt:  [30.156 GiB/s 30.161 GiB/s 30.166 GiB/s]
 
-Benchmarking Base64_Performances/Encode/TurboBuff/512
-  time:   [13.087 ns 13.094 ns 13.101 ns]
-  thrpt:  [36.398 GiB/s 36.418 GiB/s 36.437 GiB/s]
+Benchmarking Base64_Performances/Encode/Tb64/512
+  time:   [19.944 ns 19.946 ns 19.949 ns]
+  thrpt:  [23.902 GiB/s 23.906 GiB/s 23.909 GiB/s]
 
 Benchmarking Base64_Performances/Encode/Std/512
-  time:   [96.101 ns 96.121 ns 96.139 ns]
-  thrpt:  [4.9598 GiB/s 4.9608 GiB/s 4.9618 GiB/s]
+  time:   [59.764 ns 59.768 ns 59.771 ns]
+  thrpt:  [7.9777 GiB/s 7.9782 GiB/s 7.9786 GiB/s]
 
 Benchmarking Base64_Performances/Encode/Simd/512
-  time:   [54.673 ns 54.689 ns 54.712 ns]
-  thrpt:  [8.7154 GiB/s 8.7191 GiB/s 8.7217 GiB/s]
+  time:   [56.544 ns 56.547 ns 56.550 ns]
+  thrpt:  [8.4321 GiB/s 8.4325 GiB/s 8.4330 GiB/s]
+
+Benchmarking Base64_Performances/Encode/Ng/512
+  time:   [348.01 ns 348.31 ns 348.60 ns]
+  thrpt:  [1.3679 GiB/s 1.3690 GiB/s 1.3702 GiB/s]
+
+Benchmarking Base64_Performances/Decode/Memcpy/512
+  time:   [6.5122 ns 6.5139 ns 6.5168 ns]
+  thrpt:  [97.752 GiB/s 97.794 GiB/s 97.820 GiB/s]
 
 Benchmarking Base64_Performances/Decode/Turbo/512
-  time:   [27.364 ns 27.396 ns 27.431 ns]
-  thrpt:  [23.222 GiB/s 23.252 GiB/s 23.280 GiB/s]
+  time:   [22.922 ns 22.944 ns 22.971 ns]
+  thrpt:  [27.732 GiB/s 27.764 GiB/s 27.791 GiB/s]
 
-Benchmarking Base64_Performances/Decode/TurboBuff/512
-  time:   [18.629 ns 18.633 ns 18.638 ns]
-  thrpt:  [34.179 GiB/s 34.188 GiB/s 34.196 GiB/s]
+Benchmarking Base64_Performances/Decode/Tb64/512
+  time:   [23.881 ns 23.888 ns 23.895 ns]
+  thrpt:  [26.659 GiB/s 26.667 GiB/s 26.675 GiB/s]
 
 Benchmarking Base64_Performances/Decode/Std/512
-  time:   [85.862 ns 85.901 ns 85.936 ns]
-  thrpt:  [7.4128 GiB/s 7.4158 GiB/s 7.4192 GiB/s]
+  time:   [62.875 ns 62.883 ns 62.890 ns]
+  thrpt:  [10.129 GiB/s 10.130 GiB/s 10.132 GiB/s]
 
 Benchmarking Base64_Performances/Decode/Simd/512
-  time:   [67.789 ns 67.916 ns 68.069 ns]
-  thrpt:  [9.3585 GiB/s 9.3796 GiB/s 9.3971 GiB/s]
+  time:   [72.860 ns 72.864 ns 72.869 ns]
+  thrpt:  [8.7421 GiB/s 8.7427 GiB/s 8.7432 GiB/s]
+
+Benchmarking Base64_Performances/Decode/Ng/512
+  time:   [1.3891 µs 1.3900 µs 1.3910 µs]
+  thrpt:  [468.94 MiB/s 469.28 MiB/s 469.61 MiB/s]
+
+Benchmarking Base64_Performances/Encode/Memcpy/4096
+  time:   [29.098 ns 29.162 ns 29.225 ns]
+  thrpt:  [130.53 GiB/s 130.81 GiB/s 131.10 GiB/s]
 
 Benchmarking Base64_Performances/Encode/Turbo/4096
-  time:   [112.47 ns 112.85 ns 113.22 ns]
-  thrpt:  [33.692 GiB/s 33.805 GiB/s 33.918 GiB/s]
+  time:   [91.606 ns 92.837 ns 94.065 ns]
+  thrpt:  [40.554 GiB/s 41.090 GiB/s 41.643 GiB/s]
 
-Benchmarking Base64_Performances/Encode/TurboBuff/4096
-  time:   [72.559 ns 72.680 ns 72.832 ns]
-  thrpt:  [52.377 GiB/s 52.486 GiB/s 52.574 GiB/s]
+Benchmarking Base64_Performances/Encode/Tb64/4096
+  time:   [100.92 ns 101.19 ns 101.56 ns]
+  thrpt:  [37.562 GiB/s 37.700 GiB/s 37.798 GiB/s]
 
 Benchmarking Base64_Performances/Encode/Std/4096
-  time:   [561.49 ns 561.64 ns 561.78 ns]
-  thrpt:  [6.7904 GiB/s 6.7921 GiB/s 6.7939 GiB/s]
+  time:   [431.04 ns 431.54 ns 432.09 ns]
+  thrpt:  [8.8284 GiB/s 8.8398 GiB/s 8.8499 GiB/s]
 
 Benchmarking Base64_Performances/Encode/Simd/4096
-  time:   [390.33 ns 390.48 ns 390.65 ns]
-  thrpt:  [9.7649 GiB/s 9.7692 GiB/s 9.7730 GiB/s]
+  time:   [408.92 ns 410.57 ns 412.13 ns]
+  thrpt:  [9.2560 GiB/s 9.2912 GiB/s 9.3287 GiB/s]
+
+Benchmarking Base64_Performances/Encode/Ng/4096
+  time:   [395.25 ns 395.70 ns 396.15 ns]
+  thrpt:  [9.6294 GiB/s 9.6403 GiB/s 9.6514 GiB/s]
+
+Benchmarking Base64_Performances/Decode/Memcpy/4096
+  time:   [39.263 ns 39.276 ns 39.284 ns]
+  thrpt:  [129.54 GiB/s 129.56 GiB/s 129.61 GiB/s]
 
 Benchmarking Base64_Performances/Decode/Turbo/4096
-  time:   [127.00 ns 127.50 ns 128.04 ns]
-  thrpt:  [39.744 GiB/s 39.911 GiB/s 40.067 GiB/s]
+  time:   [124.94 ns 124.99 ns 125.10 ns]
+  thrpt:  [40.679 GiB/s 40.714 GiB/s 40.729 GiB/s]
 
-Benchmarking Base64_Performances/Decode/TurboBuff/4096
-  time:   [96.768 ns 96.829 ns 96.912 ns]
-  thrpt:  [52.509 GiB/s 52.554 GiB/s 52.587 GiB/s]
+Benchmarking Base64_Performances/Decode/Tb64/4096
+  time:   [110.08 ns 110.09 ns 110.10 ns]
+  thrpt:  [46.220 GiB/s 46.225 GiB/s 46.229 GiB/s]
 
 Benchmarking Base64_Performances/Decode/Std/4096
-  time:   [389.66 ns 389.91 ns 390.17 ns]
-  thrpt:  [13.042 GiB/s 13.051 GiB/s 13.060 GiB/s]
+  time:   [395.90 ns 396.60 ns 397.56 ns]
+  thrpt:  [12.800 GiB/s 12.831 GiB/s 12.853 GiB/s]
 
 Benchmarking Base64_Performances/Decode/Simd/4096
-  time:   [504.21 ns 504.27 ns 504.33 ns]
-  thrpt:  [10.090 GiB/s 10.091 GiB/s 10.093 GiB/s]
+  time:   [570.01 ns 570.22 ns 570.44 ns]
+  thrpt:  [8.9208 GiB/s 8.9242 GiB/s 8.9275 GiB/s]
+
+Benchmarking Base64_Performances/Decode/Ng/4096
+  time:   [8.4594 µs 8.4664 µs 8.4738 µs]
+  thrpt:  [614.94 MiB/s 615.48 MiB/s 615.99 MiB/s]
+
+Benchmarking Base64_Performances/Encode/Memcpy/65536
+  time:   [1.5176 µs 1.5177 µs 1.5179 µs]
+  thrpt:  [40.210 GiB/s 40.215 GiB/s 40.219 GiB/s]
 
 Benchmarking Base64_Performances/Encode/Turbo/65536
-  time:   [1.9721 µs 1.9728 µs 1.9735 µs]
-  thrpt:  [30.927 GiB/s 30.939 GiB/s 30.949 GiB/s]
+  time:   [2.3661 µs 2.3722 µs 2.3791 µs]
+  thrpt:  [25.655 GiB/s 25.730 GiB/s 25.796 GiB/s]
 
-Benchmarking Base64_Performances/Encode/TurboBuff/65536
-  time:   [1.9331 µs 1.9341 µs 1.9352 µs]
-  thrpt:  [31.540 GiB/s 31.558 GiB/s 31.574 GiB/s]
+Benchmarking Base64_Performances/Encode/Tb64/65536
+  time:   [3.3620 µs 3.3626 µs 3.3631 µs]
+  thrpt:  [18.148 GiB/s 18.151 GiB/s 18.154 GiB/s]
 
 Benchmarking Base64_Performances/Encode/Std/65536
-  time:   [8.8401 µs 8.8437 µs 8.8471 µs]
-  thrpt:  [6.8989 GiB/s 6.9016 GiB/s 6.9043 GiB/s]
+  time:   [6.8219 µs 6.8286 µs 6.8380 µs]
+  thrpt:  [8.9258 GiB/s 8.9381 GiB/s 8.9470 GiB/s]
 
 Benchmarking Base64_Performances/Encode/Simd/65536
-  time:   [5.5112 µs 5.5121 µs 5.5131 µs]
-  thrpt:  [11.071 GiB/s 11.073 GiB/s 11.075 GiB/s]
+  time:   [6.6574 µs 6.6736 µs 6.6868 µs]
+  thrpt:  [9.1276 GiB/s 9.1458 GiB/s 9.1679 GiB/s]
+
+Benchmarking Base64_Performances/Encode/Ng/65536
+  time:   [3.5051 µs 3.5059 µs 3.5072 µs]
+  thrpt:  [17.403 GiB/s 17.409 GiB/s 17.413 GiB/s]
+
+Benchmarking Base64_Performances/Decode/Memcpy/65536
+  time:   [2.0743 µs 2.0745 µs 2.0748 µs]
+  thrpt:  [39.225 GiB/s 39.229 GiB/s 39.233 GiB/s]
 
 Benchmarking Base64_Performances/Decode/Turbo/65536
-  time:   [1.7409 µs 1.7416 µs 1.7423 µs]
-  thrpt:  [46.710 GiB/s 46.729 GiB/s 46.748 GiB/s]
+  time:   [2.2042 µs 2.2059 µs 2.2078 µs]
+  thrpt:  [36.862 GiB/s 36.894 GiB/s 36.921 GiB/s]
 
-Benchmarking Base64_Performances/Decode/TurboBuff/65536
-  time:   [1.7835 µs 1.7921 µs 1.8017 µs]
-  thrpt:  [45.171 GiB/s 45.411 GiB/s 45.632 GiB/s]
+Benchmarking Base64_Performances/Decode/Tb64/65536
+  time:   [2.1122 µs 2.1162 µs 2.1217 µs]
+  thrpt:  [38.358 GiB/s 38.457 GiB/s 38.530 GiB/s]
 
 Benchmarking Base64_Performances/Decode/Std/65536
-  time:   [6.1656 µs 6.1728 µs 6.1800 µs]
-  thrpt:  [13.169 GiB/s 13.184 GiB/s 13.199 GiB/s]
+  time:   [5.9373 µs 5.9380 µs 5.9388 µs]
+  thrpt:  [13.704 GiB/s 13.705 GiB/s 13.707 GiB/s]
 
 Benchmarking Base64_Performances/Decode/Simd/65536
-  time:   [7.9646 µs 7.9757 µs 7.9861 µs]
-  thrpt:  [10.191 GiB/s 10.204 GiB/s 10.218 GiB/s]
+  time:   [8.9260 µs 8.9396 µs 8.9577 µs]
+  thrpt:  [9.0852 GiB/s 9.1036 GiB/s 9.1175 GiB/s]
+
+Benchmarking Base64_Performances/Decode/Ng/65536
+  time:   [222.89 µs 223.26 µs 223.67 µs]
+  thrpt:  [372.58 MiB/s 373.26 MiB/s 373.88 MiB/s]
+
+Benchmarking Base64_Performances/Encode/Memcpy/524288
+  time:   [12.232 µs 12.233 µs 12.234 µs]
+  thrpt:  [39.912 GiB/s 39.915 GiB/s 39.917 GiB/s]
 
 Benchmarking Base64_Performances/Encode/Turbo/524288
-  time:   [14.698 µs 14.702 µs 14.707 µs]
-  thrpt:  [33.200 GiB/s 33.211 GiB/s 33.222 GiB/s]
+  time:   [18.603 µs 18.633 µs 18.672 µs]
+  thrpt:  [26.151 GiB/s 26.205 GiB/s 26.248 GiB/s]
 
-Benchmarking Base64_Performances/Encode/TurboBuff/524288
-  time:   [15.037 µs 15.084 µs 15.139 µs]
-  thrpt:  [32.253 GiB/s 32.371 GiB/s 32.472 GiB/s]
+Benchmarking Base64_Performances/Encode/Tb64/524288
+  time:   [27.004 µs 27.006 µs 27.008 µs]
+  thrpt:  [18.079 GiB/s 18.080 GiB/s 18.082 GiB/s]
 
 Benchmarking Base64_Performances/Encode/Std/524288
-  time:   [74.420 µs 74.599 µs 74.856 µs]
-  thrpt:  [6.5230 GiB/s 6.5454 GiB/s 6.5612 GiB/s]
+  time:   [54.590 µs 54.593 µs 54.598 µs]
+  thrpt:  [8.9433 GiB/s 8.9440 GiB/s 8.9446 GiB/s]
 
 Benchmarking Base64_Performances/Encode/Simd/524288
-  time:   [44.463 µs 44.478 µs 44.494 µs]
-  thrpt:  [10.974 GiB/s 10.978 GiB/s 10.982 GiB/s]
+  time:   [51.914 µs 52.104 µs 52.298 µs]
+  thrpt:  [9.3365 GiB/s 9.3713 GiB/s 9.4055 GiB/s]
+
+Benchmarking Base64_Performances/Encode/Ng/524288
+  time:   [25.821 µs 25.823 µs 25.825 µs]
+  thrpt:  [18.908 GiB/s 18.909 GiB/s 18.911 GiB/s]
+
+Benchmarking Base64_Performances/Decode/Memcpy/524288
+  time:   [16.070 µs 16.071 µs 16.073 µs]
+  thrpt:  [40.506 GiB/s 40.511 GiB/s 40.514 GiB/s]
 
 Benchmarking Base64_Performances/Decode/Turbo/524288
-  time:   [14.137 µs 14.145 µs 14.153 µs]
-  thrpt:  [45.999 GiB/s 46.028 GiB/s 46.052 GiB/s]
+  time:   [19.307 µs 19.311 µs 19.315 µs]
+  thrpt:  [33.707 GiB/s 33.714 GiB/s 33.720 GiB/s]
 
-Benchmarking Base64_Performances/Decode/TurboBuff/524288
-  time:   [13.774 µs 13.780 µs 13.786 µs]
-  thrpt:  [47.225 GiB/s 47.247 GiB/s 47.267 GiB/s]
+Benchmarking Base64_Performances/Decode/Tb64/524288
+  time:   [18.069 µs 18.089 µs 18.137 µs]
+  thrpt:  [35.896 GiB/s 35.990 GiB/s 36.030 GiB/s]
 
 Benchmarking Base64_Performances/Decode/Std/524288
-  time:   [48.060 µs 48.068 µs 48.077 µs]
-  thrpt:  [13.542 GiB/s 13.544 GiB/s 13.546 GiB/s]
+  time:   [48.247 µs 48.252 µs 48.257 µs]
+  thrpt:  [13.491 GiB/s 13.493 GiB/s 13.494 GiB/s]
 
 Benchmarking Base64_Performances/Decode/Simd/524288
-  time:   [60.128 µs 60.160 µs 60.218 µs]
-  thrpt:  [10.811 GiB/s 10.822 GiB/s 10.828 GiB/s]
+  time:   [71.994 µs 72.052 µs 72.139 µs]
+  thrpt:  [9.0248 GiB/s 9.0358 GiB/s 9.0430 GiB/s]
+
+Benchmarking Base64_Performances/Decode/Ng/524288
+  time:   [1.9916 ms 1.9990 ms 2.0066 ms]
+  thrpt:  [332.24 MiB/s 333.50 MiB/s 334.74 MiB/s]
+
+Benchmarking Base64_Performances/Encode/Memcpy/1048576
+  time:   [38.232 µs 38.238 µs 38.248 µs]
+  thrpt:  [25.532 GiB/s 25.539 GiB/s 25.543 GiB/s]
 
 Benchmarking Base64_Performances/Encode/Turbo/1048576
-  time:   [55.547 µs 55.563 µs 55.577 µs]
-  thrpt:  [17.571 GiB/s 17.576 GiB/s 17.581 GiB/s]
+  time:   [65.137 µs 65.147 µs 65.157 µs]
+  thrpt:  [14.988 GiB/s 14.990 GiB/s 14.992 GiB/s]
 
-Benchmarking Base64_Performances/Encode/TurboBuff/1048576
-  time:   [55.467 µs 55.480 µs 55.492 µs]
-  thrpt:  [17.598 GiB/s 17.602 GiB/s 17.606 GiB/s]
+Benchmarking Base64_Performances/Encode/Tb64/1048576
+  time:   [99.025 µs 99.070 µs 99.113 µs]
+  thrpt:  [9.8530 GiB/s 9.8573 GiB/s 9.8618 GiB/s]
 
 Benchmarking Base64_Performances/Encode/Std/1048576
-  time:   [149.53 µs 149.72 µs 149.89 µs]
-  thrpt:  [6.5153 GiB/s 6.5226 GiB/s 6.5310 GiB/s]
+  time:   [107.49 µs 107.54 µs 107.61 µs]
+  thrpt:  [9.0754 GiB/s 9.0805 GiB/s 9.0854 GiB/s]
 
 Benchmarking Base64_Performances/Encode/Simd/1048576
-  time:   [87.903 µs 87.917 µs 87.932 µs]
-  thrpt:  [11.106 GiB/s 11.108 GiB/s 11.110 GiB/s]
+  time:   [102.69 µs 102.95 µs 103.24 µs]
+  thrpt:  [9.4596 GiB/s 9.4861 GiB/s 9.5099 GiB/s]
+
+Benchmarking Base64_Performances/Encode/Ng/1048576
+  time:   [73.770 µs 73.792 µs 73.819 µs]
+  thrpt:  [13.229 GiB/s 13.234 GiB/s 13.238 GiB/s]
+
+Benchmarking Base64_Performances/Decode/Memcpy/1048576
+  time:   [75.528 µs 75.537 µs 75.548 µs]
+  thrpt:  [17.235 GiB/s 17.238 GiB/s 17.240 GiB/s]
 
 Benchmarking Base64_Performances/Decode/Turbo/1048576
-  time:   [57.993 µs 58.015 µs 58.043 µs]
-  thrpt:  [22.433 GiB/s 22.444 GiB/s 22.452 GiB/s]
+  time:   [66.260 µs 66.278 µs 66.302 µs]
+  thrpt:  [19.639 GiB/s 19.646 GiB/s 19.651 GiB/s]
 
-Benchmarking Base64_Performances/Decode/TurboBuff/1048576
-  time:   [57.837 µs 57.848 µs 57.860 µs]
-  thrpt:  [22.504 GiB/s 22.509 GiB/s 22.513 GiB/s]
+Benchmarking Base64_Performances/Decode/Tb64/1048576
+  time:   [67.308 µs 67.316 µs 67.324 µs]
+  thrpt:  [19.341 GiB/s 19.343 GiB/s 19.345 GiB/s]
 
 Benchmarking Base64_Performances/Decode/Std/1048576
-  time:   [100.47 µs 100.48 µs 100.49 µs]
-  thrpt:  [12.957 GiB/s 12.958 GiB/s 12.959 GiB/s]
+  time:   [98.504 µs 98.626 µs 98.877 µs]
+  thrpt:  [13.169 GiB/s 13.202 GiB/s 13.219 GiB/s]
 
 Benchmarking Base64_Performances/Decode/Simd/1048576
-  time:   [120.71 µs 120.72 µs 120.74 µs]
-  thrpt:  [10.784 GiB/s 10.786 GiB/s 10.787 GiB/s]
+  time:   [145.52 µs 145.57 µs 145.61 µs]
+  thrpt:  [8.9422 GiB/s 8.9449 GiB/s 8.9478 GiB/s]
+
+Benchmarking Base64_Performances/Decode/Ng/1048576
+  time:   [3.9088 ms 3.9245 ms 3.9405 ms]
+  thrpt:  [338.37 MiB/s 339.75 MiB/s 341.11 MiB/s]
+
+Benchmarking Base64_Performances/Encode/Memcpy/10485760
+  time:   [720.89 µs 721.82 µs 722.90 µs]
+  thrpt:  [13.509 GiB/s 13.529 GiB/s 13.547 GiB/s]
 
 Benchmarking Base64_Performances/Encode/Turbo/10485760
-  time:   [818.73 µs 818.88 µs 819.04 µs]
-  thrpt:  [11.923 GiB/s 11.926 GiB/s 11.928 GiB/s]
+  time:   [898.96 µs 899.90 µs 900.94 µs]
+  thrpt:  [10.839 GiB/s 10.852 GiB/s 10.863 GiB/s]
 
-Benchmarking Base64_Performances/Encode/TurboBuff/10485760
-  time:   [842.43 µs 860.30 µs 875.16 µs]
-  thrpt:  [11.159 GiB/s 11.351 GiB/s 11.592 GiB/s]
+Benchmarking Base64_Performances/Encode/Tb64/10485760
+  time:   [1.2329 ms 1.2358 ms 1.2390 ms]
+  thrpt:  [7.8821 GiB/s 7.9022 GiB/s 7.9208 GiB/s]
 
 Benchmarking Base64_Performances/Encode/Std/10485760
-  time:   [2.0863 ms 2.0878 ms 2.0893 ms]
-  thrpt:  [4.6742 GiB/s 4.6774 GiB/s 4.6808 GiB/s]
+  time:   [1.0943 ms 1.0964 ms 1.0983 ms]
+  thrpt:  [8.8914 GiB/s 8.9074 GiB/s 8.9242 GiB/s]
 
 Benchmarking Base64_Performances/Encode/Simd/10485760
-  time:   [1.0348 ms 1.0392 ms 1.0444 ms]
-  thrpt:  [9.3505 GiB/s 9.3969 GiB/s 9.4372 GiB/s]
+  time:   [1.0497 ms 1.0525 ms 1.0554 ms]
+  thrpt:  [9.2531 GiB/s 9.2789 GiB/s 9.3029 GiB/s]
+
+Benchmarking Base64_Performances/Encode/Ng/10485760
+  time:   [965.83 µs 966.87 µs 967.89 µs]
+  thrpt:  [10.090 GiB/s 10.100 GiB/s 10.111 GiB/s]
+
+Benchmarking Base64_Performances/Decode/Memcpy/10485760
+  time:   [954.22 µs 955.43 µs 956.85 µs]
+  thrpt:  [13.608 GiB/s 13.628 GiB/s 13.646 GiB/s]
 
 Benchmarking Base64_Performances/Decode/Turbo/10485760
-  time:   [916.59 µs 917.07 µs 917.55 µs]
-  thrpt:  [14.191 GiB/s 14.198 GiB/s 14.206 GiB/s]
+  time:   [918.83 µs 919.24 µs 919.75 µs]
+  thrpt:  [14.157 GiB/s 14.165 GiB/s 14.171 GiB/s]
 
-Benchmarking Base64_Performances/Decode/TurboBuff/10485760
-  time:   [945.00 µs 969.61 µs 996.89 µs]
-  thrpt:  [13.061 GiB/s 13.429 GiB/s 13.779 GiB/s]
+Benchmarking Base64_Performances/Decode/Tb64/10485760
+  time:   [942.63 µs 943.45 µs 944.37 µs]
+  thrpt:  [13.788 GiB/s 13.801 GiB/s 13.813 GiB/s]
 
 Benchmarking Base64_Performances/Decode/Std/10485760
-  time:   [1.8407 ms 1.9152 ms 1.9933 ms]
-  thrpt:  [6.5323 GiB/s 6.7987 GiB/s 7.0739 GiB/s]
+  time:   [980.56 µs 982.12 µs 983.86 µs]
+  thrpt:  [13.234 GiB/s 13.258 GiB/s 13.279 GiB/s]
 
 Benchmarking Base64_Performances/Decode/Simd/10485760
-  time:   [1.6604 ms 1.6946 ms 1.7335 ms]
-  thrpt:  [7.5114 GiB/s 7.6836 GiB/s 7.8421 GiB/s]
+  time:   [1.4436 ms 1.4460 ms 1.4485 ms]
+  thrpt:  [8.9892 GiB/s 9.0047 GiB/s 9.0198 GiB/s]
+
+Benchmarking Base64_Performances/Decode/Ng/10485760
+  time:   [38.763 ms 38.921 ms 39.080 ms]
+  thrpt:  [341.18 MiB/s 342.57 MiB/s 343.97 MiB/s]
