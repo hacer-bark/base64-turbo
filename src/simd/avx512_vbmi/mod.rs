@@ -258,58 +258,17 @@ const NONTEMPORAL_FLOOR: usize = 512 * 1024;
 #[cfg(miri)]
 const NONTEMPORAL_FLOOR: usize = 1024;
 
-/// Fraction of the last-level cache above which streaming stores start paying,
-/// as `RATIO / DIV`.
-///
-/// Whether `vmovntdq` helps depends on something the kernel cannot see: whether
-/// the destination was going to stay in cache. Both cases were measured on
-/// Zen 5 (c8a.large, 8 MiB L3), racing this kernel against a twin with the tier
-/// disabled, each variant reading its own slot of a 640 MiB pool so neither
-/// inherits a buffer the other just warmed:
-///
-/// * **Cold destination** — a large payload streamed through once. Streaming
-///   wins at every size from 512 KiB up, +11% to +24%, and never loses: the
-///   output is never read again, so read-for-ownership traffic is pure waste.
-/// * **Resident destination** — one buffer encoded over and over, which is what
-///   a working set that fits in cache looks like. Streaming *loses* heavily
-///   below ~0.6x LLC — -39% (encode) and -36% (decode) at 1 MiB — because it
-///   throws away a destination that would have stayed in L2/L3, and wins above
-///   it, rising to +22% at 64 MiB.
-///
-/// The two agree above the crossover and conflict below it, so the gate is put
-/// where the resident case turns: 5/8 of the last-level cache, ~5 MiB here,
-/// which is where the output stops co-residing with the input. Above it
-/// streaming is right for both. Below it the resident case is the one that
-/// decides, because its penalty is the larger of the two — -39% against the
-/// -13% the cold case pays for not streaming.
-///
-/// This is a ratio and not a length because the crossover tracks the cache
-/// rather than the machine. The value it replaces was a flat 512 KiB, tuned on
-/// Sapphire Rapids (c7i.large) against a flushed destination — the cold case
-/// only, which as measured above has no crossover to find. Carried onto a Zen 5
-/// box with an 8 MiB L3 it put the gate at a sixteenth of where the resident
-/// case turns, which is the 3.6x cliff at 1 MiB this replaces. Sapphire Rapids
-/// has not been re-measured under the resident case; if its crossover also
-/// tracks its last-level cache, this ratio covers it, and that is the claim
-/// worth re-checking first on any new microarchitecture.
-#[cfg(not(any(miri, kani)))]
-const NONTEMPORAL_LLC_RATIO: usize = 5;
-#[cfg(not(any(miri, kani)))]
-const NONTEMPORAL_LLC_DIV: usize = 8;
-
 /// Input length at which both kernels switch their top tier to non-temporal
-/// stores.
+/// stores: [`super::nontemporal_min`] scaled off the last-level cache, floored
+/// at [`NONTEMPORAL_FLOOR`].
 ///
-/// Both write more than they read, so once the working set no longer fits in
-/// cache most of the cost is read-for-ownership traffic on a destination whose
-/// old contents are dead, and `vmovntdq` skips it. Below that point the same
-/// instruction is a large *loss*, because it throws away a cache hit the
-/// regular store would have got.
-///
-/// Where that crossover sits is a property of the machine, not a constant: it
-/// tracks the last-level cache, which is why this reads the cache size rather
-/// than hard-coding a length. See [`NONTEMPORAL_LLC_RATIO`] for the measurement
-/// behind the ratio.
+/// The floor is the value the Kani stream-peel proofs are stated against, and
+/// the scaling can only raise the gate, so any runtime value is covered by
+/// them. See [`super::NONTEMPORAL_LLC_RATIO`] for the measurement behind the
+/// ratio; the value it replaced was a flat 512 KiB tuned on Sapphire Rapids
+/// against a flushed destination — the cold case only, which has no crossover
+/// to find. Carried onto a Zen 5 box with an 8 MiB L3 that put the gate at a
+/// sixteenth of where the resident case turns.
 ///
 /// One wrinkle worth knowing: the result is compared against `rem`, which is
 /// input *bytes* in the encoder but input *characters* in the decoder, so one
@@ -318,27 +277,7 @@ const NONTEMPORAL_LLC_DIV: usize = 8;
 /// the unit it is expressed in.
 #[inline]
 fn nontemporal_min() -> usize {
-    // Neither Miri nor Kani runs `cpuid`, and neither reaches a real threshold
-    // — Miri's suites are tiny, Kani's proofs are symbolic and assume only
-    // `rem >= NONTEMPORAL_FLOOR`. Returning the floor is what keeps the
-    // streaming tier reachable under Miri and what keeps the proofs' gate
-    // exactly the one they are stated against.
-    #[cfg(any(miri, kani))]
-    {
-        NONTEMPORAL_FLOOR
-    }
-    #[cfg(not(any(miri, kani)))]
-    {
-        // Resolved once inside `cpu::llc_bytes`; what is left here is a load
-        // and a multiply, on an input already known to be a quad step long.
-        // With no cache size to scale against, the floor is the threshold.
-        let Some(llc) = crate::cpu::llc_bytes() else {
-            return NONTEMPORAL_FLOOR;
-        };
-        (llc / NONTEMPORAL_LLC_DIV)
-            .saturating_mul(NONTEMPORAL_LLC_RATIO)
-            .max(NONTEMPORAL_FLOOR)
-    }
+    super::nontemporal_min(NONTEMPORAL_FLOOR)
 }
 
 /// Worst-case input each kernel's alignment peel consumes before the streaming

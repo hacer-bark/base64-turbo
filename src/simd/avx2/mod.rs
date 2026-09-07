@@ -23,7 +23,8 @@ use std::arch::x86_64::{
     _mm256_sub_epi8, _mm256_subs_epu8, _mm256_testz_si256,
 };
 
-/// Input length from which the encoder switches to non-temporal stores.
+/// Floor on the input length from which the encoder switches to non-temporal
+/// stores.
 ///
 /// Above it the input plus its 4/3-sized output no longer fit in a typical
 /// last-level cache, so the ordinary stores spend a third of the memory
@@ -31,7 +32,27 @@ use std::arch::x86_64::{
 /// whole. Below it the output usually *is* reused from cache and bypassing it
 /// costs more than the RFO traffic saves; measured on a 9 MiB-L3 Coffee Lake,
 /// the crossover sits between 2 and 4 MiB.
+///
+/// That 4 MiB happens to land near 5/8 of the L3 it was tuned against, which is
+/// where [`super::NONTEMPORAL_LLC_RATIO`] independently puts the crossover — so
+/// it is right on that box and arbitrary on any other. It stays here as the
+/// *floor* rather than the whole threshold: the hardware coverage test in
+/// `verify` enters the tier at exactly this length, and the README's note that
+/// the path needs a 4 MiB input to execute is stated against it. Scaling can
+/// only raise the gate above it.
 const NT_STORE_MIN_LEN: usize = 4 << 20;
+
+/// Input length from which the encoder switches to non-temporal stores: 5/8 of
+/// the last-level cache, never below [`NT_STORE_MIN_LEN`].
+///
+/// Shared with the AVX-512 kernel, which met the same hazard first — a flat
+/// threshold streams into a destination that would have stayed resident on any
+/// machine whose cache is larger than the one it was tuned on. See
+/// [`super::nontemporal_min`].
+#[inline]
+fn nt_store_min() -> usize {
+    super::nontemporal_min(NT_STORE_MIN_LEN)
+}
 
 /// Rounds per iteration of the encoder's wide tier.
 const ENC_UNROLL: usize = 8;
@@ -258,7 +279,7 @@ unsafe fn encode_impl_avx2<const URL: bool>(config: &Config, input: &[u8], dst_s
         if remaining >= ENC_WIDE_MIN_ROUNDS {
             // Every store sits at `dst_start + 32 * n`, so one alignment test up
             // front covers the whole loop.
-            if len >= NT_STORE_MIN_LEN && dst_start.align_offset(16) == 0 {
+            if len >= nt_store_min() && dst_start.align_offset(16) == 0 {
                 unsafe { encode_wide_avx2::<true, URL>(src, dst, wide, &k) };
             } else {
                 unsafe { encode_wide_avx2::<false, URL>(src, dst, wide, &k) };

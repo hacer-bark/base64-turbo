@@ -27,6 +27,76 @@ mod testutil;
 #[cfg(any(kani, all(test, not(miri))))]
 mod refcodec;
 
+/// Fraction of the last-level cache above which streaming stores start paying,
+/// as `NONTEMPORAL_LLC_RATIO / NONTEMPORAL_LLC_DIV`.
+///
+/// Whether `vmovntdq` helps depends on something a kernel cannot see: whether
+/// the destination was going to stay in cache. Both cases were measured on
+/// Zen 5 (c8a.large, 8 MiB L3), racing a kernel against a twin with the tier
+/// disabled, each variant reading its own slot of a 640 MiB pool so neither
+/// inherits a buffer the other just warmed:
+///
+/// * **Cold destination** — a large payload streamed through once. Streaming
+///   wins at every size from 512 KiB up, +11% to +24%, and never loses: the
+///   output is never read again, so read-for-ownership traffic is pure waste.
+/// * **Resident destination** — one buffer encoded over and over, which is what
+///   a working set that fits in cache looks like. Streaming *loses* heavily
+///   below ~0.6x LLC — -39% (encode) and -36% (decode) at 1 MiB — because it
+///   throws away a destination that would have stayed in L2/L3, and wins above
+///   it, rising to +22% at 64 MiB.
+///
+/// The two agree above the crossover and conflict below it, so the gate goes
+/// where the resident case turns: 5/8 of the last-level cache. Below it the
+/// resident case decides, because its penalty is the larger of the two — -39%
+/// against the -13% the cold case pays for not streaming.
+///
+/// This is a ratio and not a length because the crossover tracks the cache
+/// rather than the machine. Both x86 kernels share it; what differs is the
+/// floor each passes to [`nontemporal_min`].
+#[cfg(all(x86_simd, not(any(miri, kani))))]
+const NONTEMPORAL_LLC_RATIO: usize = 5;
+#[cfg(all(x86_simd, not(any(miri, kani))))]
+const NONTEMPORAL_LLC_DIV: usize = 8;
+
+/// Input length at which a kernel may switch its top tier to non-temporal
+/// stores: 5/8 of the last-level cache, never below `floor`.
+///
+/// Both kernels write more than they read, so once the working set no longer
+/// fits in cache most of the cost is read-for-ownership traffic on a
+/// destination whose old contents are dead, and `vmovntdq` skips it. Below that
+/// point the same instruction is a large *loss* — see
+/// [`NONTEMPORAL_LLC_RATIO`].
+///
+/// `floor` is the caller's own lower bound, and it is a floor rather than the
+/// whole threshold: each kernel's floor carries preconditions its proofs and
+/// tests are stated against (AVX-512's alignment peel needs a whole quad step
+/// after it; AVX2's hardware test enters the tier at exactly its floor), so
+/// scaling may raise the gate but never lower it below what those assume.
+#[cfg(x86_simd)]
+#[inline]
+fn nontemporal_min(floor: usize) -> usize {
+    // Neither Miri nor Kani runs `cpuid`, and neither reaches a real threshold
+    // — Miri's suites are tiny, Kani's proofs are symbolic and assume only
+    // `rem >= floor`. Returning the floor is what keeps the streaming tier
+    // reachable under Miri and the proofs' gate exactly the one they state.
+    #[cfg(any(miri, kani))]
+    {
+        floor
+    }
+    #[cfg(not(any(miri, kani)))]
+    {
+        // Resolved once inside `cpu::llc_bytes`; what is left here is a load
+        // and a multiply. With no cache size to scale against, the floor is the
+        // threshold.
+        let Some(llc) = crate::cpu::llc_bytes() else {
+            return floor;
+        };
+        (llc / NONTEMPORAL_LLC_DIV)
+            .saturating_mul(NONTEMPORAL_LLC_RATIO)
+            .max(floor)
+    }
+}
+
 /// Shared SIMD -> scalar handoff. Each backend runs its vectorized loops, then
 /// calls these with the pointer/offset state they left off at; `src` points at
 /// the first unconsumed input byte and `dst_off` is how many bytes the loops

@@ -167,7 +167,7 @@ fn bench_comparison(c: &mut Criterion) {
 
         // Shared destination buffers, allocated once per size and reused by every
         // candidate so no engine pays for a `Vec`/`String` inside the timed loop.
-        let mut encode_buf = slack_buf(TURBO_ENGINE.encoded_len(*size).unwrap());
+        let mut encode_buf = slack_buf(TURBO_ENGINE.encoded_len(*size));
         let mut decode_buf = slack_buf(TURBO_ENGINE.decoded_len_estimate(encoded.len()));
 
         // Guard against timing a silently failing call: every candidate must reproduce the

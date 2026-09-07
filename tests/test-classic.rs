@@ -75,7 +75,7 @@ fn expected_encoded_len(input_len: usize, padding: bool) -> usize {
 fn assert_encoded_lengths(engine: Engine, padding: bool) {
     for input_len in 0..=7 {
         assert_eq!(
-            engine.encoded_len(input_len).unwrap(),
+            engine.encoded_len(input_len),
             expected_encoded_len(input_len, padding),
             "encoded length for {input_len} bytes",
         );
@@ -115,7 +115,7 @@ fn assert_oracle_match(
 ) {
     let expected_encoded = ref_engine.encode(input);
 
-    let mut enc_buf = vec![0u8; turbo_engine.encoded_len(input.len()).unwrap()];
+    let mut enc_buf = vec![0u8; turbo_engine.encoded_len(input.len())];
     let enc_len = turbo_engine
         .encode_slice(input, &mut enc_buf)
         .expect("encode_into failed");
@@ -223,17 +223,17 @@ fn test_encoded_len_correctness() {
     assert_encoded_lengths(STANDARD_NO_PAD, false);
 
     // URL_SAFE uses same math as STANDARD (just different alphabet)
+    assert_eq!(STANDARD.encoded_len(10), URL_SAFE.encoded_len(10));
     assert_eq!(
-        STANDARD.encoded_len(10).unwrap(),
-        URL_SAFE.encoded_len(10).unwrap()
-    );
-    assert_eq!(
-        STANDARD_NO_PAD.encoded_len(10).unwrap(),
-        URL_SAFE_NO_PAD.encoded_len(10).unwrap()
+        STANDARD_NO_PAD.encoded_len(10),
+        URL_SAFE_NO_PAD.encoded_len(10)
     );
 
-    assert_eq!(STANDARD.encoded_len(usize::MAX), None);
-    assert_eq!(STANDARD_NO_PAD.encoded_len(usize::MAX), None);
+    // Saturates rather than wrapping. Unreachable for a real slice -- one is at
+    // most `isize::MAX` bytes and 4/3 of that still fits -- so this only pins
+    // the behavior of a fabricated length.
+    assert_eq!(STANDARD.encoded_len(usize::MAX), usize::MAX);
+    assert_eq!(STANDARD_NO_PAD.encoded_len(usize::MAX), usize::MAX);
 }
 
 #[test]
@@ -300,7 +300,7 @@ fn test_convenience_and_append_apis() {
 #[test]
 fn test_buffer_too_small_encode() {
     let input = b"Hello world";
-    let required = STANDARD.encoded_len(input.len()).unwrap();
+    let required = STANDARD.encoded_len(input.len());
 
     // Buffer exactly 1 byte too small
     let mut small_buf = vec![0u8; required - 1];
@@ -526,7 +526,7 @@ fn test_unstable_apis() {
 
     // --- Scalar (always available, and a safe API) ---
     {
-        let mut dst = vec![0u8; STANDARD.encoded_len(input.len()).unwrap()];
+        let mut dst = vec![0u8; STANDARD.encoded_len(input.len())];
         STANDARD.encode_scalar(&input, &mut dst);
         assert_eq!(&dst, expected.as_bytes(), "scalar: encode mismatch");
 
@@ -539,7 +539,7 @@ fn test_unstable_apis() {
     #[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), feature = "avx2"))]
     if std::is_x86_feature_detected!("avx2") {
         unsafe {
-            let mut dst = vec![0u8; STANDARD.encoded_len(input.len()).unwrap()];
+            let mut dst = vec![0u8; STANDARD.encoded_len(input.len())];
             STANDARD.encode_avx2(&input, &mut dst);
             assert_eq!(&dst, expected.as_bytes(), "avx2: encode mismatch");
 
@@ -561,7 +561,7 @@ fn test_unstable_apis() {
         && std::is_x86_feature_detected!("avx512vbmi")
     {
         unsafe {
-            let mut dst = vec![0u8; STANDARD.encoded_len(input.len()).unwrap()];
+            let mut dst = vec![0u8; STANDARD.encoded_len(input.len())];
             STANDARD.encode_avx512_vbmi(&input, &mut dst);
             assert_eq!(&dst, expected.as_bytes(), "avx512-vbmi: encode mismatch");
 
@@ -577,7 +577,7 @@ fn test_unstable_apis() {
     #[cfg(target_arch = "aarch64")]
     #[cfg(feature = "neon")]
     unsafe {
-        let mut dst = vec![0u8; STANDARD.encoded_len(input.len()).unwrap()];
+        let mut dst = vec![0u8; STANDARD.encoded_len(input.len())];
         STANDARD.encode_neon(&input, &mut dst);
         assert_eq!(&dst, expected.as_bytes(), "neon: encode mismatch");
 

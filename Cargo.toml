@@ -1,6 +1,6 @@
 [package]
 name = "base64-turbo"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.93"
 authors = ["Hacer-Bark <hacer.bark@proton.me>"]
@@ -10,7 +10,10 @@ repository = "https://github.com/hacer-bark/base64-turbo"
 documentation = "https://docs.rs/base64-turbo"
 keywords = ["base64", "simd", "avx512-vbmi", "neon", "encoding"]
 categories = ["encoding", "hardware-support", "no-std", "web-programming"]
-exclude = ["benches/scripts/", "benches/results/", "benches/tb64-sys/"]
+# The whole bench harness stays out of the published package: it needs the
+# `tb64-sys` path dev-dependency, which cargo strips on publish, so a shipped
+# `benches/encoding_bench.rs` could not compile for anyone who downloaded it.
+exclude = ["benches/"]
 
 # `benches/tb64-sys` is a dev-only member so it shares this target dir and lock file.
 # `fuzz` stays outside, as cargo-fuzz expects.

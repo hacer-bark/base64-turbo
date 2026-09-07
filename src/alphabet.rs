@@ -82,7 +82,7 @@ const fn same_chars(a: &[u8; 64], b: &[u8; 64]) -> bool {
 /// ```
 /// use base64_turbo::{Alphabet, Engine};
 ///
-/// // The bcrypt/crypt(3) alphabet: `.` and `/` first, digits before letters.
+/// // The bcrypt/crypt(3) alphabet: `.` and `/` first, digits after the letters.
 /// static BCRYPT: Alphabet = match Alphabet::new(
 ///     b"./ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789",
 /// ) {

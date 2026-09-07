@@ -34,6 +34,7 @@ crate — see the [FAQ](#faq).
 - [Quick Start](#quick-start)
 - [Zero-Allocation API](#zero-allocation-stack--no_std)
 - [Custom Alphabets](#custom-alphabets)
+- [Padding](#padding)
 - [Feature Flags](#feature-flags)
 - [Compatibility & Stability](#compatibility--stability)
 - [Performance & Architecture](#performance--architecture)
@@ -69,7 +70,7 @@ use base64_turbo::STANDARD;
 
 let input = b"Low Latency";
 
-let mut enc_buf = vec![0u8; STANDARD.encoded_len(input.len()).unwrap()];
+let mut enc_buf = vec![0u8; STANDARD.encoded_len(input.len())];
 let enc_len = STANDARD.encode_slice(input, &mut enc_buf).unwrap();
 
 let mut dec_buf = vec![0u8; STANDARD.decoded_len_estimate(enc_len)];
@@ -120,6 +121,25 @@ characters *arithmetically* from the RFC 4648 layout, so they can't serve an arb
 one. Passing the standard or URL-safe characters to `Alphabet::new` is recognized as such,
 so those keep every kernel and match `STANDARD` / `URL_SAFE` byte for byte.
 
+## Padding
+
+| Engine | Encodes with `=` | Decodes |
+| :--- | :---: | :--- |
+| `STANDARD` / `URL_SAFE` | yes | requires canonical padding |
+| `STANDARD_NO_PAD` / `URL_SAFE_NO_PAD` | no | rejects padding |
+| `STANDARD_PAD_INDIFFERENT` / `URL_SAFE_PAD_INDIFFERENT` | yes | accepts either shape |
+
+The pad-indifferent pair is for input whose padding you don't control — a JWT from one
+producer, a padded blob from another. It costs something: **their decode path is scalar
+only.** Every vector kernel stops short of the final group and hands it to a tail that owns
+the padding and length rules, and that tail assumes one fixed rule, so a decoder accepting
+both shapes can't use them. Encoding is unaffected and runs on every kernel. Reach for
+`STANDARD` or `STANDARD_NO_PAD` on a hot decode path wherever the shape is known.
+
+Which of `Error::InvalidLength` and `Error::InvalidCharacter` a malformed `=` produces is
+deliberately unspecified — it depends on which kernel met the character. Match on
+`is_err()` when validating untrusted input.
+
 ## Feature Flags
 
 Each x86 SIMD kernel is its own knob, so you compile in only what your target CPUs are
@@ -142,11 +162,15 @@ configuration.
 
 ## Compatibility & Stability
 
-**MSRV:** Rust 1.93.0. We rely on recently stabilized AVX-512 intrinsics in `core`, the
-last of which — `_mm_sfence` becoming safe — landed in 1.93. We do not plan to lower this.
+**MSRV:** Rust 1.93.0, checked in CI against the `rust-version` in `Cargo.toml`. Two
+things hold it there: we rely on recently stabilized AVX-512 intrinsics in `core`, the
+last of which — `_mm_sfence` becoming safe — landed in 1.93; and `cargo kani` runs its own
+bundled rustc, currently 1.93, which cannot be told to ignore a crate's `rust-version`. So
+the MSRV is also a ceiling until Kani moves. We do not plan to lower it.
 
 **API stability:** The public API is **Stable** and follows Semantic Versioning. It stays
-valid and backward-compatible throughout the `0.3.x` lifecycle.
+valid and backward-compatible throughout the `0.4.x` lifecycle. Breaking changes land in a
+minor bump and are listed in [`CHANGELOG.md`](CHANGELOG.md).
 
 Output conforms to RFC 4648 — `STANDARD` and `URL_SAFE` are drop-in compatible with the
 `base64` crate, and [custom alphabets](#custom-alphabets) match its `GeneralPurpose`

@@ -52,7 +52,7 @@ fuzz_target!(|data: &[u8]| {
     // ======================================================================
     // 2. Slice APIs (.encode_slice / .decode_slice)
     // ======================================================================
-    let enc_len = engine.encoded_len(payload.len()).unwrap();
+    let enc_len = engine.encoded_len(payload.len());
     let mut enc_buf = vec![0u8; enc_len.max(1)]; // at least 1 to avoid zero-length issues
 
     let written_enc = engine.encode_slice(payload, &mut enc_buf[..enc_len]).unwrap();

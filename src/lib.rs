@@ -89,6 +89,15 @@
 //! arithmetically from the RFC 4648 layout and cannot serve one, so those targets fall
 //! back to the scalar kernel — see [`Engine::custom`].
 //!
+//! ### Padding
+//!
+//! [`STANDARD`] and [`URL_SAFE`] pad with `=` and require it when decoding;
+//! [`STANDARD_NO_PAD`] and [`URL_SAFE_NO_PAD`] do neither. For input whose
+//! padding is out of your control, [`STANDARD_PAD_INDIFFERENT`] and
+//! [`URL_SAFE_PAD_INDIFFERENT`] pad on encode but accept either shape on decode
+//! — at the cost of a scalar-only decode path, since the vector kernels' tail
+//! owns one fixed padding rule. Encoding keeps every kernel.
+//!
 //! ## Feature Flags
 //!
 //! Each x86 SIMD kernel is an independent knob, so a target can compile in only
@@ -276,8 +285,18 @@ pub enum Error {
     /// An invalid character was encountered during decoding.
     ///
     /// This occurs if the input contains bytes that do not belong to the
-    /// selected Base64 alphabet (e.g., symbols not in the standard set) or
-    /// if padding characters (`=`) appear in invalid positions.
+    /// selected Base64 alphabet — symbols outside the chosen character set, or
+    /// a `=` in a position the config does not allow.
+    ///
+    /// # Which variant a misplaced `=` produces
+    ///
+    /// Malformed padding is rejected by every configuration, but *which* of
+    /// [`Error::InvalidLength`] and [`Error::InvalidCharacter`] comes back is
+    /// deliberately unspecified and may change between releases. It depends on
+    /// which kernel met the character: the vector tiers map `=` to the same
+    /// invalid-symbol sentinel as any other foreign byte, while the scalar tail
+    /// that owns the padding rules reads a stray `=` as a length error. Match on
+    /// `is_err()`, not on the variant, when validating untrusted input.
     InvalidCharacter,
 
     /// The provided output buffer is too small to hold the result.
@@ -397,6 +416,15 @@ pub const URL_SAFE_NO_PAD: Engine = Engine {
 };
 
 /// Standard Base64 with padding when encoding, accepting padded or unpadded input when decoding.
+///
+/// # Performance
+///
+/// Encoding runs on every kernel, exactly as [`STANDARD`] does. **Decoding is
+/// scalar only**: the vector kernels hand their final group to a tail that owns
+/// the padding and length rules, and that tail assumes one fixed rule, so a
+/// decoder that accepts either shape cannot use them. Reach for this when the
+/// input's padding is genuinely out of your control; prefer [`STANDARD`] or
+/// [`STANDARD_NO_PAD`] on a hot decode path where it is not.
 pub const STANDARD_PAD_INDIFFERENT: Engine = Engine {
     config: Config {
         alphabet: &alphabet::STANDARD_TABLE,
@@ -406,6 +434,11 @@ pub const STANDARD_PAD_INDIFFERENT: Engine = Engine {
 };
 
 /// URL-safe Base64 with padding when encoding, accepting padded or unpadded input when decoding.
+///
+/// # Performance
+///
+/// Decoding is scalar only, for the reason given on
+/// [`STANDARD_PAD_INDIFFERENT`]. Encoding is unaffected.
 pub const URL_SAFE_PAD_INDIFFERENT: Engine = Engine {
     config: Config {
         alphabet: &alphabet::URL_SAFE_TABLE,
@@ -530,19 +563,22 @@ impl Engine {
 
     /// Calculates the buffer size required to encode `input_len` bytes with this engine.
     ///
-    /// Returns `None` when the encoded length cannot be represented by `usize`.
+    /// Saturates at `usize::MAX` rather than wrapping, so the result is never a
+    /// too-small buffer size. That bound is unreachable for any input you
+    /// actually hold: a slice is at most `isize::MAX` bytes, and 4/3 of that
+    /// still fits in a `usize`. Only a fabricated `input_len` can saturate, and
+    /// a buffer that size cannot be allocated anyway — the slice APIs turn it
+    /// into [`Error::BufferTooSmall`].
     #[inline]
     #[must_use]
-    pub const fn encoded_len(&self, input_len: usize) -> Option<usize> {
-        let Some(complete_len) = (input_len / 3).checked_mul(4) else {
-            return None;
-        };
+    pub const fn encoded_len(&self, input_len: usize) -> usize {
+        let complete_len = (input_len / 3).saturating_mul(4);
 
         match (input_len % 3, self.config.padding) {
-            (0, _) => Some(complete_len),
-            (_, true) => complete_len.checked_add(4),
-            (1, false) => complete_len.checked_add(2),
-            (_, false) => complete_len.checked_add(3),
+            (0, _) => complete_len,
+            (_, true) => complete_len.saturating_add(4),
+            (1, false) => complete_len.saturating_add(2),
+            (_, false) => complete_len.saturating_add(3),
         }
     }
 
@@ -593,7 +629,7 @@ impl Engine {
             return Ok(0);
         }
 
-        let req_len = self.encoded_len(len).ok_or(Error::BufferTooSmall)?;
+        let req_len = self.encoded_len(len);
         if output.len() < req_len {
             return Err(Error::BufferTooSmall);
         }
@@ -607,6 +643,12 @@ impl Engine {
 
     /// Decodes `input` into the provided `output` buffer.
     ///
+    /// `output` must be at least [`Engine::decoded_len_estimate`] bytes — the
+    /// conservative upper bound, not the exact decoded length. A padded input
+    /// decodes to up to two bytes fewer than the estimate, and a buffer sized to
+    /// that exact result is rejected with [`Error::BufferTooSmall`]; the return
+    /// value reports how much of `output` was actually written.
+    ///
     /// # Returns
     ///
     /// * `Ok(usize)`: The actual number of bytes written to `output`.
@@ -614,7 +656,8 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::BufferTooSmall`] if `output` is not large enough, or
+    /// Returns [`Error::BufferTooSmall`] if `output` is smaller than
+    /// [`Engine::decoded_len_estimate`], or
     /// [`Error::InvalidLength`] / [`Error::InvalidCharacter`] if `input` is not
     /// valid Base64.
     #[inline]
@@ -667,7 +710,7 @@ impl Engine {
     #[cfg(feature = "std")]
     pub fn encode<T: AsRef<[u8]>>(&self, input: T) -> String {
         let input = input.as_ref();
-        let output_len = self.encoded_len(input.len()).unwrap_or(usize::MAX);
+        let output_len = self.encoded_len(input.len());
         let mut out = spare(output_len);
         Self::encode_dispatch(self, input, &mut out);
         into_ascii_string(out)
@@ -899,10 +942,11 @@ impl Engine {
     ///
     /// # Safety
     ///
-    /// - `dst` must point to a mutable region with at least `(input.len() / 4 + 1) * 3` bytes
-    ///   of capacity. The extra space is required because the quad tier's first three stores
-    ///   are unmasked, each overhanging the 48 bytes it produces by 16 before the next store
-    ///   rewrites that overhang. Prefer [`Engine::decoded_len_estimate`] to compute it.
+    /// - `dst` must point to a mutable region of at least [`Engine::decoded_len_estimate`]
+    ///   bytes. The quad tier's first three stores are unmasked, each overhanging the 48
+    ///   bytes it produces by 16, but the next store in that same iteration rewrites the
+    ///   overhang and the last one is masked, so a step never writes past the 192 bytes it
+    ///   produces. No capacity beyond the estimate is needed.
     /// - The caller must ensure the target CPU supports the `avx512f`, `avx512bw` and
     ///   `avx512vbmi` subsets at runtime. Running this without all three causes an illegal
     ///   instruction crash.
@@ -958,11 +1002,14 @@ impl Engine {
     ///
     /// # Safety
     ///
-    /// `dst` must point to a mutable region with at least `(input.len() / 4 + 1) * 3` bytes
-    /// of capacity — the extra space is required because the implementation performs
-    /// overlapping writes. Prefer [`Engine::decoded_len_estimate`] to compute it.
+    /// - `dst` must point to a mutable region with sufficient capacity. The required size
+    ///   depends on `config.padding`:
+    ///   - With padding: `input.len().div_ceil(3) * 4`
+    ///   - Without padding: `(input.len() * 4).div_ceil(3)`
+    ///   - Prefer [`Engine::encoded_len`] to compute it.
+    /// - NEON is baseline on `aarch64`, so there is no runtime feature to check.
     ///
-    /// Prefer the safe higher-level APIs (e.g. [`Engine::decode`]) unless you need this bypass.
+    /// Prefer the safe higher-level APIs (e.g. [`Engine::encode`]) unless you need this bypass.
     #[cfg(all(target_arch = "aarch64", feature = "neon", feature = "unstable"))]
     pub unsafe fn encode_neon(&self, input: &[u8], dst: &mut [u8]) {
         // SAFETY: Caller must uphold the contracts documented on this function.
@@ -973,9 +1020,11 @@ impl Engine {
     ///
     /// # Safety
     ///
-    /// `dst` must point to a mutable region with at least `(input.len() / 4 + 1) * 3` bytes
-    /// of capacity — the extra space is required because the implementation performs
-    /// overlapping writes. Prefer [`Engine::decoded_len_estimate`] to compute it.
+    /// - `dst` must point to a mutable region of at least [`Engine::decoded_len_estimate`]
+    ///   bytes. Each pack stores a full 16-byte vector for 12 bytes of output, but no
+    ///   vector pass starts unless enough characters remain for the tail to absorb that
+    ///   4-byte overhang, so the estimate is sufficient.
+    /// - NEON is baseline on `aarch64`, so there is no runtime feature to check.
     ///
     /// Prefer the safe higher-level APIs (e.g. [`Engine::decode`]) unless you need this bypass.
     ///

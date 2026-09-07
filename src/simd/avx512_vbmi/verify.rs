@@ -37,7 +37,7 @@ mod kani_verification_avx512_vbmi {
     };
 
     /// Largest `len` considered: above `usize::MAX / 4` the unpadded
-    /// `Engine::encoded_len`'s `len * 4` overflows, so the API can't size a buffer.
+    /// `Engine::encoded_len`'s `len * 4` saturates, so the API can't size a buffer.
     const MAX_LEN: usize = usize::MAX / 4;
 
     /// A full-width store writes exactly as many bytes as a full-width load
@@ -73,9 +73,9 @@ mod kani_verification_avx512_vbmi {
 
     fn enc_cap(len: usize, padding: bool) -> usize {
         if padding {
-            TURBO_STANDARD.encoded_len(len).unwrap()
+            TURBO_STANDARD.encoded_len(len)
         } else {
-            TURBO_STANDARD_NO_PAD.encoded_len(len).unwrap()
+            TURBO_STANDARD_NO_PAD.encoded_len(len)
         }
     }
 
@@ -658,10 +658,10 @@ mod kani_verification_avx512_vbmi {
         "ROUNDTRIP_LEN must be a whole number of groups in the masked tier"
     );
 
-    const ENC_KERNEL_CAP: usize = TURBO_STANDARD.encoded_len(ENC_KERNEL_LEN).unwrap();
+    const ENC_KERNEL_CAP: usize = TURBO_STANDARD.encoded_len(ENC_KERNEL_LEN);
     const DEC_KERNEL_CAP: usize = TURBO_STANDARD.decoded_len_estimate(DEC_KERNEL_LEN);
     const DEC_MASKED_KERNEL_CAP: usize = TURBO_STANDARD.decoded_len_estimate(DEC_MASKED_KERNEL_LEN);
-    const ROUNDTRIP_ENC_CAP: usize = TURBO_STANDARD.encoded_len(ROUNDTRIP_LEN).unwrap();
+    const ROUNDTRIP_ENC_CAP: usize = TURBO_STANDARD.encoded_len(ROUNDTRIP_LEN);
     const ROUNDTRIP_DEC_CAP: usize = TURBO_STANDARD.decoded_len_estimate(ROUNDTRIP_ENC_CAP);
 
     /// The vectorized encoder agrees with [`refcodec`] — RFC 4648 §4 written out

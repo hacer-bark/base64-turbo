@@ -35,7 +35,7 @@ fn oracle(padding: bool) -> base64::engine::GeneralPurpose {
 /// The slice APIs, so this file runs unchanged in a `no_std` build where the
 /// allocating `encode`/`decode` are compiled out.
 fn encode(engine: &Engine, input: &[u8]) -> Vec<u8> {
-    let mut out = vec![0u8; engine.encoded_len(input.len()).unwrap()];
+    let mut out = vec![0u8; engine.encoded_len(input.len())];
     let written = engine.encode_slice(input, &mut out).unwrap();
     out.truncate(written);
     out
