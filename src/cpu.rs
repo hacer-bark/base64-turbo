@@ -7,7 +7,10 @@
 //! The one thing it does not answer is how large the last-level cache is, which
 //! the non-temporal store gate needs; that stays a `CPUID` walk of our own.
 
-use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering::Relaxed};
+use core::sync::atomic::{AtomicU8, Ordering::Relaxed};
+// Only the last-level-cache probe needs it, and that is absent under Miri and Kani.
+#[cfg(not(any(miri, kani)))]
+use core::sync::atomic::AtomicUsize;
 
 #[cfg(b64_avx2)]
 cpufeatures::new!(avx2_cpuid, "avx2");
