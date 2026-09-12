@@ -17,9 +17,7 @@ use base64::{
 };
 use rand::RngExt;
 
-// ======================================================================
 // Helpers
-// ======================================================================
 
 fn random_bytes(len: usize) -> Vec<u8> {
     let mut bytes = vec![0; len];
@@ -147,9 +145,7 @@ fn assert_oracle_match(
     }
 }
 
-// ======================================================================
 // 1. Coverage: Basic Logic & Oracle Matching
-// ======================================================================
 
 #[test]
 fn test_oracle_standard_exhaustive_small() {
@@ -180,9 +176,7 @@ fn test_oracle_configs() {
     }
 }
 
-// ======================================================================
 // 2. Coverage: Empty Input (len == 0 early return)
-// ======================================================================
 
 #[test]
 fn test_empty_input() {
@@ -210,9 +204,7 @@ fn test_empty_input() {
     }
 }
 
-// ======================================================================
 // 3. Coverage: encoded_len & decoded_len_estimate correctness
-// ======================================================================
 
 #[test]
 fn test_encoded_len_correctness() {
@@ -293,9 +285,7 @@ fn test_convenience_and_append_apis() {
     assert_eq!(bytes, b"prefix:hi");
 }
 
-// ======================================================================
 // 4. Coverage: BufferTooSmall Error
-// ======================================================================
 
 #[test]
 fn test_buffer_too_small_encode() {
@@ -330,9 +320,7 @@ fn test_buffer_too_small_decode() {
     );
 }
 
-// ======================================================================
 // 5. Coverage: Error Handling (Invalid Characters & Lengths)
-// ======================================================================
 
 #[test]
 fn test_reject_invalid_chars() {
@@ -392,9 +380,7 @@ fn test_decode_errors_via_allocating_api() {
     }
 }
 
-// ======================================================================
 // 6. Coverage: Display & Error Trait Implementations
-// ======================================================================
 
 #[test]
 fn test_error_display() {
@@ -440,9 +426,7 @@ fn test_error_traits() {
     }
 }
 
-// ======================================================================
 // 7. Coverage: Known-Value Tests (Deterministic)
-// ======================================================================
 
 #[test]
 fn test_known_values_standard() {
@@ -487,9 +471,7 @@ fn test_known_values_url_safe() {
     assert_eq!(&dec[..dec_len], input);
 }
 
-// ======================================================================
 // 8. Coverage: All 256 Byte Values (Full Alphabet Coverage)
-// ======================================================================
 
 #[test]
 fn test_all_byte_values() {
@@ -498,9 +480,7 @@ fn test_all_byte_values() {
     assert_all_oracle_matches(&input);
 }
 
-// ======================================================================
 // 9. Coverage: Boundary-Triggering Sizes (SIMD Thresholds)
-// ======================================================================
 
 #[test]
 #[cfg(not(miri))]
@@ -513,9 +493,7 @@ fn test_simd_threshold_boundaries() {
     }
 }
 
-// ======================================================================
 // 10. Coverage: Unstable API (Feature Gated)
-// ======================================================================
 
 #[test]
 #[cfg(feature = "unstable")]
@@ -524,7 +502,7 @@ fn test_unstable_apis() {
     let input = random_bytes(1024);
     let expected = REF_STANDARD.encode(&input);
 
-    // --- Scalar (always available, and a safe API) ---
+    // Scalar (always available, and a safe API).
     {
         let mut dst = vec![0u8; STANDARD.encoded_len(input.len())];
         STANDARD.encode_scalar(&input, &mut dst);
@@ -535,8 +513,8 @@ fn test_unstable_apis() {
         assert_eq!(&dec[..len], &input, "scalar: decode mismatch");
     }
 
-    // --- AVX2 ---
-    #[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), feature = "avx2"))]
+    // AVX2.
+    #[cfg(b64_avx2)]
     if std::is_x86_feature_detected!("avx2") {
         unsafe {
             let mut dst = vec![0u8; STANDARD.encoded_len(input.len())];
@@ -551,11 +529,8 @@ fn test_unstable_apis() {
         println!("skipping AVX2 unstable test (hardware unsupported)");
     }
 
-    // --- AVX-512-VBMI ---
-    #[cfg(all(
-        any(target_arch = "x86", target_arch = "x86_64"),
-        feature = "avx512-vbmi"
-    ))]
+    // AVX-512-VBMI.
+    #[cfg(b64_avx512)]
     if std::is_x86_feature_detected!("avx512f")
         && std::is_x86_feature_detected!("avx512bw")
         && std::is_x86_feature_detected!("avx512vbmi")
@@ -573,9 +548,8 @@ fn test_unstable_apis() {
         println!("skipping AVX512-VBMI unstable test (hardware unsupported)");
     }
 
-    // --- NEON ---
-    #[cfg(target_arch = "aarch64")]
-    #[cfg(feature = "neon")]
+    // NEON.
+    #[cfg(b64_neon)]
     unsafe {
         let mut dst = vec![0u8; STANDARD.encoded_len(input.len())];
         STANDARD.encode_neon(&input, &mut dst);

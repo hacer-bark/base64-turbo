@@ -1,18 +1,26 @@
+//! The vectorized backends, and the pieces they share.
+//!
+//! Each kernel is its own module, compiled only where its target and feature
+//! are both present; [`crate::engine`]'s dispatchers pick between them per call.
+//! What lives here rather than in a kernel is what more than one of them needs:
+//! the non-temporal store threshold, the shared SIMD -> scalar handoff, and the
+//! AVX2 packing constants.
+
 // `x86_simd` (from build.rs) is already "x86 with some AVX kernel", so each arm
 // only needs to add its own feature.
-#[cfg(all(x86_simd, feature = "avx2"))]
+#[cfg(b64_avx2)]
 mod avx2;
-#[cfg(all(x86_simd, feature = "avx512-vbmi"))]
+#[cfg(b64_avx512)]
 mod avx512_vbmi;
 
-#[cfg(all(x86_simd, feature = "avx2"))]
+#[cfg(b64_avx2)]
 pub(crate) use avx2::{decode_slice_avx2, encode_slice_avx2};
-#[cfg(all(x86_simd, feature = "avx512-vbmi"))]
+#[cfg(b64_avx512)]
 pub(crate) use avx512_vbmi::{decode_slice_avx512_vbmi, encode_slice_avx512_vbmi};
 
-#[cfg(all(target_arch = "aarch64", feature = "neon"))]
+#[cfg(b64_neon)]
 mod neon;
-#[cfg(all(target_arch = "aarch64", feature = "neon"))]
+#[cfg(b64_neon)]
 pub(crate) use neon::{decode_slice_neon, encode_slice_neon};
 
 #[cfg(test)]
@@ -140,13 +148,13 @@ mod tail {
     }
 }
 
-#[cfg(all(x86_simd, feature = "avx2"))]
+#[cfg(b64_avx2)]
 const PACK_L1: [i8; 32] = [
     0x40, 0x01, 0x40, 0x01, 0x40, 0x01, 0x40, 0x01, 0x40, 0x01, 0x40, 0x01, 0x40, 0x01, 0x40, 0x01,
     0x40, 0x01, 0x40, 0x01, 0x40, 0x01, 0x40, 0x01, 0x40, 0x01, 0x40, 0x01, 0x40, 0x01, 0x40, 0x01,
 ];
 
-#[cfg(all(x86_simd, feature = "avx2"))]
+#[cfg(b64_avx2)]
 const PACK_L2: [i16; 16] = [
     0x1000, 0x0001, 0x1000, 0x0001, 0x1000, 0x0001, 0x1000, 0x0001, 0x1000, 0x0001, 0x1000, 0x0001,
     0x1000, 0x0001, 0x1000, 0x0001,
@@ -155,7 +163,7 @@ const PACK_L2: [i16; 16] = [
 // These are used by the AVX2 packer; the VBMI kernel builds its multipliers
 // from immediates and does its own permute, so all three are absent from a
 // VBMI-only build.
-#[cfg(all(x86_simd, feature = "avx2"))]
+#[cfg(b64_avx2)]
 const PACK_SHUFFLE: [i8; 32] = [
     2, 1, 0, 6, 5, 4, 10, 9, 8, 14, 13, 12, -1, -1, -1, -1, 2, 1, 0, 6, 5, 4, 10, 9, 8, 14, 13, 12,
     -1, -1, -1, -1,

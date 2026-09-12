@@ -51,14 +51,14 @@
 use crate::{Config, Error};
 
 #[cfg(target_arch = "x86")]
-use std::arch::x86::{
+use core::arch::x86::{
     __m512i, _mm512_loadu_si512, _mm512_madd_epi16, _mm512_maddubs_epi16, _mm512_mask_loadu_epi8,
     _mm512_mask_storeu_epi8, _mm512_maskz_loadu_epi8, _mm512_movepi8_mask, _mm512_or_si512,
     _mm512_set1_epi8, _mm512_set1_epi16, _mm512_set1_epi32, _mm512_set1_epi64,
     _mm512_setzero_si512, _mm512_storeu_si512, _mm512_ternarylogic_epi32,
 };
 #[cfg(target_arch = "x86_64")]
-use std::arch::x86_64::{
+use core::arch::x86_64::{
     __m512i, _mm512_loadu_si512, _mm512_madd_epi16, _mm512_maddubs_epi16, _mm512_mask_loadu_epi8,
     _mm512_mask_storeu_epi8, _mm512_maskz_loadu_epi8, _mm512_movepi8_mask, _mm512_or_si512,
     _mm512_set1_epi8, _mm512_set1_epi16, _mm512_set1_epi32, _mm512_set1_epi64,
@@ -68,17 +68,22 @@ use std::arch::x86_64::{
 // `_mm512_stream_si512`/`_mm_sfence` lower to inline `asm!`, which Miri never
 // executes; the Miri build routes around them (see `zmm_stream`/`sfence`).
 #[cfg(all(not(miri), target_arch = "x86"))]
-use std::arch::x86::{
+use core::arch::x86::{
     _mm_sfence, _mm512_multishift_epi64_epi8, _mm512_permutex2var_epi8, _mm512_permutexvar_epi8,
     _mm512_stream_si512,
 };
 #[cfg(all(not(miri), target_arch = "x86_64"))]
-use std::arch::x86_64::{
+use core::arch::x86_64::{
     _mm_sfence, _mm512_multishift_epi64_epi8, _mm512_permutex2var_epi8, _mm512_permutexvar_epi8,
     _mm512_stream_si512,
 };
 
-// --- Compile-time lookup tables ---
+// Verification: Kani proofs, Intel-pseudocode intrinsic models, and the Miri +
+// hardware coverage suites.
+#[cfg(any(kani, test, miri))]
+mod verify;
+
+// Compile-time lookup tables.
 
 /// `vpermb` control that gathers 48 input bytes into 8 qwords laid out
 /// `[b2,b1,b0, b5,b4,b3, x,x]`. That puts one big-endian input triple in each
@@ -177,7 +182,7 @@ const VBMI_STREAM_PACK: [[u8; 64]; 3] = [
     build_stream_pack(2),
 ];
 
-// --- Stride constants ---
+// Stride constants.
 //
 // The Kani index proofs in `verify` reason over this same arithmetic
 // symbolically, and import these rather than restating them, so a stride that
@@ -234,7 +239,7 @@ const DEC_MASKED_MIN: usize = DEC_GROUP + DEC_LEAD;
 /// Store mask selecting the low 48 bytes of a decoded vector.
 const LOW_48: u64 = (1u64 << DEC_VEC_OUT) - 1;
 
-// --- Non-temporal threshold ---
+// Non-temporal threshold.
 
 /// Floor on the input length at which either kernel may switch its top tier to
 /// non-temporal stores, and the bound the Kani stream-peel proofs are stated
@@ -297,9 +302,7 @@ const _: () = assert!(
     "NONTEMPORAL_FLOOR must leave a full quad step after the worst-case alignment peel"
 );
 
-// ======================================================================
 // Miri-compatible VBMI shims
-// ======================================================================
 
 #[cfg(miri)]
 use self::verify::intrinsic_models as m;
@@ -483,7 +486,7 @@ unsafe fn decode_final_group(
     Some(Ok(3 - pad))
 }
 
-// --- VBMI encoder ---
+// VBMI encoder.
 
 #[target_feature(enable = "avx512f,avx512bw,avx512vbmi")]
 pub(crate) unsafe fn encode_slice_avx512_vbmi(config: &Config, input: &[u8], dst_slice: &mut [u8]) {
@@ -613,7 +616,7 @@ pub(crate) unsafe fn encode_slice_avx512_vbmi(config: &Config, input: &[u8], dst
     unsafe { super::tail::encode(config, input, src, dst_slice, dst_off) };
 }
 
-// --- VBMI decoder ---
+// VBMI decoder.
 
 /// The lookup vectors the decoder builds once from its `Config` and both of its
 /// top tiers then share.
@@ -911,8 +914,3 @@ pub(crate) unsafe fn decode_slice_avx512_vbmi(
     }
     unsafe { super::tail::decode(config, input, src, dst_slice, dst_off) }
 }
-
-// Verification: Kani proofs, Intel-pseudocode intrinsic models, and the Miri +
-// hardware coverage suites.
-#[cfg(any(kani, test, miri))]
-mod verify;

@@ -38,9 +38,7 @@ fuzz_target!(|data: &[u8]| {
 
     let payload = &data[1..];
 
-    // ======================================================================
     // 1. Safe allocating APIs (.encode / .decode)
-    // ======================================================================
     let encoded_ref = ref_engine.encode(payload);
     let encoded_turbo = engine.encode(payload);
     assert_eq!(encoded_ref, encoded_turbo);
@@ -49,9 +47,7 @@ fuzz_target!(|data: &[u8]| {
     let decoded = engine.decode(&encoded_turbo).unwrap();
     assert_eq!(decoded.as_slice(), payload);
 
-    // ======================================================================
     // 2. Slice APIs (.encode_slice / .decode_slice)
-    // ======================================================================
     let enc_len = engine.encoded_len(payload.len());
     let mut enc_buf = vec![0u8; enc_len.max(1)]; // at least 1 to avoid zero-length issues
 
@@ -86,7 +82,6 @@ fuzz_target!(|data: &[u8]| {
         assert!(matches!(res, Err(Error::BufferTooSmall) | Err(Error::InvalidCharacter) | Err(Error::InvalidLength)));
     }
 
-    // ======================================================================
     // 3. Raw unsafe kernels (unstable feature)
     //
     //    Every buffer below is sized to *exactly* the capacity the kernel's
@@ -101,7 +96,6 @@ fuzz_target!(|data: &[u8]| {
     //    so they may write garbage for invalid input — but that garbage must
     //    still land inside `decoded_len_estimate`, and the call must report
     //    `Err` rather than panic.
-    // ======================================================================
 
     let valid_encoded = &enc_buf[..written_enc];
     let arbitrary_dec_est = engine.decoded_len_estimate(payload.len());
@@ -132,7 +126,7 @@ fuzz_target!(|data: &[u8]| {
         }};
     }
 
-    // --- Scalar (always available) ---
+    // Scalar (always available).
     // Safe, not unsafe — the scalar kernel forbids `unsafe` — but exercised
     // through the same shape so the three kernels stay comparable.
     if enc_len > 0 {
@@ -154,19 +148,19 @@ fuzz_target!(|data: &[u8]| {
         let _ = engine.decode_scalar(payload, &mut out_dec);
     }
 
-    // --- AVX2 (x86/x86_64 only) ---
+    // AVX2 (x86/x86_64 only).
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     if std::is_x86_feature_detected!("avx2") {
         exercise_kernel!("avx2", encode_avx2, decode_avx2);
     }
 
-    // --- AVX-512-VBMI (x86/x86_64 only) ---
+    // AVX-512-VBMI (x86/x86_64 only).
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     if has_avx512_vbmi() {
         exercise_kernel!("avx512-vbmi", encode_avx512_vbmi, decode_avx512_vbmi);
     }
 
-    // --- NEON (aarch64 only) ---
+    // NEON (aarch64 only).
     #[cfg(target_arch = "aarch64")]
     {
         exercise_kernel!("neon", encode_neon, decode_neon);

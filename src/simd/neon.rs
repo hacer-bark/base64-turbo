@@ -1,3 +1,13 @@
+//! NEON backend.
+//!
+//! Dispatched at compile time: NEON is baseline on `aarch64`, so there is no
+//! runtime feature to detect and no scalar-only build to fall back from. Like
+//! the AVX2 kernel it derives characters arithmetically from the RFC 4648
+//! layout and so cannot serve a custom [`Alphabet`](crate::Alphabet).
+//!
+//! A few of the x86 primitives the algorithm is written against have no direct
+//! NEON equivalent; the helpers at the top of this file supply them.
+
 use crate::{Config, Error};
 
 use core::arch::aarch64::{
@@ -10,6 +20,11 @@ use core::arch::aarch64::{
     vreinterpretq_u8_s8, vreinterpretq_u8_s32, vreinterpretq_u8_u16, vreinterpretq_u16_u8,
     vshrn_n_u32, vshrq_n_u8, vst1q_u8,
 };
+
+// Verification: the Miri coverage suite. NEON has no Kani proofs and no
+// hardware equivalence suite -- see the README's "Safety & Verification".
+#[cfg(all(test, miri))]
+mod verify;
 
 /// Unsigned multiply-high for u16x8. NEON has no `mulhi_u16`, so emulate it
 /// with a widening multiply and narrowing shift.
@@ -43,7 +58,7 @@ unsafe fn vmadd_s32(a: int16x8_t, b: int16x8_t) -> int32x4_t {
     }
 }
 
-// --- NEON encoder ---
+// NEON encoder.
 
 #[target_feature(enable = "neon")]
 pub(crate) unsafe fn encode_slice_neon(config: &Config, input: &[u8], dst_slice: &mut [u8]) {
@@ -155,7 +170,7 @@ pub(crate) unsafe fn encode_slice_neon(config: &Config, input: &[u8], dst_slice:
     unsafe { super::tail::encode(config, input, src, dst_slice, dst_off) };
 }
 
-// --- NEON decoder ---
+// NEON decoder.
 
 /// Precomputed NEON decode constants, factored out of [`decode_slice_neon`]
 /// only to keep its body under clippy's line-count threshold.
@@ -388,8 +403,3 @@ pub(crate) unsafe fn decode_slice_neon(
     let dst_off = unsafe { dst.offset_from(dst_start) }.cast_unsigned();
     unsafe { super::tail::decode(config, input, src, dst_slice, dst_off) }
 }
-
-// Verification: the Miri coverage suite. NEON has no Kani proofs and no
-// hardware equivalence suite -- see the README's "Safety & Verification".
-#[cfg(all(test, miri))]
-mod verify;

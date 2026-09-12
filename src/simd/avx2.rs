@@ -1,9 +1,21 @@
+//! AVX2 backend.
+//!
+//! Both kernels map characters arithmetically from the RFC 4648 layout rather
+//! than by table lookup, so neither can serve a custom [`Alphabet`](crate::Alphabet);
+//! the dispatcher sends those to the scalar kernel instead. What the arithmetic
+//! buys is a character map with no memory operand in it at all, which is why
+//! this path stays ahead of a shuffle-based one on every part measured.
+//!
+//! Encode runs a 24-byte window per round, decode a 32-character vector, and
+//! each has a wide tier that unrolls the steady state; the constants below
+//! record what each unroll factor was measured at and why it is the one chosen.
+
 use super::{PACK_L1, PACK_L2, PACK_SHUFFLE};
 use crate::{Config, Error};
 use core::hint::black_box;
 
 #[cfg(target_arch = "x86")]
-use std::arch::x86::{
+use core::arch::x86::{
     __m128i, __m256i, _mm_sfence, _mm_storeu_si128, _mm_stream_si128, _mm256_add_epi8,
     _mm256_and_si256, _mm256_andnot_si256, _mm256_castsi256_si128, _mm256_cmpeq_epi8,
     _mm256_cmpgt_epi8, _mm256_extracti128_si256, _mm256_loadu_si256, _mm256_madd_epi16,
@@ -13,7 +25,7 @@ use std::arch::x86::{
     _mm256_sub_epi8, _mm256_subs_epu8, _mm256_testz_si256,
 };
 #[cfg(target_arch = "x86_64")]
-use std::arch::x86_64::{
+use core::arch::x86_64::{
     __m128i, __m256i, _mm_sfence, _mm_storeu_si128, _mm_stream_si128, _mm256_add_epi8,
     _mm256_and_si256, _mm256_andnot_si256, _mm256_castsi256_si128, _mm256_cmpeq_epi8,
     _mm256_cmpgt_epi8, _mm256_extracti128_si256, _mm256_loadu_si256, _mm256_madd_epi16,
@@ -22,6 +34,11 @@ use std::arch::x86_64::{
     _mm256_setzero_si256, _mm256_shuffle_epi8, _mm256_srli_epi16, _mm256_storeu_si256,
     _mm256_sub_epi8, _mm256_subs_epu8, _mm256_testz_si256,
 };
+
+// Verification: Kani proofs, intrinsic models, model/hardware equivalence,
+// and the Miri + hardware coverage suites.
+#[cfg(any(kani, test))]
+mod verify;
 
 /// Floor on the input length from which the encoder switches to non-temporal
 /// stores.
@@ -557,8 +574,3 @@ pub(crate) unsafe fn decode_slice_avx2(
         unsafe { decode_impl_avx2::<false>(config, input, dst_slice) }
     }
 }
-
-// Verification: Kani proofs, intrinsic models, model/hardware equivalence,
-// and the Miri + hardware coverage suites.
-#[cfg(any(kani, test))]
-mod verify;

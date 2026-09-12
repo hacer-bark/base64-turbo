@@ -34,6 +34,18 @@ jobs:
           - name: all features (aarch64)
             os: ubuntu-24.04-arm
             flags: --all-features
+          # Backend overrides. `soft` is the only build that carries
+          # `forbid(unsafe_code)`, and no feature combination reaches it any
+          # more, so it has to be driven by its `--cfg` here or not at all.
+          - name: soft backend
+            flags: --all-features
+            rustflags: --cfg base64_turbo_backend="soft"
+          - name: avx2 backend only
+            flags: --all-features
+            rustflags: --cfg base64_turbo_backend="avx2"
+          - name: avx512 backend only
+            flags: --all-features
+            rustflags: --cfg base64_turbo_backend="avx512"
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -42,6 +54,8 @@ jobs:
           prefix-key: v1-rust
           key: ${{ matrix.name }}
       - name: test
+        env:
+          RUSTFLAGS: ${{ matrix.rustflags }}
         run: cargo test --locked ${{ matrix.flags }}
 
   simd-avx512-vbmi:
@@ -88,10 +102,10 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
-            features: std,simd,unstable
+            features: std,unstable
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
-            features: std,neon,unstable
+            features: std,unstable
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@nightly

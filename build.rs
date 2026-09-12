@@ -1,37 +1,54 @@
-//! Emits three convenience `cfg` aliases so the source never has to repeat the
-//! SIMD feature matrix at every gate:
-//!
-//! * `unsafe_simd` — at least one kernel that uses `unsafe` is compiled in
-//!   (any x86 AVX kernel, or NEON on aarch64). When it is absent the crate is
-//!   pure safe scalar Rust and carries `#![forbid(unsafe_code)]`.
-//! * `x86_simd` — at least one x86 AVX kernel is compiled in, i.e. runtime CPU
-//!   detection is needed.
-//! * `arithmetic_simd` — at least one kernel that derives characters
-//!   arithmetically from the RFC 4648 layout (AVX2 or NEON) is compiled in.
-//!   Those two cannot serve a custom `Alphabet`; the scalar and AVX-512 VBMI
-//!   kernels, being pure table lookups, can.
+//! Resolves the backend selection into `cfg` aliases, so the source never has
+//! to repeat the target/override matrix at every gate.
 
 fn main() {
-    println!("cargo::rustc-check-cfg=cfg(unsafe_simd)");
-    println!("cargo::rustc-check-cfg=cfg(x86_simd)");
-    println!("cargo::rustc-check-cfg=cfg(arithmetic_simd)");
+    for alias in [
+        "b64_avx2",
+        "b64_avx512",
+        "b64_neon",
+        "x86_simd",
+        "unsafe_simd",
+        "arithmetic_simd",
+    ] {
+        println!("cargo::rustc-check-cfg=cfg({alias})");
+    }
+    println!(
+        "cargo::rustc-check-cfg=cfg(base64_turbo_backend, \
+         values(\"soft\", \"avx2\", \"avx512\", \"neon\"))"
+    );
 
     let arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
-    let feat = |name: &str| std::env::var_os(name).is_some();
-
     let x86 = matches!(arch.as_str(), "x86" | "x86_64");
-    let x86_simd = x86 && (feat("CARGO_FEATURE_AVX2") || feat("CARGO_FEATURE_AVX512_VBMI"));
-    let neon = arch == "aarch64" && feat("CARGO_FEATURE_NEON");
-    let unsafe_simd = x86_simd || neon;
-    let arithmetic_simd = (x86 && feat("CARGO_FEATURE_AVX2")) || neon;
+    let aarch64 = arch == "aarch64";
 
-    if x86_simd {
-        println!("cargo::rustc-cfg=x86_simd");
-    }
-    if unsafe_simd {
-        println!("cargo::rustc-cfg=unsafe_simd");
-    }
-    if arithmetic_simd {
-        println!("cargo::rustc-cfg=arithmetic_simd");
+    // Absent from the environment unless the user passed the `--cfg`.
+    let backend = std::env::var("CARGO_CFG_BASE64_TURBO_BACKEND").ok();
+
+    let (avx2, avx512, neon) = match backend.as_deref() {
+        None => (x86, x86, aarch64),
+        Some("soft") => (false, false, false),
+        Some("avx2") => (x86, false, false),
+        Some("avx512") => (false, x86, false),
+        Some("neon") => (false, false, aarch64),
+        Some(other) => {
+            println!(
+                "cargo::error=unknown base64_turbo_backend {other:?}; \
+                 expected \"soft\", \"avx2\", \"avx512\" or \"neon\""
+            );
+            return;
+        }
+    };
+
+    for (enabled, alias) in [
+        (avx2, "b64_avx2"),
+        (avx512, "b64_avx512"),
+        (neon, "b64_neon"),
+        (avx2 || avx512, "x86_simd"),
+        (avx2 || avx512 || neon, "unsafe_simd"),
+        (avx2 || neon, "arithmetic_simd"),
+    ] {
+        if enabled {
+            println!("cargo::rustc-cfg={alias}");
+        }
     }
 }

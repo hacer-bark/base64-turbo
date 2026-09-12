@@ -8,6 +8,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Pre-1.0, a minor bump (`0.x`) is where breaking changes land; patch releases stay
 compatible.
 
+## Unreleased
+
+### Changed — breaking
+
+* **The SIMD kernel features are gone.** `avx2`, `avx512-vbmi`, `simd` and
+  `neon` have been removed; a build that names any of them now fails with an
+  unknown-feature error. Which kernels are compiled in follows from the target
+  instead: every kernel the target can run is built, and runtime CPU detection
+  picks between them per call, exactly as the default feature set did before.
+  The remaining features are `std` and `unstable`.
+* **Narrowing the backend is now a `--cfg`, not a feature.** Pass
+  `--cfg base64_turbo_backend="soft"|"avx2"|"avx512"|"neon"` in `RUSTFLAGS`.
+  In particular the pure-scalar `#![forbid(unsafe_code)]` build, which used to
+  be `--no-default-features`, is now `--cfg base64_turbo_backend="soft"` —
+  `--no-default-features` alone now means `no_std` *with* SIMD. Unlike a Cargo
+  feature this applies to the whole dependency graph and is not additive under
+  feature unification, so it belongs in the final binary's build rather than in
+  a library's manifest.
+
+### Added
+
+* **The x86 SIMD kernels work under `no_std`.** They previously forced `std`,
+  because `is_x86_feature_detected!` is `std`-only. Detection now goes through
+  [`cpufeatures`](https://crates.io/crates/cpufeatures), which reads `CPUID`
+  directly — and checks `XCR0` for the AVX-512 state as well as the feature
+  bits, so a kernel the OS has not enabled is still never selected.
+
+### Internal
+
+* Dispatch cost is unchanged: the tier decision stays collapsed into one cached
+  byte, so it remains a single load and compare per call rather than one atomic
+  per feature.
+* The last-level-cache size feeding the non-temporal store gate is still a
+  `CPUID` walk of our own; `cpufeatures` covers feature bits only.
+
 ## 0.4.0
 
 ### Changed — breaking

@@ -142,23 +142,40 @@ deliberately unspecified — it depends on which kernel met the character. Match
 
 ## Feature Flags
 
-Each x86 SIMD kernel is its own knob, so you compile in only what your target CPUs are
-likely to support. Runtime detection still gates every call — enabling a kernel the host
-lacks just falls back to scalar.
-
 | Feature | Default | Description |
 | :--- | :---: | :--- |
-| `std` | **Yes** | `String`/`Vec` support. Disable for `no_std` (the slice APIs need no allocator). |
-| `avx2` | **Yes** | AVX2 kernel + runtime detection on x86/x86_64. Implies `std`. |
-| `avx512-vbmi` | **Yes** | AVX-512 VBMI fast-path kernel on x86/x86_64. Implies `std`. |
-| `simd` | **Yes** | Convenience meta-feature — turns on `avx2` + `avx512-vbmi` at once. |
-| `neon` | **Yes** | NEON acceleration on aarch64. No `std` required. |
+| `std` | **Yes** | `String`/`Vec` support. Disable for `no_std`; the slice APIs need no allocator, and every SIMD kernel works without it. |
 | `unstable` | **No** | Exposes the raw internal kernels (`encode_avx2`, `encode_avx512_vbmi`, `encode_neon`, …). The `*_scalar` accessors are **safe** (they may panic on a too-small buffer, but never invoke UB). |
 
-Scalar-only builds are `#![forbid(unsafe_code)]`. Disable every SIMD kernel and the crate
-is pure scalar Rust — nothing to verify, nothing to audit. The allocating `encode`/`decode`
-swap their uninitialized-buffer fast path for a zero-filled, fully-checked one in this
-configuration.
+Which vector kernels are compiled in is **not** a feature: it follows from the target.
+Every kernel the target can run is built, and runtime CPU detection picks between them per
+call, so a kernel the host lacks just falls back to scalar. Detection uses
+[`cpufeatures`](https://crates.io/crates/cpufeatures), which reads `CPUID` directly and
+checks `XCR0` for the AVX-512 state, so the vector paths work under `no_std` too.
+
+## Selecting a Backend
+
+To narrow that — for a smaller binary, or for a build with no `unsafe` in it at all — pass
+one `--cfg` in `RUSTFLAGS`:
+
+```sh
+RUSTFLAGS='--cfg base64_turbo_backend="avx2"' cargo build
+```
+
+| Value | Effect |
+| :--- | :--- |
+| *(unset)* | Every kernel the target can run, chosen at run time. The default. |
+| `soft` | No vector kernel. The crate is pure safe Rust and carries `#![forbid(unsafe_code)]` — nothing to verify, nothing to audit. The allocating `encode`/`decode` swap their uninitialized-buffer fast path for a zero-filled, fully-checked one. |
+| `avx2` | The AVX2 kernel only, dropping the larger AVX-512 VBMI one. |
+| `avx512` | The AVX-512 VBMI kernel only. A CPU without VBMI then falls back to *scalar* rather than to AVX2, so pick this only for a fleet known to have it. |
+| `neon` | The NEON kernel only; on `aarch64` that is what the default already selects. |
+
+A value naming a kernel the target cannot run leaves the build scalar rather than failing,
+so one flag can cover a mixed-architecture workspace.
+
+Unlike a Cargo feature, a `RUSTFLAGS` `--cfg` applies to the whole dependency graph and is
+not additive under feature unification — so this is a knob for the final binary's build,
+not something a library should set on its dependents' behalf.
 
 ## Compatibility & Stability
 

@@ -67,6 +67,7 @@ dependencies = [
  "base64",
  "base64-ng",
  "base64-simd",
+ "cpufeatures",
  "criterion",
  "rand",
  "tb64-sys",

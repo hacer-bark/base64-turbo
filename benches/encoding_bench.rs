@@ -199,7 +199,7 @@ fn bench_comparison(c: &mut Criterion) {
         group.measurement_time(Duration::from_secs(measurement_secs));
         group.sampling_mode(mode);
 
-        // --- Encode ---
+        // Encode.
         group.throughput(Throughput::Bytes(*size as u64));
 
         // Roofline reference: a plain byte copy of the same input, so every encode number
@@ -253,7 +253,7 @@ fn bench_comparison(c: &mut Criterion) {
             });
         }
 
-        // --- Decode ---
+        // Decode.
 
         // Throughput is measured against the encoded (input) text size.
         group.throughput(Throughput::Bytes(encoded.len() as u64));

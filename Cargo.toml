@@ -22,21 +22,12 @@ members = ["benches/tb64-sys"]
 exclude = ["fuzz"]
 
 [features]
-default = ["std", "simd", "neon"]
-
-# Core
+default = ["std"]
 std = []
 unstable = []
 
-# x86/x86_64 SIMD kernels.
-avx2 = ["std"]
-avx512-vbmi = ["std"]
-
-# Convenience meta-feature: every x86 SIMD kernel at once.
-simd = ["avx2", "avx512-vbmi"]
-
-# aarch64 NEON kernel (compile-time dispatch, no runtime detection, no std).
-neon = []
+[target.'cfg(any(target_arch = "x86_64", target_arch = "x86"))'.dependencies]
+cpufeatures = "0.3"
 
 [dev-dependencies]
 rand = "0.10"

@@ -102,7 +102,7 @@ mod kani_verification_avx512_vbmi {
         (done, 3 * g, len - done)
     }
 
-    // --- Encoder ---
+    // Encoder.
 
     /// Inductive step for the encoder's quad tier.
     #[kani::proof]
@@ -339,7 +339,7 @@ mod kani_verification_avx512_vbmi {
         );
     }
 
-    // --- Decoder ---
+    // Decoder.
 
     /// Inductive step for the decoder's quad tier.
     #[kani::proof]

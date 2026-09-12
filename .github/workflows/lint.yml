@@ -34,6 +34,15 @@ jobs:
           - name: all features (aarch64, exercises neon.rs)
             os: ubuntu-24.04-arm
             flags: --all-targets --all-features
+          - name: soft backend
+            flags: --all-targets --all-features
+            rustflags: --cfg base64_turbo_backend="soft"
+          - name: avx2 backend only
+            flags: --all-targets --all-features
+            rustflags: --cfg base64_turbo_backend="avx2"
+          - name: avx512 backend only
+            flags: --all-targets --all-features
+            rustflags: --cfg base64_turbo_backend="avx512"
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -44,6 +53,8 @@ jobs:
           prefix-key: v1-rust-clippy
           key: ${{ matrix.name }}
       - name: clippy
+        env:
+          RUSTFLAGS: ${{ matrix.rustflags }}
         run: cargo clippy --locked ${{ matrix.flags }}
 
   fmt:

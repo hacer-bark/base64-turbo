@@ -32,6 +32,22 @@ use crate::{Config, Error};
 /// Largest value a valid 4-character group can OR to (24 significant bits).
 const GROUP_MAX: u32 = 0x00FF_FFFF;
 
+/// Encodes one 6-byte block into the 8 characters it produces.
+///
+/// The two overlapping big-endian `u32` loads are what let LLVM emit 32-bit
+/// loads instead of a `movzbl`-and-shift pile; each supplies one 24-bit group.
+#[inline]
+fn encode_block(pairs: &[u16; 4096], chunk: &[u8; 6], out: &mut [u8; 8]) {
+    let reg_a = u32::from_be_bytes(chunk.first_chunk::<4>().copied().unwrap_or_default());
+    let reg_b = u32::from_be_bytes(chunk.last_chunk::<4>().copied().unwrap_or_default());
+    let n1 = (reg_a >> 8) as usize;
+    let n2 = (reg_b & 0x00_FF_FF_FF) as usize;
+    let lo = u32::from(pairs[n1 >> 12]) | (u32::from(pairs[n1 & 0xFFF]) << 16);
+    let hi = u32::from(pairs[n2 >> 12]) | (u32::from(pairs[n2 & 0xFFF]) << 16);
+    out[0..4].copy_from_slice(&lo.to_le_bytes());
+    out[4..8].copy_from_slice(&hi.to_le_bytes());
+}
+
 /// Encodes `input` into Base64, writing the result into `dst`.
 ///
 /// `dst` must be at least the encoded length for `input`:
@@ -57,7 +73,6 @@ pub(crate) fn encode_slice(config: &Config, input: &[u8], dst: &mut [u8]) {
     let (in_main, in_tail) = input.split_at(blocks * 6);
     let (out_main, out_tail) = dst.split_at_mut(blocks * 8);
 
-    // --- MAIN LOOP ---
     // Two blocks per iteration once the input is long enough to pay for the
     // wider setup, and the original one-block loop below that.
     //
@@ -76,18 +91,10 @@ pub(crate) fn encode_slice(config: &Config, input: &[u8], dst: &mut [u8]) {
             .iter()
             .zip(out_main.as_chunks_mut::<8>().0.iter_mut())
         {
-            let reg_a = u32::from_be_bytes(chunk.first_chunk::<4>().copied().unwrap_or_default());
-            let reg_b = u32::from_be_bytes(chunk.last_chunk::<4>().copied().unwrap_or_default());
-            let n1 = (reg_a >> 8) as usize;
-            let n2 = (reg_b & 0x00_FF_FF_FF) as usize;
-            let lo = u32::from(pairs[n1 >> 12]) | (u32::from(pairs[n1 & 0xFFF]) << 16);
-            let hi = u32::from(pairs[n2 >> 12]) | (u32::from(pairs[n2 & 0xFFF]) << 16);
-            out[0..4].copy_from_slice(&lo.to_le_bytes());
-            out[4..8].copy_from_slice(&hi.to_le_bytes());
+            encode_block(pairs, chunk, out);
         }
     }
 
-    // --- TAIL HANDLING ---
     // `in_tail` is 0..=5 bytes. Track offsets into the tail halves.
     let mut ti = 0; // offset into in_tail
     let mut oi = 0; // offset into out_tail
@@ -158,9 +165,7 @@ fn encode_main_wide(pairs: &[u16; 4096], in_main: &[u8], out_main: &mut [u8]) {
         .iter()
         .zip(out_wide.as_chunks_mut::<16>().0.iter_mut())
     {
-        // Two overlapping big-endian `u32`s per block, as in the single-block
-        // form: `first_chunk`/`last_chunk` are what let LLVM emit 32-bit loads
-        // instead of a `movzbl`-and-shift pile.
+        // Two blocks' worth of the loads [`encode_block`] does, interleaved.
         let a0 = u32::from_be_bytes(chunk.first_chunk::<4>().copied().unwrap_or_default());
         let b0 = u32::from_be_bytes(chunk[2..6].first_chunk::<4>().copied().unwrap_or_default());
         let a1 = u32::from_be_bytes(chunk[6..10].first_chunk::<4>().copied().unwrap_or_default());
@@ -185,14 +190,7 @@ fn encode_main_wide(pairs: &[u16; 4096], in_main: &[u8], out_main: &mut [u8]) {
     // At most one 6-byte block is left over.
     if let (Some(chunk), Some(out)) = (in_rest.first_chunk::<6>(), out_rest.first_chunk_mut::<8>())
     {
-        let reg_a = u32::from_be_bytes(chunk.first_chunk::<4>().copied().unwrap_or_default());
-        let reg_b = u32::from_be_bytes(chunk.last_chunk::<4>().copied().unwrap_or_default());
-        let n1 = (reg_a >> 8) as usize;
-        let n2 = (reg_b & 0x00_FF_FF_FF) as usize;
-        let lo = u32::from(pairs[n1 >> 12]) | (u32::from(pairs[n1 & 0xFFF]) << 16);
-        let hi = u32::from(pairs[n2 >> 12]) | (u32::from(pairs[n2 & 0xFFF]) << 16);
-        out[0..4].copy_from_slice(&lo.to_le_bytes());
-        out[4..8].copy_from_slice(&hi.to_le_bytes());
+        encode_block(pairs, chunk, out);
     }
 }
 
@@ -246,7 +244,6 @@ fn decode_slice_impl(
 
     let shifted: &[[u32; 256]; 4] = config.alphabet.shifted();
 
-    // --- FAST LOOP (Middle Chunks) ---
     // Slicing both sides up front and pairing them with `as_chunks` hoists
     // every bounds check out of the loop; indexing `input[i + n]` and
     // `dst[o..o + 6]` per iteration leaves two compares and two branches behind
